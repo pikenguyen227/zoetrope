@@ -688,8 +688,8 @@ fn render_canvas(frame: &mut Frame, area: Rect, app: &mut App, show_minimap: boo
     frame.render_widget(Background::new(&app.flow), area);
     frame.render_widget(&mut app.flow, area);
     // Chips right after the flow (frame-exact anchors), under the minimap.
-    // `now_reference` drives the live-ticking duration on a single-tool chip.
-    let now = app.timeline.now_reference();
+    // `chrome_now` drives the live-ticking duration on a single-tool chip.
+    let now = app.chrome_now();
     chips::render(&app.chips, &app.flow, &app.session, now, frame.buffer_mut());
     if show_minimap {
         frame.render_widget(

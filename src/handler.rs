@@ -383,6 +383,7 @@ mod tests {
                         output_tokens: 0,
                         usage: Default::default(),
                         interactive: true,
+                        pulse: false,
                     },
                 ))
                 .unwrap();
@@ -463,6 +464,7 @@ mod tests {
                     output_tokens: 0,
                     usage: crate::usage::Summary::default(),
                     interactive: false,
+                    pulse: false,
                 },
             )
         };
@@ -517,6 +519,7 @@ mod tests {
                 output_tokens: 0,
                 usage: crate::usage::Summary::default(),
                 interactive: false,
+                pulse: false,
             },
         );
         app.flow.add_node(node).unwrap();
@@ -549,6 +552,7 @@ mod tests {
                 output_tokens: 0,
                 usage: crate::usage::Summary::default(),
                 interactive: false,
+                pulse: false,
             },
         );
         app.flow.add_node(node).unwrap();
