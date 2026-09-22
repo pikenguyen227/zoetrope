@@ -417,7 +417,7 @@ impl Fleet {
         self.refresh_timeline();
         let at = self.at();
         let crew = self.lifecycle.state_at(at);
-        let covered = at.is_none_or(|t| self.lifecycle.covered(t));
+        let covered = self.covered();
         let joins = self.joins();
         let mut marks: BTreeMap<String, CrewMark> = BTreeMap::new();
         // The attempt that speaks for a session: the newest one standing.

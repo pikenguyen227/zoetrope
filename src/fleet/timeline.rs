@@ -167,6 +167,15 @@ impl Fleet {
         }
     }
 
+    /// Whether lifecycle was observed at the moment shown: parked, whether a
+    /// coverage window holds it; at the live edge, whether the bridge still is.
+    pub fn covered(&self) -> bool {
+        match self.at() {
+            Some(t) => self.lifecycle.covered(t),
+            None => self.lifecycle.observing(Utc::now()),
+        }
+    }
+
     /// Rebuild the merged index when a member's items or the lifecycle changed.
     pub fn refresh_timeline(&mut self) {
         // Checked every frame, so compare in place before allocating anything.

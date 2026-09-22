@@ -174,7 +174,9 @@ own live edges. Dead air is compressed only while every session is quiet.
 - Cards carry the attempt's status badge; `needs-decision` and `blocked` (or an
   open decision) are highlighted in amber on the card and the scrubber strip.
 - Outside every coverage window, the scrubber is hatched, the header says so,
-  and badges read `?`: the last record, unverified.
+  and badges read `?`: the last record, unverified. At the live edge the same
+  holds once the bridge's newest window is over two minutes old: the adapter
+  has stopped, so today's state is not observed.
 - Space, `[` / `]` (member prompts and lifecycle transitions), `g`/End and the
   scrubber move the one playhead. Enter opens a session at that moment with its
   own DVR; Esc rejoins the fleet's moment.

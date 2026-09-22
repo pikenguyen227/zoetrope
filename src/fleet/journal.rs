@@ -493,6 +493,17 @@ impl Lifecycle {
         i > 0 && t <= self.coverage[i - 1].to
     }
 
+    /// Whether the bridge is still observing at `now`. Its newest window
+    /// trails the present by up to a checkpoint while it runs, so that much
+    /// lag still counts; past it, the adapter has stopped.
+    pub fn observing(&self, now: DateTime<Utc>) -> bool {
+        !self.bridge
+            || self
+                .coverage
+                .last()
+                .is_some_and(|w| w.from <= now && now - w.to <= chrono::Duration::minutes(2))
+    }
+
     /// Every attempt's state from the events at or before `t`; all of them for
     /// `None` (the live edge).
     pub fn state_at(&self, t: Option<DateTime<Utc>>) -> BTreeMap<Attempt, AttemptState> {
@@ -950,6 +961,10 @@ mod tests {
         assert!(store.covered(at("08:03:00")) && store.covered(at("08:07:00")));
         assert!(!store.covered(at("08:07:01")) && !store.covered(at("07:58:59")));
         assert!(store.covered(at("08:09:00")));
+        // At the live edge: a running bridge's newest window trails a little;
+        // once it stops reporting, the present is a gap too.
+        assert!(store.observing(at("08:11:00")));
+        assert!(!store.observing(at("08:12:01")));
         assert_eq!(store.latest_at(Some(at("08:05:30"))).unwrap().id, "s2");
         assert_eq!(store.latest_at(None).unwrap().id, "down");
     }
@@ -967,6 +982,7 @@ mod tests {
         store.insert([e]);
         assert!(!store.has_gaps());
         assert!(store.covered(at("12:00:00")));
+        assert!(store.observing(at("12:00:00")));
     }
 
     #[cfg(feature = "native")]

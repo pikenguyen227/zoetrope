@@ -111,30 +111,12 @@ pub fn inspect(path: &Path) -> Result<()> {
             "loaded":member.loaded, "agents":agents})
         })
         .collect();
-    let attempts: Vec<_> = fleet
-        .lifecycle
-        .state_at(None)
-        .into_iter()
-        .map(|(attempt, state)| {
-            serde_json::json!({"task":attempt.task, "spawn_gen":attempt.spawn_gen,
-            "spawned":state.spawned.map(|(at, _)| at),
-            "status":state.status.as_ref().map(|s| &s.value),
-            "status_at":state.status.as_ref().map(|s| s.at),
-            "status_quality":state.status.as_ref().map(|s| s.quality),
-            "needs_attention":state.needs_attention(),
-            "torn_down":state.torn_down.map(|(at, _)| at)})
-        })
-        .collect();
-    let lifecycle = serde_json::json!({"events":fleet.lifecycle.len(),
-        "rejected":fleet.lifecycle.rejected, "coverage":fleet.lifecycle.coverage(),
-        "attempts":attempts});
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "fleet_id":fleet.manifest.fleet_id, "sessions":members,
             "tasks":fleet.manifest.tasks, "links":fleet.manifest.links,
-            "nodes":fleet.overview.flow.nodes().count(), "edges":fleet.overview.flow.edges().len(),
-            "timeline_items":fleet.overview.timeline.items.len(), "lifecycle":lifecycle
+            "nodes":fleet.overview.flow.nodes().count(), "edges":fleet.overview.flow.edges().len()
         }))?
     );
     if failed {
@@ -485,10 +467,9 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
             fleet.manifest.label, key.session_id
         )
     } else {
-        // In the past, a moment nobody observed outranks today's diagnostics.
-        let gap = fleet
-            .at()
-            .filter(|t| !fleet.lifecycle.covered(*t))
+        // A moment nobody observed, past or present, outranks today's diagnostics.
+        let gap = (!fleet.covered())
+            .then(|| fleet.at().unwrap_or_else(chrono::Utc::now))
             .map(|t| {
                 format!(
                     "no lifecycle coverage at {}: badges marked ? are last records, unverified",
@@ -932,10 +913,13 @@ mod tests {
         let docs = mark(&mut fleet, DOCS).unwrap();
         assert!(docs.dimmed, "docs was torn down: {docs:?}");
         assert!(mark(&mut fleet, &root("impl")).unwrap().dimmed);
+        // The finished run's adapter stopped long ago: today's badges are its
+        // last records, unverified.
         assert_eq!(
             mark(&mut fleet, &root("tests")).unwrap().tone,
-            CrewTone::Active
+            CrewTone::Unknown
         );
+        assert!(screen(&mut fleet).contains("no lifecycle coverage"));
 
         // 08:03 — only the captain and impl exist; tests and docs are not
         // spawned yet, so they are not there at all.
