@@ -1,0 +1,96 @@
+{
+  "schema": "zoetrope.fleet.v1",
+  "fleet_id": "firstmate:/synthetic/firstmate",
+  "label": "Crew timeline \u00b7 SYNTHETIC",
+  "observed_at": "2026-09-22T08:16:00Z",
+  "sessions": [
+    {
+      "key": {
+        "provider": "codex",
+        "session_id": "c0c0c0c0-0000-4000-8000-000000000001"
+      },
+      "label": "Captain \u00b7 Codex",
+      "file": "sessions/2026/09/22/rollout-2026-09-22T08-00-00-c0c0c0c0-0000-4000-8000-000000000001.jsonl"
+    },
+    {
+      "key": {
+        "provider": "codex",
+        "session_id": "c0c0c0c0-0000-4000-8000-000000000002"
+      },
+      "label": "impl",
+      "file": "sessions/2026/09/22/rollout-2026-09-22T08-00-00-c0c0c0c0-0000-4000-8000-000000000002.jsonl"
+    },
+    {
+      "key": {
+        "provider": "codex",
+        "session_id": "c0c0c0c0-0000-4000-8000-000000000003"
+      },
+      "label": "tests",
+      "file": "sessions/2026/09/22/rollout-2026-09-22T08-00-00-c0c0c0c0-0000-4000-8000-000000000003.jsonl"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "impl",
+      "spawn_gen": "s1790064100.4101.1",
+      "label": "impl",
+      "project": "/synthetic/project",
+      "session": {
+        "provider": "codex",
+        "session_id": "c0c0c0c0-0000-4000-8000-000000000002"
+      },
+      "state": {
+        "value": "unknown",
+        "source": "firstmate.snapshot",
+        "observed_at": "2026-09-22T08:16:00Z"
+      },
+      "runtime": {
+        "value": "not observed",
+        "source": "firstmate.snapshot",
+        "observed_at": "2026-09-22T08:16:00Z"
+      },
+      "depends_on": []
+    },
+    {
+      "id": "tests",
+      "spawn_gen": "s1790064400.4102.2",
+      "label": "tests",
+      "project": "/synthetic/project",
+      "session": {
+        "provider": "codex",
+        "session_id": "c0c0c0c0-0000-4000-8000-000000000003"
+      },
+      "state": {
+        "value": "working",
+        "source": "pane",
+        "observed_at": "2026-09-22T08:16:00Z"
+      },
+      "runtime": {
+        "value": "working",
+        "source": "herdr.pane.get",
+        "observed_at": "2026-09-22T08:16:00Z"
+      },
+      "depends_on": []
+    },
+    {
+      "id": "docs",
+      "spawn_gen": "s1790064660.4103.3",
+      "label": "docs",
+      "project": "/synthetic/project",
+      "session": null,
+      "state": {
+        "value": "unknown",
+        "source": "firstmate.snapshot",
+        "observed_at": "2026-09-22T08:16:00Z"
+      },
+      "runtime": {
+        "value": "not observed",
+        "source": "firstmate.snapshot",
+        "observed_at": "2026-09-22T08:16:00Z"
+      },
+      "depends_on": []
+    }
+  ],
+  "links": [],
+  "diagnostics": []
+}
