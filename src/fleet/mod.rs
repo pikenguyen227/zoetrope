@@ -1,7 +1,8 @@
 //! Multi-session membership and display projection. Native facts stay in their
 //! own App; only display IDs are namespaced. Firstmate is an external adapter.
 
-pub mod activity;
+pub mod journal;
+pub mod timeline;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -13,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::state::session::{AgentInfo, AgentKind, AgentStatus, MAIN_ID, SessionModel};
 use crate::state::{App, Camera, Mode, graph};
 use crate::tailer::UiEvent;
+use crate::ui::nodes::{CrewMark, CrewTone};
+use journal::{Attempt, AttemptState, Lifecycle};
 
 #[cfg(feature = "native")]
 pub mod native;
@@ -198,6 +201,13 @@ pub struct Member {
     pub retained: bool,
 }
 
+impl Member {
+    /// Whether its session has recorded anything by its playhead.
+    fn active(&self) -> bool {
+        self.app.session.last_activity.is_some()
+    }
+}
+
 /// An overview plus independent, fully functional session inspectors.
 pub struct Fleet {
     pub manifest: Manifest,
@@ -205,12 +215,79 @@ pub struct Fleet {
     pub overview: App,
     pub focused: Option<SessionKey>,
     pub manifest_error: Option<String>,
-    pub activity: activity::Activity,
+    /// Lifecycle facts from the adapter's journal, deduplicated.
+    pub lifecycle: Lifecycle,
+    /// The shared playhead's bookkeeping (see [`timeline`]).
+    pub timeline: timeline::FleetTimeline,
     pub collapsed: BTreeSet<SessionKey>,
     pub(crate) nodes: BTreeMap<String, (SessionKey, String)>,
     /// Members whose loaded history the overview's chip tray has absorbed, so
     /// a backfill arriving does not replay as a burst of fresh chips.
     baselined: BTreeSet<SessionKey>,
+    /// Where each node last stood, so one that leaves on a scrub back returns
+    /// to the same place instead of a fresh grid slot.
+    positions: BTreeMap<String, (f64, f64)>,
+}
+
+/// A clock time for badges and details, in the viewer's zone.
+fn clock(at: DateTime<Utc>) -> String {
+    at.with_timezone(&chrono::Local)
+        .format("%H:%M:%S")
+        .to_string()
+}
+
+/// A status and when it was recorded, with how that time is known.
+fn describe(state: &AttemptState) -> String {
+    let mut text = match &state.status {
+        Some(s) => {
+            let tag = s.quality.tag();
+            let tag = if tag.is_empty() {
+                String::new()
+            } else {
+                format!(" ({tag})")
+            };
+            format!("{} at {}{tag}", s.value, clock(s.at))
+        }
+        None => "spawned, no status yet".into(),
+    };
+    if let Some((at, _)) = state.torn_down {
+        text.push_str(&format!(" · torn down {}", clock(at)));
+    }
+    text
+}
+
+/// The card badge for an attempt. Outside coverage it keeps the last record
+/// but reads unknown: it may have changed unseen.
+fn crew_mark(state: &AttemptState, covered: bool) -> CrewMark {
+    let (label, mut tone) = match &state.status {
+        Some(s) => (
+            format!("{} {}", s.value, clock(s.at)),
+            match s.value.as_str() {
+                "needs-decision" | "blocked" => CrewTone::Attention,
+                "failed" => CrewTone::Failed,
+                "done" => CrewTone::Settled,
+                "working" => CrewTone::Active,
+                _ => CrewTone::Quiet,
+            },
+        ),
+        None => ("spawned".into(), CrewTone::Quiet),
+    };
+    if state.needs_attention() {
+        tone = CrewTone::Attention;
+    }
+    if !covered {
+        tone = CrewTone::Unknown;
+    }
+    let dimmed = state.torn_down.is_some();
+    CrewMark {
+        label: if dimmed {
+            format!("{label} · torn down")
+        } else {
+            label
+        },
+        tone,
+        dimmed,
+    }
 }
 
 impl Fleet {
@@ -224,10 +301,12 @@ impl Fleet {
             members: BTreeMap::new(),
             focused: None,
             manifest_error: None,
-            activity: activity::Activity::default(),
+            lifecycle: Lifecycle::default(),
+            timeline: timeline::FleetTimeline::default(),
             collapsed: BTreeSet::new(),
             nodes: BTreeMap::new(),
             baselined: BTreeSet::new(),
+            positions: BTreeMap::new(),
         };
         fleet.update(manifest)?;
         Ok(fleet)
@@ -288,12 +367,65 @@ impl Fleet {
                 member.app.last_error = None;
             }
         }
+        if matches!(event, UiEvent::Batch { .. }) {
+            // The fleet reads live while any member is still being appended to.
+            self.overview.last_batch_at = Some(web_time::Instant::now());
+        }
         member.app.handle_ui_event(event);
+    }
+
+    /// Apply what the journal reader found; `reset` when the journal it read
+    /// before was replaced.
+    pub fn absorb_lifecycle(
+        &mut self,
+        reset: bool,
+        events: Vec<journal::LifecycleEvent>,
+        rejected: usize,
+    ) -> bool {
+        if reset {
+            self.lifecycle.reset();
+        }
+        self.lifecycle.rejected += rejected;
+        self.lifecycle.insert(events) || reset
+    }
+
+    /// Each attempt's native session: the manifest's joins and the journal's.
+    fn joins(&self) -> BTreeMap<Attempt, SessionKey> {
+        let mut joins = self.lifecycle.sessions();
+        for task in &self.manifest.tasks {
+            if let Some(key) = &task.session {
+                joins.insert(
+                    Attempt {
+                        task: task.id.clone(),
+                        spawn_gen: task.spawn_gen.clone(),
+                    },
+                    key.clone(),
+                );
+            }
+        }
+        joins
     }
 
     /// Render-only union. Never fold into this model: its cloned native agents
     /// retain their private call indexes/dedup stores within their own scope.
+    ///
+    /// Members are already at the fleet playhead, so the union is as of that
+    /// moment. Lifecycle is read as of it too: at the live edge from the whole
+    /// journal beside the manifest's current observations; parked in the past
+    /// from the journal alone, since the manifest describes the present.
     pub fn sync(&mut self) {
+        self.refresh_timeline();
+        let at = self.at();
+        let crew = self.lifecycle.state_at(at);
+        let covered = at.is_none_or(|t| self.lifecycle.covered(t));
+        let joins = self.joins();
+        let mut marks: BTreeMap<String, CrewMark> = BTreeMap::new();
+        // The attempt that speaks for a session: the newest one standing.
+        let attempt_for = |key: &SessionKey| {
+            crew.iter()
+                .filter(|(attempt, _)| joins.get(*attempt) == Some(key))
+                .max_by_key(|(_, state)| (state.torn_down.is_none(), state.spawned))
+        };
         let mut projection = SessionModel::new(self.manifest.fleet_id.clone());
         projection.agents.clear();
         projection.spawn_order.clear();
@@ -306,6 +438,11 @@ impl Fleet {
         projection.agents.insert(FLEET_ROOT.into(), home);
         projection.spawn_order.push_back(FLEET_ROOT.into());
         for (key, member) in &self.members {
+            // In the past, a session that has not said anything yet by then
+            // is not there: its model holds only the root that names it.
+            if at.is_some() && !member.active() {
+                continue;
+            }
             for local in member.app.session.spawn_order() {
                 if local != MAIN_ID && self.collapsed.contains(key) {
                     continue;
@@ -319,22 +456,44 @@ impl Fleet {
                         agent.agent_type = Some(format!("{} · unavailable", member.spec.label));
                     }
                     let mut detail = vec![format!("{} · {}", key.provider, key.session_id)];
-                    for task in self
-                        .manifest
-                        .tasks
-                        .iter()
-                        .filter(|t| t.session.as_ref() == Some(key))
-                    {
-                        detail.push(format!(
-                            "task {} [{}]: {} ({}, {})",
-                            task.id,
-                            task.spawn_gen,
-                            task.state.value,
-                            task.state.source,
-                            task.state.observed_at
-                        ));
-                        if let Some(runtime) = &task.runtime {
-                            detail.push(format!("runtime: {} ({})", runtime.value, runtime.source));
+                    if at.is_none() {
+                        for task in self
+                            .manifest
+                            .tasks
+                            .iter()
+                            .filter(|t| t.session.as_ref() == Some(key))
+                        {
+                            detail.push(format!(
+                                "task {} [{}]: {} ({}, {})",
+                                task.id,
+                                task.spawn_gen,
+                                task.state.value,
+                                task.state.source,
+                                task.state.observed_at
+                            ));
+                            if let Some(runtime) = &task.runtime {
+                                detail.push(format!(
+                                    "runtime: {} ({})",
+                                    runtime.value, runtime.source
+                                ));
+                            }
+                        }
+                    } else {
+                        // The manifest is today's; the past reads from the journal.
+                        for (attempt, state) in
+                            crew.iter().filter(|(a, _)| joins.get(*a) == Some(key))
+                        {
+                            detail.push(format!(
+                                "task {} [{}]: {}",
+                                attempt.task,
+                                attempt.spawn_gen,
+                                describe(state)
+                            ));
+                        }
+                        if !covered {
+                            detail.push(
+                                "no lifecycle coverage here: last records, unverified".into(),
+                            );
                         }
                     }
                     if let Some(error) = &member.error {
@@ -342,13 +501,16 @@ impl Fleet {
                     } else if !member.loaded {
                         detail.push("waiting for transcript".into());
                     }
-                    if member.retained {
+                    if member.retained && at.is_none() {
                         detail.push("retained history · no longer registered".into());
                     }
                     agent.description = Some(detail.join("\n"));
                     if !member.loaded || member.error.is_some() {
                         // This is a display placeholder, not an Ended fact.
                         agent.status = AgentStatus::Idle;
+                    }
+                    if let Some((_, state)) = attempt_for(key) {
+                        marks.insert(id.clone(), crew_mark(state, covered));
                     }
                 }
                 projection.last_activity = projection.last_activity.max(agent.last_ts);
@@ -357,16 +519,58 @@ impl Fleet {
                 self.nodes.insert(id, (key.clone(), local.to_owned()));
             }
         }
-        // Unresolved tasks are visible even before a native session registers.
-        for task in self.manifest.tasks.iter().filter(|t| t.session.is_none()) {
-            let id = serde_json::to_string(&("task", &task.id, &task.spawn_gen)).unwrap();
+        // Attempts with no transcript to show are cards of their own. Live,
+        // the manifest lists them; in the past, the journal does, and an
+        // attempt not yet spawned by then is not there at all.
+        let unbound: Vec<(Attempt, String, String)> = if at.is_none() {
+            self.manifest
+                .tasks
+                .iter()
+                .filter(|t| t.session.is_none())
+                .map(|task| {
+                    let attempt = Attempt {
+                        task: task.id.clone(),
+                        spawn_gen: task.spawn_gen.clone(),
+                    };
+                    let detail = format!(
+                        "waiting for session registration\ntask: {} ({})",
+                        task.state.value, task.state.source
+                    );
+                    (attempt, task.label.clone(), detail)
+                })
+                .collect()
+        } else {
+            crew.iter()
+                .filter(|(attempt, _)| {
+                    joins
+                        .get(*attempt)
+                        .is_none_or(|key| self.members.get(key).is_none_or(|m| !m.active()))
+                })
+                .map(|(attempt, state)| {
+                    let label = self
+                        .manifest
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == attempt.task && t.spawn_gen == attempt.spawn_gen)
+                        .map_or_else(|| attempt.task.clone(), |t| t.label.clone());
+                    let mut detail =
+                        format!("no transcript at this moment\ntask: {}", describe(state));
+                    if !covered {
+                        detail.push_str("\nno lifecycle coverage here: last record, unverified");
+                    }
+                    (attempt.clone(), label, detail)
+                })
+                .collect()
+        };
+        for (attempt, label, detail) in unbound {
+            let id = serde_json::to_string(&("task", &attempt.task, &attempt.spawn_gen)).unwrap();
             let mut agent = AgentInfo::new(AgentKind::Main);
-            agent.agent_type = Some(task.label.clone());
+            agent.agent_type = Some(label);
             agent.status = AgentStatus::Idle;
-            agent.description = Some(format!(
-                "waiting for session registration\ntask: {} ({})",
-                task.state.value, task.state.source
-            ));
+            agent.description = Some(detail);
+            if let Some(state) = crew.get(&attempt) {
+                marks.insert(id.clone(), crew_mark(state, covered));
+            }
             projection.agents.insert(id.clone(), agent);
             projection.spawn_order.push_back(id);
         }
@@ -444,6 +648,10 @@ impl Fleet {
                 .agent(&target)
                 .is_some_and(|a| a.status == AgentStatus::Running);
             if !self.overview.flow.edges().iter().any(|e| e.id == id) {
+                // A member with nothing to show yet has no node to hang from.
+                if projection.agent(&target).is_none() {
+                    continue;
+                }
                 structural |= self
                     .overview
                     .flow
@@ -462,10 +670,16 @@ impl Fleet {
             }
             self.overview.flow.set_edge_animated(&id, running);
         }
-        // New independent roots otherwise all land at (0,0). Stable local
-        // placement, with an explicit `r` for a full graph layout.
+        // New independent roots otherwise all land at (0,0). A node seen
+        // before returns to where it stood; a new one gets a stable local
+        // slot, with an explicit `r` for a full graph layout.
         for (index, id) in projection.spawn_order().enumerate() {
-            if !before.contains(id) && projection.agent(id).unwrap().parent.is_none() {
+            if before.contains(id) {
+                continue;
+            }
+            if let Some(&position) = self.positions.get(id) {
+                self.overview.flow.set_node_position(id, position);
+            } else if projection.agent(id).unwrap().parent.is_none() {
                 self.overview
                     .flow
                     .set_node_position(id, ((index % 3) as f64 * 68.0, (index / 3) as f64 * 25.0));
@@ -501,19 +715,34 @@ impl Fleet {
         }
         let after: BTreeSet<_> = self.overview.flow.nodes().map(|n| n.id.clone()).collect();
         structural |= after != before;
+        for id in &after {
+            if let Some(content) = self.overview.flow.node_content_mut(id) {
+                content.crew = marks.remove(id);
+            }
+            if let Some(node) = self.overview.flow.node(id) {
+                self.positions
+                    .insert(id.clone(), (node.position.x, node.position.y));
+            }
+        }
         self.overview.session = projection;
         self.overview.session_info.title = Some(self.manifest.label.clone());
         self.overview.layout_dirty |= structural;
+        let jumped = std::mem::take(&mut self.timeline.jumped);
         if before.is_empty() && structural {
             self.overview.relayout_now();
         } else {
             // The overview never folds, so the camera follow-up a fold runs
-            // for a single session (`App::commit_fold`) happens here.
+            // for a single session (`App::commit_fold`) happens here. A scrub
+            // is time navigation, not growth: it never reframes, as upstream.
             match self.overview.camera {
-                Camera::Overview if structural => self.overview.flow.request_fit_view(),
+                Camera::Overview if structural && !jumped => self.overview.flow.request_fit_view(),
                 Camera::Follow => self.overview.track_activity(),
                 _ => {}
             }
+        }
+        if jumped {
+            // What already happened at the new moment is history, not a burst.
+            self.overview.chips.adopt_baseline(&self.overview.session);
         }
         self.overview.last_error = self.manifest_error.clone();
     }
@@ -561,10 +790,19 @@ impl Fleet {
 
     pub fn back(&mut self) {
         let left = self.focused.take();
+        let at = self.at();
         if let Some(key) = &left
             && let Some(member) = self.members.get_mut(key)
         {
-            member.app.go_live();
+            // Rejoin the fleet's moment, wherever the session's own DVR went.
+            match at {
+                None => member.app.go_live(),
+                Some(t) => {
+                    if !member.app.park_at(t) {
+                        member.app.status_tick();
+                    }
+                }
+            }
         }
         self.sync();
         // The overview tray was not reconciled while a member was focused.

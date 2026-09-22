@@ -420,9 +420,9 @@ fn backfill_is_history_but_later_calls_chip() {
         .chips
         .reconcile(tick, true, &fleet.overview.session);
     assert_eq!(fleet.overview.chips.len(), 1, "fresh activity chips");
-    // No timeline of its own: pending durations tick against the wall clock.
+    // At the live edge, pending durations tick against the wall clock.
+    assert!(fleet.overview.wall_clock);
     assert!(fleet.overview.chrome_now().is_some());
-    assert!(fleet.overview.timeline.now_reference().is_none());
 
     // What the worker did while unfocused is history once you open it.
     fleet.event(

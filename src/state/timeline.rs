@@ -273,6 +273,27 @@ impl Timeline {
         }
     }
 
+    /// Swap in a re-derived item list without moving the playhead: a cursor
+    /// riding the edge rides the new one, a parked cursor stays where it is, and
+    /// per-gap pacing carries on. For an index that is rebuilt rather than
+    /// appended to (the Fleet's merged timeline); `folded` stays the owner's.
+    pub(crate) fn replace_items(&mut self, items: Vec<ReplayItem>) {
+        let was_at_edge = match (self.cursor, self.head) {
+            (_, None) => true,
+            (None, Some(_)) => false,
+            (Some(c), Some(h)) => c >= h,
+        };
+        self.head = items.iter().filter_map(|i| i.ts()).max();
+        self.items = items;
+        self.generation = self.generation.wrapping_add(1);
+        self.stable_prefix = 0;
+        self.ended = false;
+        self.rescan_undated();
+        if self.follow_head && was_at_edge {
+            self.cursor = self.head;
+        }
+    }
+
     /// How many leading items are still known-good since the last call, then
     /// reset. Consumers of `generation` pair the two: a bump says *some* index
     /// changed meaning, this says from where.

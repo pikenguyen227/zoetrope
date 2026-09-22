@@ -12,6 +12,7 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 use tokio::sync::mpsc;
 
+use super::journal::JournalTail;
 use super::{Fleet, Manifest, SessionKey, SessionSpec};
 use crate::provider::{Provider, Session, Target};
 use crate::tailer::{TailRequest, UiEvent};
@@ -65,6 +66,8 @@ pub fn resolve(spec: &SessionSpec) -> Result<Session> {
 pub fn inspect(path: &Path) -> Result<()> {
     let manifest = load(path)?;
     let mut fleet = Fleet::new(manifest).map_err(|e| anyhow!(e))?;
+    let journal = JournalTail::beside(path).poll()?;
+    fleet.absorb_lifecycle(journal.reset, journal.events, journal.rejected);
     let specs = fleet.manifest.sessions.clone();
     let mut failed = false;
     for spec in specs {
@@ -108,12 +111,30 @@ pub fn inspect(path: &Path) -> Result<()> {
             "loaded":member.loaded, "agents":agents})
         })
         .collect();
+    let attempts: Vec<_> = fleet
+        .lifecycle
+        .state_at(None)
+        .into_iter()
+        .map(|(attempt, state)| {
+            serde_json::json!({"task":attempt.task, "spawn_gen":attempt.spawn_gen,
+            "spawned":state.spawned.map(|(at, _)| at),
+            "status":state.status.as_ref().map(|s| &s.value),
+            "status_at":state.status.as_ref().map(|s| s.at),
+            "status_quality":state.status.as_ref().map(|s| s.quality),
+            "needs_attention":state.needs_attention(),
+            "torn_down":state.torn_down.map(|(at, _)| at)})
+        })
+        .collect();
+    let lifecycle = serde_json::json!({"events":fleet.lifecycle.len(),
+        "rejected":fleet.lifecycle.rejected, "coverage":fleet.lifecycle.coverage(),
+        "attempts":attempts});
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "fleet_id":fleet.manifest.fleet_id, "sessions":members,
             "tasks":fleet.manifest.tasks, "links":fleet.manifest.links,
-            "nodes":fleet.overview.flow.nodes().count(), "edges":fleet.overview.flow.edges().len()
+            "nodes":fleet.overview.flow.nodes().count(), "edges":fleet.overview.flow.edges().len(),
+            "timeline_items":fleet.overview.timeline.items.len(), "lifecycle":lifecycle
         }))?
     );
     if failed {
@@ -298,14 +319,17 @@ fn route(fleet: &mut Fleet, event: &Event) -> bool {
                 fleet.toggle_children();
                 return false;
             }
-            // The fleet overview has no historical clock. DVR controls belong
-            // to the selected session, where they cannot affect another root.
-            if matches!(
-                key.code,
-                KeyCode::Char(' ' | '[' | ']' | 's' | 'S' | 'g' | 'G') | KeyCode::End
-            ) {
-                return false;
+            // The overview's transport moves the one fleet playhead, and every
+            // member with it. Its timeline is an index it never folds, so these
+            // must not reach the overview App's own single-session handlers.
+            match key.code {
+                KeyCode::Char(' ') => fleet.toggle_play_pause(),
+                KeyCode::Char('[') => fleet.step(false),
+                KeyCode::Char(']') => fleet.step(true),
+                KeyCode::Char('g' | 'G') | KeyCode::End => fleet.go_live(),
+                _ => return crate::handler::handle_event(event, fleet.active()),
             }
+            return false;
         }
     }
     crate::handler::handle_event(event, fleet.active())
@@ -314,6 +338,7 @@ fn route(fleet: &mut Fleet, event: &Event) -> bool {
 pub async fn run(path: PathBuf) -> Result<()> {
     let (initial, mut last_text) = load_with_text(&path)?;
     let mut fleet = Fleet::new(initial).map_err(|e| anyhow!(e))?;
+    let mut journal = JournalTail::beside(&path);
     let (tx, mut rx) = mpsc::channel(64);
     let mut jobs = BTreeMap::new();
     let mut generation = 0;
@@ -343,12 +368,19 @@ pub async fn run(path: PathBuf) -> Result<()> {
         let now = tokio::time::Instant::now();
         let elapsed = now - last;
         last = now;
+        let focused = fleet.focused.is_some();
+        if !focused {
+            // The fleet playhead moves (and drives the members) before the
+            // projection is rebuilt from them.
+            dirty |= fleet.tick_timeline(elapsed);
+        }
         if dirty {
             fleet.sync();
-            super::activity::Activity::refresh(&mut fleet);
             dirty = false;
         }
-        let focused = fleet.focused.is_some();
+        // Chips age while the fleet plays, and freeze when it is paused or parked.
+        let playing = fleet.at().is_none()
+            || (fleet.overview.timeline.follow_head && !fleet.overview.is_paused);
         let app = fleet.active();
         let _ = app.flow.tick_auto_pan(elapsed);
         app.flow.tick_animation(elapsed);
@@ -357,7 +389,7 @@ pub async fn run(path: PathBuf) -> Result<()> {
         if focused {
             app.tick_timeline(elapsed);
         } else {
-            app.chips.reconcile(elapsed, true, &app.session);
+            app.chips.reconcile(elapsed, playing, &app.session);
         }
         if let Err(error) = terminal.draw(|frame| draw(frame, &mut fleet)) {
             break Err(error.into());
@@ -376,6 +408,15 @@ pub async fn run(path: PathBuf) -> Result<()> {
                 dirty = true;
             },
             _ = refresh.tick() => {
+                match journal.poll() {
+                    Ok(poll) => {
+                        dirty |= fleet.absorb_lifecycle(poll.reset, poll.events, poll.rejected);
+                    }
+                    Err(error) => {
+                        fleet.manifest_error = Some(format!("lifecycle journal: {error}"));
+                        dirty = true;
+                    }
+                }
                 match load_with_text(&path) {
                     Ok((manifest, text)) if text != last_text => {
                         match fleet.update(manifest).map_err(|e| anyhow!(e)) {
@@ -413,21 +454,18 @@ pub async fn run(path: PathBuf) -> Result<()> {
 pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
     // Reuse the original graph, tool cards, inspector and single-session DVR.
     let limits = quota_lines(fleet, chrono::Utc::now());
-    let activity_h = if fleet.focused.is_none() && frame.area().height >= 18 {
-        6
-    } else {
-        0
-    };
-    let [header, body, activity, quota] = Layout::vertical([
+    let [header, body, quota] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Fill(1),
-        Constraint::Length(activity_h),
         Constraint::Length(limits.len().min(6) as u16),
     ])
     .areas(frame.area());
+    // The overview's timeline is the fleet's merged index, so this draws the
+    // upstream scrubber for the whole crew; lifecycle marks and coverage gaps
+    // go over it.
     crate::ui::draw_in(frame, fleet.active(), body);
-    if activity_h > 0 {
-        fleet.activity.draw(frame, activity);
+    if fleet.focused.is_none() {
+        super::timeline::draw_overlay(frame, fleet);
     }
     frame.render_widget(
         Paragraph::new(limits.join("\n")).style(Style::default().fg(Color::Gray).bg(Color::Black)),
@@ -447,9 +485,19 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
             fleet.manifest.label, key.session_id
         )
     } else {
-        let note = fleet
-            .manifest_error
+        // In the past, a moment nobody observed outranks today's diagnostics.
+        let gap = fleet
+            .at()
+            .filter(|t| !fleet.lifecycle.covered(*t))
+            .map(|t| {
+                format!(
+                    "no lifecycle coverage at {}: badges marked ? are last records, unverified",
+                    t.with_timezone(&chrono::Local).format("%H:%M:%S")
+                )
+            });
+        let note = gap
             .as_deref()
+            .or(fleet.manifest_error.as_deref())
             .or_else(|| fleet.manifest.diagnostics.first().map(String::as_str));
         format!(
             " {} · {} sessions · {} unavailable · snapshot {}s ago\n {}",
@@ -457,7 +505,9 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
             fleet.members.len(),
             unavailable,
             age,
-            note.unwrap_or("LIVE FLEET · Enter: session · x: children · r: arrange · q: quit")
+            note.unwrap_or(
+                "FLEET · space: play/pause · drag, [ ]: seek · g: live · Enter: session · x: children · q: quit"
+            )
         )
     };
     frame.render_widget(
@@ -475,13 +525,34 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
             .values()
             .map(|m| m.app.session.agent_count())
             .sum();
+        let when = match fleet.at() {
+            None => "live".to_string(),
+            Some(t) => t
+                .with_timezone(&chrono::Local)
+                .format("%b %d %H:%M:%S")
+                .to_string(),
+        };
+        let mut text = format!(
+            " zoe-fleet · {} sessions · {agents} native agents · {} tools · {when}",
+            fleet.members.len(),
+            fleet.overview.session.tool_count()
+        );
+        // Narrate the crew: the newest lifecycle event at the playhead.
+        if let Some(event) = fleet.lifecycle.latest_at(fleet.at()) {
+            let what = match &event.change {
+                super::journal::Change::Status { status } => status.value.clone(),
+                change => change.name().replace('_', " "),
+            };
+            let task = event.attempt.as_ref().map_or("", |a| a.task.as_str());
+            let at = event.at.map(|t| {
+                t.with_timezone(&chrono::Local)
+                    .format("%H:%M:%S")
+                    .to_string()
+            });
+            text.push_str(&format!(" · ◆ {} {task} {what}", at.unwrap_or_default()));
+        }
         frame.render_widget(
-            Paragraph::new(format!(
-                " zoe-fleet · {} sessions · {agents} native agents · {} tools · live overview",
-                fleet.members.len(),
-                fleet.overview.session.tool_count()
-            ))
-            .style(Style::default().fg(Color::Indexed(178)).bg(Color::Black)),
+            Paragraph::new(text).style(Style::default().fg(Color::Indexed(178)).bg(Color::Black)),
             footer,
         );
     }
@@ -597,6 +668,9 @@ mod tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
+            Self::of("demo")
+        }
+        fn of(name: &str) -> Self {
             let dir = std::env::temp_dir().join(format!(
                 "zoe-fleet-test-{}-{}",
                 std::process::id(),
@@ -614,7 +688,9 @@ mod tests {
                 }
             }
             copy(
-                &Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fleet/demo"),
+                &Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("assets/fleet")
+                    .join(name),
                 &dir,
             );
             Self(dir)
@@ -648,7 +724,6 @@ mod tests {
             );
         }
         fleet.sync();
-        super::super::activity::Activity::refresh(&mut fleet);
         for (w, h) in [(140, 44), (80, 24), (40, 12)] {
             let backend = ratatui::backend::TestBackend::new(w, h);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -661,8 +736,11 @@ mod tests {
                 .map(|c| c.symbol())
                 .collect::<String>();
             if h >= 18 {
-                assert!(text.contains("Fleet activity"));
-                assert!(text.contains("Latest:"));
+                // The crew's merged timeline, not a sparkline: a seekable
+                // scrubber at a quiet live edge.
+                assert!(fleet.overview.scrubber_area.is_some());
+                assert!(text.contains("■ end"));
+                assert!(text.contains("· live"));
             }
             assert!(text.contains("5h"));
         }
@@ -775,5 +853,299 @@ mod tests {
                 "replacement activity must not be forwarded"
             );
         }
+    }
+
+    /// The crew fixture, loaded the way `run` does: its journal, then every
+    /// transcript, at the live edge.
+    fn crew() -> (Fixture, Fleet) {
+        let fixture = Fixture::of("crew");
+        let path = fixture.0.join("fleet.json");
+        let manifest = load(&path).unwrap();
+        let mut fleet = Fleet::new(manifest.clone()).unwrap();
+        let poll = JournalTail::beside(&path).poll().unwrap();
+        assert!(fleet.absorb_lifecycle(poll.reset, poll.events, poll.rejected));
+        for spec in &manifest.sessions {
+            let session = resolve(spec).unwrap();
+            let (items, info, _) = crate::tailer::replay::build_replay(&session);
+            fleet.event(
+                &spec.key,
+                UiEvent::ReplayLoaded {
+                    session_id: session.id,
+                    items,
+                    info,
+                    speed: 1.0,
+                },
+            );
+        }
+        fleet.sync();
+        (fixture, fleet)
+    }
+
+    fn at(hms: &str) -> chrono::DateTime<chrono::Utc> {
+        format!("2026-09-22T{hms}Z").parse().unwrap()
+    }
+
+    fn root(name: &str) -> String {
+        let n = match name {
+            "captain" => 1,
+            "impl" => 2,
+            _ => 3,
+        };
+        SessionKey {
+            provider: "codex".into(),
+            session_id: format!("c0c0c0c0-0000-4000-8000-00000000000{n}"),
+        }
+        .node_id(crate::state::session::MAIN_ID)
+    }
+
+    const DOCS: &str = r#"["task","docs","s1790064660.4103.3"]"#;
+
+    fn mark(fleet: &mut Fleet, id: &str) -> Option<crate::ui::nodes::CrewMark> {
+        fleet.overview.flow.node_content_mut(id)?.crew.clone()
+    }
+
+    fn seek(fleet: &mut Fleet, hms: &str) {
+        fleet.seek(at(hms));
+        fleet.sync();
+    }
+
+    fn screen(fleet: &mut Fleet) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        terminal.draw(|frame| draw(frame, fleet)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn crew_timeline_shows_the_crew_as_it_was() {
+        use crate::state::session::AgentStatus;
+        use crate::ui::nodes::CrewTone;
+        let (_fixture, mut fleet) = crew();
+        // Live: everyone ever registered, lifecycle read in full.
+        assert_eq!(fleet.at(), None);
+        let docs = mark(&mut fleet, DOCS).unwrap();
+        assert!(docs.dimmed, "docs was torn down: {docs:?}");
+        assert!(mark(&mut fleet, &root("impl")).unwrap().dimmed);
+        assert_eq!(
+            mark(&mut fleet, &root("tests")).unwrap().tone,
+            CrewTone::Active
+        );
+
+        // 08:03 — only the captain and impl exist; tests and docs are not
+        // spawned yet, so they are not there at all.
+        seek(&mut fleet, "08:03:00");
+        assert_eq!(fleet.at(), Some(at("08:03:00")));
+        assert!(fleet.overview.session.agent(&root("tests")).is_none());
+        assert!(fleet.overview.session.agent(DOCS).is_none());
+        let impl_ = fleet.overview.session.agent(&root("impl")).unwrap();
+        assert_eq!(impl_.tool_calls().len(), 2, "calls folded as of 08:03");
+        // Liveness reads the playhead, not today's wall clock hours later.
+        assert_eq!(impl_.status, AgentStatus::Running);
+        let working = mark(&mut fleet, &root("impl")).unwrap();
+        assert_eq!(working.tone, CrewTone::Active);
+        assert!(working.label.starts_with("working"));
+        assert!(!working.dimmed);
+
+        // 08:05:10 — impl is waiting on the operator.
+        seek(&mut fleet, "08:05:10");
+        let asking = mark(&mut fleet, &root("impl")).unwrap();
+        assert_eq!(asking.tone, CrewTone::Attention);
+        assert!(asking.label.starts_with("needs-decision"));
+        assert!(!screen(&mut fleet).contains("no lifecycle coverage"));
+
+        // 08:09 — nobody was observing: the last records are shown, unverified.
+        seek(&mut fleet, "08:09:00");
+        let unverified = mark(&mut fleet, &root("impl")).unwrap();
+        assert_eq!(unverified.tone, CrewTone::Unknown);
+        assert!(unverified.label.starts_with("done"));
+        assert!(!unverified.dimmed, "its teardown was only seen at 08:10");
+        assert!(screen(&mut fleet).contains("no lifecycle coverage"));
+
+        // 08:11:30 — docs spawned without a session; impl is gone, dimmed.
+        seek(&mut fleet, "08:11:30");
+        let docs = mark(&mut fleet, DOCS).unwrap();
+        assert_eq!((docs.tone, docs.dimmed), (CrewTone::Active, false));
+        assert!(mark(&mut fleet, &root("impl")).unwrap().dimmed);
+        let tests = mark(&mut fleet, &root("tests")).unwrap();
+        assert_eq!(
+            tests.tone,
+            CrewTone::Attention,
+            "stamped in the gap, seen at 08:10"
+        );
+
+        seek(&mut fleet, "08:12:30");
+        let blocked = mark(&mut fleet, &root("tests")).unwrap();
+        assert!(blocked.label.starts_with("blocked") && blocked.tone == CrewTone::Attention);
+        seek(&mut fleet, "08:14:00");
+        assert!(mark(&mut fleet, DOCS).unwrap().dimmed);
+
+        // Back to the edge: members ride their own live edges again.
+        fleet.go_live();
+        fleet.sync();
+        assert_eq!(fleet.at(), None);
+        assert!(fleet.members.values().all(|m| m.app.timeline.follow_head));
+    }
+
+    #[test]
+    fn crew_keys_move_the_one_playhead() {
+        let (_fixture, mut fleet) = crew();
+        let key = |code| Event::Key(crossterm::event::KeyEvent::from(code));
+        let head = fleet.overview.timeline.head_ts().unwrap();
+        // Space parks the whole crew where it stands.
+        assert!(!route(&mut fleet, &key(KeyCode::Char(' '))));
+        assert!(fleet.overview.is_paused);
+        assert_eq!(fleet.at(), Some(head));
+        assert!(
+            fleet.tick_timeline(Duration::from_millis(16)),
+            "leaving the edge re-reads the crew as of that moment"
+        );
+        assert!(fleet.members.values().all(|m| !m.app.timeline.follow_head));
+        // `[` steps to the previous chapter: the last lifecycle transition.
+        route(&mut fleet, &key(KeyCode::Char('[')));
+        assert_eq!(fleet.at(), Some(at("08:14:30")));
+        route(&mut fleet, &key(KeyCode::Char('[')));
+        assert_eq!(fleet.at(), Some(at("08:13:00")));
+        // `]` past the last chapter is the live edge.
+        route(&mut fleet, &key(KeyCode::Char(']')));
+        route(&mut fleet, &key(KeyCode::Char(']')));
+        assert_eq!(fleet.at(), None);
+        // A scrubber click lands through the frame tick, like a drag.
+        fleet.overview.pending_seek = Some(0.0);
+        assert!(fleet.tick_timeline(Duration::from_millis(16)));
+        assert_eq!(
+            fleet.at(),
+            Some(fleet.overview.timeline.start_ts().unwrap())
+        );
+        // `g` goes live from anywhere.
+        route(&mut fleet, &key(KeyCode::Char('g')));
+        assert_eq!(fleet.at(), None);
+        // The overview App's own DVR never ran: its model is still a projection.
+        assert_eq!(
+            fleet.overview.timeline.folded,
+            fleet.overview.timeline.items.len()
+        );
+    }
+
+    #[test]
+    fn crew_playback_carries_every_member_forward() {
+        let (_fixture, mut fleet) = crew();
+        seek(&mut fleet, "08:02:10");
+        fleet.toggle_play_pause();
+        assert!(fleet.overview.timeline.follow_head && !fleet.overview.is_paused);
+        let calls = |fleet: &Fleet| {
+            fleet.members[&SessionKey {
+                provider: "codex".into(),
+                session_id: "c0c0c0c0-0000-4000-8000-000000000002".into(),
+            }]
+                .app
+                .session
+                .tool_count()
+        };
+        let before = calls(&fleet);
+        let mut last = fleet.at().unwrap();
+        for _ in 0..600 {
+            fleet.tick_timeline(Duration::from_millis(16));
+            let now = fleet.at().unwrap_or(last);
+            assert!(now >= last, "the playhead never runs backwards");
+            last = now;
+        }
+        fleet.sync();
+        assert!(last > at("08:02:40"), "played to {last}");
+        assert!(calls(&fleet) > before);
+    }
+
+    #[test]
+    fn leaving_a_session_rejoins_the_fleet_moment() {
+        let (_fixture, mut fleet) = crew();
+        seek(&mut fleet, "08:05:10");
+        fleet.overview.flow.select_node(&root("impl"));
+        fleet.inspect_selected();
+        // The session's own DVR wanders off to its start.
+        fleet.active().seek_to_fraction(0.0);
+        fleet.back();
+        let member = fleet
+            .members
+            .values()
+            .find(|m| m.spec.label == "impl")
+            .unwrap();
+        assert_eq!(member.app.timeline.cursor, Some(at("08:05:10")));
+        assert!(!member.app.timeline.follow_head);
+    }
+
+    #[test]
+    fn crew_scrubber_draws_lifecycle_marks_and_coverage_gaps() {
+        let (_fixture, mut fleet) = crew();
+        seek(&mut fleet, "08:15:00");
+        screen(&mut fleet);
+        let bar = fleet
+            .overview
+            .scrubber_area
+            .expect("the fleet has a scrubber");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut fleet)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| -> String {
+            (bar.x..bar.x + bar.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect()
+        };
+        let markers = row(bar.y);
+        for glyph in ["+", "▲", "✓", "⊘"] {
+            assert!(markers.contains(glyph), "{glyph} missing from {markers:?}");
+        }
+        // The 08:08-08:10 stretch and the time before coverage are hatched.
+        assert!(
+            (bar.y..bar.y + bar.height).any(|y| row(y).contains('░')),
+            "no gap hatching"
+        );
+        let text = screen(&mut fleet);
+        assert!(text.contains("◆"), "the footer narrates the crew");
+        assert!(text.contains("tests working"));
+    }
+
+    #[test]
+    fn without_a_journal_the_past_claims_no_lifecycle() {
+        let fixture = Fixture::new();
+        let manifest = fixture.manifest();
+        let mut fleet = Fleet::new(manifest.clone()).unwrap();
+        for spec in &manifest.sessions {
+            let session = resolve(spec).unwrap();
+            let (items, info, _) = crate::tailer::replay::build_replay(&session);
+            fleet.event(
+                &spec.key,
+                UiEvent::ReplayLoaded {
+                    session_id: session.id,
+                    items,
+                    info,
+                    speed: 1.0,
+                },
+            );
+        }
+        fleet.sync();
+        fleet.seek("2026-09-22T00:00:01Z".parse().unwrap());
+        fleet.sync();
+        assert!(fleet.at().is_some());
+        let ids: Vec<String> = fleet.overview.flow.nodes().map(|n| n.id.clone()).collect();
+        assert!(!ids.is_empty());
+        for id in ids {
+            assert!(
+                fleet
+                    .overview
+                    .flow
+                    .node_content_mut(&id)
+                    .unwrap()
+                    .crew
+                    .is_none()
+            );
+        }
+        let text = screen(&mut fleet);
+        assert!(!text.contains("no lifecycle coverage") && !text.contains('░'));
     }
 }
