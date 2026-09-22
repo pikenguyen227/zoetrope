@@ -89,6 +89,9 @@ Resolve membership from the canonical Firstmate snapshot rather than implementin
 a second parser of Firstmate task state. Recheck launch generation when resolving
 an endpoint, rejecting a join if the worker was replaced during observation.
 Mark sessions awaiting registration as unresolved, and retry without guessing.
+Run the snapshot with the directory of `HERDR_BIN_PATH` on its `PATH`, because
+Firstmate reads crew state through `herdr`; when every local task still reads
+backend unreachable, say so in a manifest diagnostic rather than showing a quiet unknown.
 
 Publish manifests atomically. Keep the last valid version if a refresh is malformed;
 show its age and diagnostic. Retain lifecycle events in an append-only journal
