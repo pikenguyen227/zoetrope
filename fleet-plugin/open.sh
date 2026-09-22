@@ -30,7 +30,9 @@ focused=$(printf '%s' "$context" | python3 -c 'import json,sys; print(json.load(
 if [ -n "$focused" ]; then
   captain=(--captain "$focused")
 fi
+# Herdr runs this with macOS /bin/bash 3.2, where an empty "${captain[@]}" is
+# unbound under set -u; expand it only when set.
 python3 "$repo/scripts/firstmate-fleet.py" --home "$firstmate_home" \
-  --output "$config/fleet.json" --watch --view "$binary" "${captain[@]}" || {
+  --output "$config/fleet.json" --watch --view "$binary" ${captain[@]+"${captain[@]}"} || {
   read -r -p "Fleet stopped. Press Enter to close " || true
 }

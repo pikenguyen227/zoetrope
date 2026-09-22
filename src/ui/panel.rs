@@ -149,14 +149,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, agent_id: &str) {
     } else {
         0
     };
+    let header = header_lines(agent, inner.width as usize, &palette);
     let [header_area, prov_area, tools_area] = Layout::vertical([
-        Constraint::Length(if agent.usage.summary.recorded { 8 } else { 6 }),
+        Constraint::Length(header_height(agent, header.len(), inner.height)),
         Constraint::Length(prov_rows),
         Constraint::Fill(1),
     ])
     .areas(inner);
 
-    render_header(frame, header_area, agent, &palette);
+    render_header(frame, header_area, header, &palette);
     if provenance.is_some() {
         render_provenance(frame, prov_area, &prov_prompt, &prov_thought, &palette);
     }
@@ -176,7 +177,29 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, agent_id: &str) {
     );
 }
 
-fn render_header(frame: &mut Frame, area: Rect, agent: &AgentInfo, palette: &rataflow::Palette) {
+/// Header rows: the usual height, grown to fit longer text (a fleet node's
+/// task detail) but never past a third of the panel, so the tools stay visible.
+fn header_height(agent: &AgentInfo, rows: usize, panel_height: u16) -> u16 {
+    let base = if agent.usage.summary.recorded { 8 } else { 6 };
+    let cap = base.max(panel_height / 3);
+    (rows as u16).clamp(base, cap)
+}
+
+fn render_header(frame: &mut Frame, area: Rect, lines: Vec<Line>, palette: &rataflow::Palette) {
+    let bg = Style::default().bg(palette.surface);
+    frame.render_widget(
+        Paragraph::new(lines).style(bg).wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+/// The header's lines, text rows pre-wrapped to `width` so the count is the
+/// rendered height.
+fn header_lines(
+    agent: &AgentInfo,
+    width: usize,
+    palette: &rataflow::Palette,
+) -> Vec<Line<'static>> {
     // Single-source vocabulary + presence colors (shared with cards/inspect).
     let status_text = agent.status_word();
     let status_color = crate::ui::status_color(agent.status, palette);
@@ -191,15 +214,15 @@ fn render_header(frame: &mut Frame, area: Rect, agent: &AgentInfo, palette: &rat
         .as_deref()
         .unwrap_or(agent.kind.default_label());
     lines.push(Line::from(Span::styled(
-        title,
+        title.to_string(),
         bg.fg(palette.text).add_modifier(Modifier::BOLD),
     )));
 
     // Status + model.
-    let mut status_spans = vec![Span::styled(status_text, bg.fg(status_color))];
+    let mut status_spans = vec![Span::styled(status_text.to_string(), bg.fg(status_color))];
     if let Some(model) = agent.model.as_ref() {
         status_spans.push(Span::styled("  ", bg));
-        status_spans.push(Span::styled(model.as_str(), bg.fg(palette.subtle)));
+        status_spans.push(Span::styled(model.clone(), bg.fg(palette.subtle)));
     }
     lines.push(Line::from(status_spans));
 
@@ -208,30 +231,52 @@ fn render_header(frame: &mut Frame, area: Rect, agent: &AgentInfo, palette: &rat
         lines.push(Line::from(Span::styled(timing, bg.fg(palette.muted))));
     }
 
-    // Counts: tools + tokens.
-    lines.push(Line::from(Span::styled(
-        if agent.usage.summary.recorded {
-            let u = &agent.usage.summary;
-            format!("{} tools · {} in + {} out = {} tok{} · {}\nCache: {} read / {} written · standard API equivalent, not your bill",
-                agent.tool_calls.len(), u.input, u.output, u.total(), if u.incomplete { "+ (partial)" } else { "" }, u.cost_label(), u.cached, u.cache_write)
-        } else {
-            format!("{} tools · {} output tok · total/cost unavailable", agent.tool_calls.len(), agent.output_tokens)
-        },
-        bg.fg(palette.muted),
-    )));
+    // Counts: tools + tokens. A `Span` drops control characters, so each row
+    // of multi-line text needs its own `Line`.
+    let counts = if agent.usage.summary.recorded {
+        let u = &agent.usage.summary;
+        vec![
+            format!(
+                "{} tools · {} in + {} out = {} tok{} · {}",
+                agent.tool_calls.len(),
+                u.input,
+                u.output,
+                u.total(),
+                if u.incomplete { "+ (partial)" } else { "" },
+                u.cost_label()
+            ),
+            format!(
+                "Cache: {} read / {} written · standard API equivalent, not your bill",
+                u.cached, u.cache_write
+            ),
+        ]
+    } else {
+        vec![format!(
+            "{} tools · {} output tok · total/cost unavailable",
+            agent.tool_calls.len(),
+            agent.output_tokens
+        )]
+    };
+    let wrapped = |row: &str, style: Style| {
+        let mut rows = crate::ui::wrap(row, width, usize::MAX);
+        if rows.is_empty() {
+            rows.push(String::new());
+        }
+        rows.into_iter()
+            .map(move |r| Line::from(Span::styled(r, style)))
+            .collect::<Vec<_>>()
+    };
+    for row in &counts {
+        lines.extend(wrapped(row, bg.fg(palette.muted)));
+    }
 
     // Description (wrapped) on the remaining rows.
     if let Some(desc) = agent.description.as_ref().filter(|d| !d.is_empty()) {
-        lines.push(Line::from(Span::styled(
-            desc.as_str(),
-            bg.fg(palette.subtle),
-        )));
+        for row in desc.lines() {
+            lines.extend(wrapped(row, bg.fg(palette.subtle)));
+        }
     }
-
-    frame.render_widget(
-        Paragraph::new(lines).style(bg).wrap(Wrap { trim: true }),
-        area,
-    );
+    lines
 }
 
 /// "Why does this agent exist": the triggering prompt + the assistant's
@@ -577,6 +622,101 @@ mod tests {
         // 3 tool rows + 2 era headers (eras 0 and 1) = 5 rendered lines —
         // the scroll ceiling the handler clamps against.
         assert_eq!(era_header_flags(agent, &m).1, 5);
+    }
+
+    /// Render the header, sized as the panel sizes it for a panel of
+    /// `panel_height` rows, into a buffer and return its rows as text.
+    fn header_rows(agent: &AgentInfo, width: u16, panel_height: u16) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+        let palette = rataflow::Theme::default().palette();
+        let lines = header_lines(agent, width as usize, &palette);
+        let height = header_height(agent, lines.len(), panel_height);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render_header(frame, frame.area(), lines, &palette))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn header_breaks_multi_line_text_into_rows() {
+        // A `Span` drops control characters, so an embedded `\n` would glue
+        // the rows together instead of breaking them.
+        let mut a = AgentInfo::new(crate::state::session::AgentKind::Subagent);
+        a.usage.summary = crate::usage::Summary {
+            input: 10,
+            output: 5,
+            cached: 7,
+            cache_write: 3,
+            recorded: true,
+            incomplete: false,
+            usd: Some(0.5),
+        };
+        a.description = Some("waiting for session registration\ntask: queued (manifest)".into());
+        let rows = header_rows(&a, 120, 24);
+        assert_eq!(rows.len(), 8, "{rows:#?}");
+        let row = |prefix: &str| {
+            rows.iter()
+                .position(|r| r.starts_with(prefix))
+                .unwrap_or_else(|| panic!("no row starting {prefix:?} in {rows:#?}"))
+        };
+        let counts = row("0 tools · 10 in + 5 out = 15 tok · API est. $0.500");
+        assert!(rows[counts].ends_with("$0.500"), "{rows:#?}");
+        assert_eq!(row("Cache: 7 read / 3 written"), counts + 1);
+        let desc = row("waiting for session registration");
+        assert_eq!(rows[desc], "waiting for session registration");
+        assert_eq!(row("task: queued (manifest)"), desc + 1);
+    }
+
+    #[test]
+    fn header_grows_to_show_a_fleet_workers_task_detail() {
+        // A 70-column panel: 66 columns inside the border and padding.
+        let mut a = AgentInfo::new(crate::state::session::AgentKind::Subagent);
+        a.agent_type = Some("Worker · Implementation".into());
+        a.first_ts = Some(chrono::Utc::now());
+        a.usage.summary = crate::usage::Summary {
+            input: 10000,
+            output: 800,
+            cached: 5000,
+            cache_write: 0,
+            recorded: true,
+            incomplete: false,
+            usd: Some(0.095),
+        };
+        a.description = Some(
+            "codex · 22222222-2222-2222-2222-222222222222\n\
+             task demo-worker-1 [attempt-1]: working (synthetic fixture, 2026-09-22 00:00:00 UTC)\n\
+             runtime: 12m (manifest)\n\
+             UNAVAILABLE: transcript unreadable"
+                .into(),
+        );
+        let rows = header_rows(&a, 66, 40);
+        let text = rows.join("\n");
+        for tail in [
+            "2026-09-22 00:00:00 UTC)",
+            "runtime: 12m (manifest)",
+            "UNAVAILABLE: transcript unreadable",
+        ] {
+            assert!(text.contains(tail), "{tail:?} clipped from {rows:#?}");
+        }
+        // The graph keeps the rest: never more than a third of the panel.
+        let short = header_rows(&a, 66, 24);
+        assert_eq!(short.len(), 8, "{short:#?}");
+    }
+
+    #[test]
+    fn header_keeps_its_height_without_extra_rows() {
+        let a = AgentInfo::new(crate::state::session::AgentKind::Main);
+        assert_eq!(header_rows(&a, 66, 60).len(), 6);
     }
 
     use chrono::{TimeZone, Utc};
