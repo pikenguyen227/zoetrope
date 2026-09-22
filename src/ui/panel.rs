@@ -208,24 +208,44 @@ fn render_header(frame: &mut Frame, area: Rect, agent: &AgentInfo, palette: &rat
         lines.push(Line::from(Span::styled(timing, bg.fg(palette.muted))));
     }
 
-    // Counts: tools + tokens.
-    lines.push(Line::from(Span::styled(
-        if agent.usage.summary.recorded {
-            let u = &agent.usage.summary;
-            format!("{} tools · {} in + {} out = {} tok{} · {}\nCache: {} read / {} written · standard API equivalent, not your bill",
-                agent.tool_calls.len(), u.input, u.output, u.total(), if u.incomplete { "+ (partial)" } else { "" }, u.cost_label(), u.cached, u.cache_write)
-        } else {
-            format!("{} tools · {} output tok · total/cost unavailable", agent.tool_calls.len(), agent.output_tokens)
-        },
-        bg.fg(palette.muted),
-    )));
+    // Counts: tools + tokens. A `Span` drops control characters, so each row
+    // of multi-line text needs its own `Line`.
+    let counts = if agent.usage.summary.recorded {
+        let u = &agent.usage.summary;
+        vec![
+            format!(
+                "{} tools · {} in + {} out = {} tok{} · {}",
+                agent.tool_calls.len(),
+                u.input,
+                u.output,
+                u.total(),
+                if u.incomplete { "+ (partial)" } else { "" },
+                u.cost_label()
+            ),
+            format!(
+                "Cache: {} read / {} written · standard API equivalent, not your bill",
+                u.cached, u.cache_write
+            ),
+        ]
+    } else {
+        vec![format!(
+            "{} tools · {} output tok · total/cost unavailable",
+            agent.tool_calls.len(),
+            agent.output_tokens
+        )]
+    };
+    lines.extend(
+        counts
+            .into_iter()
+            .map(|row| Line::from(Span::styled(row, bg.fg(palette.muted)))),
+    );
 
     // Description (wrapped) on the remaining rows.
     if let Some(desc) = agent.description.as_ref().filter(|d| !d.is_empty()) {
-        lines.push(Line::from(Span::styled(
-            desc.as_str(),
-            bg.fg(palette.subtle),
-        )));
+        lines.extend(
+            desc.lines()
+                .map(|row| Line::from(Span::styled(row, bg.fg(palette.subtle)))),
+        );
     }
 
     frame.render_widget(
@@ -577,6 +597,55 @@ mod tests {
         // 3 tool rows + 2 era headers (eras 0 and 1) = 5 rendered lines —
         // the scroll ceiling the handler clamps against.
         assert_eq!(era_header_flags(agent, &m).1, 5);
+    }
+
+    /// Render the header into a buffer and return its rows as text.
+    fn header_rows(agent: &AgentInfo, width: u16, height: u16) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+        let palette = rataflow::Theme::default().palette();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render_header(frame, frame.area(), agent, &palette))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn header_breaks_multi_line_text_into_rows() {
+        // A `Span` drops control characters, so an embedded `\n` would glue
+        // the rows together instead of breaking them.
+        let mut a = AgentInfo::new(crate::state::session::AgentKind::Subagent);
+        a.usage.summary = crate::usage::Summary {
+            input: 10,
+            output: 5,
+            cached: 7,
+            cache_write: 3,
+            recorded: true,
+            incomplete: false,
+            usd: Some(0.5),
+        };
+        a.description = Some("waiting for session registration\ntask: queued (manifest)".into());
+        let rows = header_rows(&a, 120, 8);
+        let row = |prefix: &str| {
+            rows.iter()
+                .position(|r| r.starts_with(prefix))
+                .unwrap_or_else(|| panic!("no row starting {prefix:?} in {rows:#?}"))
+        };
+        let counts = row("0 tools · 10 in + 5 out = 15 tok · API est. $0.500");
+        assert!(rows[counts].ends_with("$0.500"), "{rows:#?}");
+        assert_eq!(row("Cache: 7 read / 3 written"), counts + 1);
+        let desc = row("waiting for session registration");
+        assert_eq!(rows[desc], "waiting for session registration");
+        assert_eq!(row("task: queued (manifest)"), desc + 1);
     }
 
     use chrono::{TimeZone, Utc};
