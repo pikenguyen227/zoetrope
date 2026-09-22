@@ -1,9 +1,11 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("adapter", Path(__file__).with_name("firstmate-fleet.py"))
 adapter = importlib.util.module_from_spec(spec)
@@ -77,6 +79,40 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(len(cleaned["sessions"]), 1)
         self.assertEqual(cleaned["tasks"][0]["runtime"]["value"], "not observed")
         self.assertEqual(cleaned["tasks"][0]["state"]["source"], "codex-unverified")
+
+    def test_every_task_backend_unreachable_is_diagnosed(self):
+        unreachable = {"state": "unknown", "source": "none",
+                       "detail": "backend unreachable (herdr endpoint state: unreadable)",
+                       "raw": "state: unknown · source: none · backend unreachable (herdr endpoint state: unreadable)"}
+        timed_out = {"state": "unknown", "source": "none", "detail": "", "raw": ""}
+        working = {"state": "working", "source": "pane", "detail": "harness busy",
+                   "raw": "state: working · source: pane · harness busy"}
+        cases = (([unreachable], True), ([timed_out], False), ([unreachable, timed_out], False),
+                 ([unreachable, working], False), ([working], False), ([], False))
+        for states, expected in cases:
+            snap = snapshot()
+            snap["tasks"] = [dict(snap["tasks"][0], id=f"t{n}", current_state=state)
+                             for n, state in enumerate(states)]
+            diagnostics = adapter.build_manifest(snap, snap, {}, observed=WHEN)["diagnostics"]
+            self.assertEqual(any("backend unreachable" in d for d in diagnostics), expected, states)
+
+    def test_remote_tasks_do_not_count_toward_unreachable(self):
+        snap = snapshot()
+        snap["tasks"][0].update(remote={"host": "far"}, current_state={
+            "state": "unknown", "source": "none", "raw": "",
+            "detail": "remote endpoint liveness not collected by fleet snapshot"})
+        diagnostics = adapter.build_manifest(snap, snap, {}, observed=WHEN)["diagnostics"]
+        self.assertFalse(any("backend unreachable" in d for d in diagnostics))
+
+    def test_snapshot_path_includes_herdr_directory(self):
+        with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
+            env = adapter.snapshot_env(Path("/synthetic/firstmate"), "/opt/herdr/bin/herdr")
+            self.assertEqual(env["PATH"], "/opt/herdr/bin:/usr/bin:/bin")
+            self.assertEqual(env["FM_HOME"], "/synthetic/firstmate")
+            self.assertEqual(adapter.snapshot_env(Path("/h"), "herdr")["PATH"], "/usr/bin:/bin")
+        with mock.patch.dict(os.environ, clear=True):
+            self.assertEqual(adapter.snapshot_env(Path("/h"), "/opt/herdr/bin/herdr")["PATH"],
+                             "/opt/herdr/bin")
 
     def test_home_mismatch_fails_before_merge(self):
         other = snapshot(); other["fm_home"] = "/another/home"

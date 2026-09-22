@@ -48,6 +48,13 @@ def check_snapshot(snapshot):
         raise ValueError("snapshot is missing tasks/fm_home")
 
 
+def unreachable(task):
+    # fm-crew-state.sh folds a Herdr it cannot run into "backend unreachable".
+    state = task.get("current_state") or {}
+    return (state.get("source") == "none"
+            and (state.get("detail") or "").startswith("backend unreachable"))
+
+
 def build_manifest(before, after, panes, previous=None, captain=None, observed=None):
     """Join only stable generations/endpoints captured on both sides of pane reads.
 
@@ -120,6 +127,10 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
         if generation != "unresolved":
             attempts.pop((task_id, "unresolved"), None)
         attempts[attempt] = task
+    local = [t for t in after["tasks"] if not t.get("remote") and t.get("backend") == "herdr"]
+    if local and all(unreachable(t) for t in local):
+        diagnostics.append("Firstmate reads every task as backend unreachable; "
+                           "task state is unknown until herdr is on the snapshot's PATH")
     # Capture continuation only when two distinct native IDs are explicitly
     # registered under distinct launch generations of the SAME Firstmate task.
     links = {link["id"]: link for link in previous.get("links", [])}
@@ -190,8 +201,18 @@ def pane_get(herdr, target):
     return pane
 
 
-def collect(home, herdr, previous, captain_target):
+def snapshot_env(home, herdr):
+    # Firstmate reads crew state by running `herdr` from PATH. A plugin pane may
+    # only know Herdr through HERDR_BIN_PATH, so lend the snapshot that directory.
     env = dict(os.environ, FM_HOME=str(home))
+    if os.sep in herdr:
+        directory = os.path.dirname(os.path.abspath(herdr))
+        env["PATH"] = os.pathsep.join(filter(None, (directory, env.get("PATH"))))
+    return env
+
+
+def collect(home, herdr, previous, captain_target):
+    env = snapshot_env(home, herdr)
     command = [str(home / "bin" / "fm-fleet-snapshot.sh"), "--json"]
     before = run_json(command, env)
     check_snapshot(before)
