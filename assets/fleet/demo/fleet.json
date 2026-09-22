@@ -1,0 +1,92 @@
+{
+  "schema": "zoetrope.fleet.v1",
+  "fleet_id": "synthetic-demo",
+  "label": "Fleet demo \u00b7 SYNTHETIC",
+  "observed_at": "2026-09-22T00:00:00Z",
+  "sessions": [
+    {
+      "key": {
+        "provider": "codex",
+        "session_id": "11111111-1111-4111-8111-111111111111"
+      },
+      "label": "Captain \u00b7 Codex",
+      "file": "sessions/2026/09/22/rollout-2026-09-22T00-00-00-11111111-1111-4111-8111-111111111111.jsonl"
+    },
+    {
+      "key": {
+        "provider": "codex",
+        "session_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "label": "Worker \u00b7 Implementation",
+      "file": "sessions/2026/09/22/rollout-2026-09-22T00-00-00-22222222-2222-4222-8222-222222222222.jsonl"
+    },
+    {
+      "key": {
+        "provider": "codex",
+        "session_id": "33333333-3333-4333-8333-333333333333"
+      },
+      "label": "Worker \u00b7 Tests",
+      "file": "sessions/2026/09/22/rollout-2026-09-22T00-00-00-33333333-3333-4333-8333-333333333333.jsonl"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "demo-worker-1",
+      "spawn_gen": "attempt-1",
+      "label": "Worker \u00b7 Implementation",
+      "session": {
+        "provider": "codex",
+        "session_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "state": {
+        "value": "working",
+        "source": "synthetic fixture",
+        "observed_at": "2026-09-22T00:00:00Z"
+      }
+    },
+    {
+      "id": "demo-worker-2",
+      "spawn_gen": "attempt-1",
+      "label": "Worker \u00b7 Tests",
+      "session": {
+        "provider": "codex",
+        "session_id": "33333333-3333-4333-8333-333333333333"
+      },
+      "state": {
+        "value": "working",
+        "source": "synthetic fixture",
+        "observed_at": "2026-09-22T00:00:00Z"
+      }
+    }
+  ],
+  "links": [
+    {
+      "id": "delegate-1",
+      "from": {
+        "provider": "codex",
+        "session_id": "11111111-1111-4111-8111-111111111111"
+      },
+      "to": {
+        "provider": "codex",
+        "session_id": "22222222-2222-4222-8222-222222222222"
+      },
+      "kind": "delegates",
+      "evidence": "synthetic fixture assignment",
+      "observed_at": "2026-09-22T00:00:00Z"
+    },
+    {
+      "id": "delegate-2",
+      "from": {
+        "provider": "codex",
+        "session_id": "11111111-1111-4111-8111-111111111111"
+      },
+      "to": {
+        "provider": "codex",
+        "session_id": "33333333-3333-4333-8333-333333333333"
+      },
+      "kind": "delegates",
+      "evidence": "synthetic fixture assignment",
+      "observed_at": "2026-09-22T00:00:00Z"
+    }
+  ]
+}

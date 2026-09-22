@@ -12,3 +12,5 @@ tmp-*.gif
 
 # Working notes, not part of what ships.
 /TODO.md
+__pycache__/
+*.pyc

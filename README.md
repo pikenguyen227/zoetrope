@@ -4,6 +4,10 @@
 
 <h1 align="center">zoetrope</h1>
 
+This fork adds an experimental **Firstmate Fleet mode** for multiple independent
+sessions. See [Fleet setup and controls](docs/FLEET-USAGE.md). The original
+single-session usage below remains available.
+
 <p align="center">
   <em>Watch a Claude Code or Codex session as a live flow graph, in your terminal or your browser.</em>
 </p>

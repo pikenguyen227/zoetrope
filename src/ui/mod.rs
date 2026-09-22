@@ -32,8 +32,11 @@ use crate::state::{App, Camera, Mode, Transport};
 /// is selected, and draws the status bar (title, live/replay indicator, agent &
 /// tool counts, pause state, key hints).
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let area = frame.area();
+    draw_in(frame, app, frame.area());
+}
 
+/// Embed the unchanged session UI in a frontend-owned rectangle.
+pub(crate) fn draw_in(frame: &mut Frame, app: &mut App, area: Rect) {
     // Top: canvas (fill); one bordered timeline panel — the scrubber (6 rows),
     // plus an event-log line and a single divider on top when the session has
     // prompts (→ 8 rows); bottom: a one-row status bar.
