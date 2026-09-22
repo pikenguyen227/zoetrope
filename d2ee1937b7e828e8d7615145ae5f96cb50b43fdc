@@ -1,0 +1,22 @@
+docs/FLEET-USAGE.md
+  s_770e6168064eef::t_ef1084ed6eee1e 71-73
+src/ui/mod.rs
+  s_770e6168064eef::t_ef1084ed6eee1e 68-69,71
+  s_770e6168064eef::t_edc8f3b53e9aed 73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "d2ee1937b7e828e8d7615145ae5f96cb50b43fdc",
+  "prompts": {},
+  "sessions": {
+    "s_770e6168064eef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c37e-e597-7843-a358-ef1f584020f9",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
