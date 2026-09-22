@@ -21,6 +21,22 @@ pub fn handle_event(event: &Event, app: &mut App) -> bool {
     match event {
         Event::Key(key) => handle_key(key, app),
         Event::Mouse(mouse) => {
+            if app
+                .detail_area
+                .is_some_and(|r| r.contains((mouse.column, mouse.row).into()))
+            {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        scroll_detail(app, -3);
+                        return false;
+                    }
+                    MouseEventKind::ScrollDown => {
+                        scroll_detail(app, 3);
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
             // A press/drag on the scrubber row seeks the playhead — intercept it
             // before the flow sees it (else it reads as a pane drag → pan).
             if let Some(bar) = app.scrubber_area
@@ -349,6 +365,72 @@ mod tests {
     }
 
     #[test]
+    fn click_selects_on_release_but_drag_preserves_reading_panel() {
+        use ratatui::widgets::Widget;
+        let mut app = App::new("s".into(), Mode::Live);
+        for (id, x) in [("a", 4.0), ("b", 30.0)] {
+            app.flow
+                .add_node(rataflow::Node::new(
+                    id,
+                    (x, 4.0),
+                    (16.0, 8.0),
+                    crate::ui::nodes::AgentNode {
+                        title: id.into(),
+                        description: None,
+                        status: crate::fact::AgentStatus::Running,
+                        tool_count: 0,
+                        last_tool: None,
+                        output_tokens: 0,
+                        usage: Default::default(),
+                        interactive: true,
+                    },
+                ))
+                .unwrap();
+        }
+        let area = ratatui::layout::Rect::new(0, 0, 100, 40);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        (&mut app.flow).render(area, &mut buf);
+        app.flow.select_node("a");
+        app.detail_scroll = 9;
+        app.detail_follow = false;
+        // Default viewport is 1:1, so B's center is (38,8).
+        handle_event(
+            &mouse(MouseEventKind::Down(MouseButton::Left), 38, 8),
+            &mut app,
+        );
+        assert_eq!(app.selected_agent_id().as_deref(), Some("a"));
+        handle_event(
+            &mouse(MouseEventKind::Drag(MouseButton::Left), 44, 10),
+            &mut app,
+        );
+        handle_event(
+            &mouse(MouseEventKind::Up(MouseButton::Left), 44, 10),
+            &mut app,
+        );
+        assert_eq!(app.selected_agent_id().as_deref(), Some("a"));
+        assert_eq!(app.detail_scroll, 9);
+        assert!(!app.detail_follow);
+        assert_eq!(app.camera, Camera::Manual);
+        assert!(app.flow.node("b").unwrap().position.x > 30.0);
+        // Click the relocated card: release, not press, selects and opens it.
+        handle_event(
+            &mouse(MouseEventKind::Down(MouseButton::Left), 44, 10),
+            &mut app,
+        );
+        assert_eq!(app.selected_agent_id().as_deref(), Some("a"));
+        handle_event(
+            &mouse(MouseEventKind::Up(MouseButton::Left), 44, 10),
+            &mut app,
+        );
+        assert_eq!(app.selected_agent_id().as_deref(), Some("b"));
+        app.detail_area = Some(ratatui::layout::Rect::new(50, 0, 50, 35));
+        let zoom = app.flow.viewport.zoom;
+        handle_event(&mouse(MouseEventKind::ScrollUp, 60, 12), &mut app);
+        assert!(!app.detail_follow);
+        assert_eq!(app.flow.viewport.zoom, zoom);
+    }
+
+    #[test]
     fn viewport_change_hands_camera_to_user() {
         let mut app = App::new("s".into(), Mode::Live);
         assert_eq!(app.camera, Camera::Overview);
@@ -379,6 +461,7 @@ mod tests {
                     tool_count: 0,
                     last_tool: None,
                     output_tokens: 0,
+                    usage: crate::usage::Summary::default(),
                     interactive: false,
                 },
             )
@@ -432,6 +515,7 @@ mod tests {
                 tool_count: 0,
                 last_tool: None,
                 output_tokens: 0,
+                usage: crate::usage::Summary::default(),
                 interactive: false,
             },
         );
@@ -463,6 +547,7 @@ mod tests {
                 tool_count: 0,
                 last_tool: None,
                 output_tokens: 0,
+                usage: crate::usage::Summary::default(),
                 interactive: false,
             },
         );

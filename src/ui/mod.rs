@@ -77,6 +77,7 @@ pub(crate) fn draw_in(frame: &mut Frame, app: &mut App, area: Rect) {
         (canvas_area, None)
     };
 
+    app.detail_area = panel_area;
     render_canvas(frame, flow_area, app, selected.is_none());
 
     // A user selection centers its node — resolved HERE, after the flow has

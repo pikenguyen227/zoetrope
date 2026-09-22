@@ -9,6 +9,7 @@ fi
 # Configuration stays outside the repository; no user's session IDs ship here.
 config="${ZOE_FLEET_STATE_DIR:-$agentic_root/.tools/state/zoe-fleet}"
 mkdir -p "$config"
+export ZOE_TELEMETRY_DIR="${ZOE_TELEMETRY_DIR:-$agentic_root/.tools/state/zoe-telemetry}"
 firstmate_home="${FM_HOME:-$agentic_root/firstmate}"
 binary="${ZOE_FLEET_BIN:-$agentic_root/.tools/bin/zoe-fleet}"
 if [ ! -x "$binary" ]; then

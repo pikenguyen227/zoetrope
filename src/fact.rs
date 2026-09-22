@@ -77,6 +77,10 @@ pub enum FactKind {
     /// turn's usage across several records (Claude's `requestId`); `None` sums
     /// every fact as its own delta.
     Tokens { output: u64, dedup: Option<String> },
+    /// Recorded input/output usage, keyed by request or cumulative delta.
+    Usage(crate::usage::Usage),
+    /// Current account snapshot. This is not replay activity.
+    Quota(crate::usage::Quota),
     /// A human prompt on this agent's thread. An era boundary. Providers emit it
     /// only for text a person typed; injected text is not a prompt.
     Prompt(String),
@@ -159,6 +163,8 @@ impl FactKind {
             FactKind::Label { .. } => "Label",
             FactKind::Model(_) => "Model",
             FactKind::Tokens { .. } => "Tokens",
+            FactKind::Usage(_) => "Usage",
+            FactKind::Quota(_) => "Quota",
             FactKind::Prompt(_) => "Prompt",
             FactKind::Reasoning(_) => "Reasoning",
             FactKind::ToolStart { .. } => "ToolStart",
@@ -228,7 +234,7 @@ impl Fact {
     pub fn is_session_meta(&self) -> bool {
         matches!(
             self.kind,
-            FactKind::Session { .. } | FactKind::Tally(_) | FactKind::Title(_)
+            FactKind::Session { .. } | FactKind::Tally(_) | FactKind::Title(_) | FactKind::Quota(_)
         )
     }
 }

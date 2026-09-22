@@ -505,6 +505,10 @@ fn install_wheel(app: Rc<RefCell<App>>, last_cell: Rc<Cell<(u16, u16)>>) {
         let (column, row) = last_cell.get();
         let mut app = app.borrow_mut();
         // `handle_wheel` lives in rataflow: it normalizes browser wheel
+        if app.detail_area.is_some_and(|r| r.contains((column, row).into())) {
+            scroll_detail(&mut app, if e.delta_y() < 0.0 { -3 } else { 3 });
+            return;
+        }
         // frequency/deltaMode into discrete zoom notches, so wasm zoom matches the
         // native scroll feel instead of racing. (Terminals keep using scroll events.)
         let events: Vec<_> = app

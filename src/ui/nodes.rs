@@ -16,9 +16,9 @@ use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 use crate::state::session::AgentStatus;
 
 /// Fixed card dimensions for main / workflow nodes (world units).
-pub const MAIN_NODE_DIMS: (f64, f64) = (30.0, 7.0);
+pub const MAIN_NODE_DIMS: (f64, f64) = (32.0, 8.0);
 /// Fixed card dimensions for subagent nodes (world units).
-pub const SUB_NODE_DIMS: (f64, f64) = (26.0, 6.0);
+pub const SUB_NODE_DIMS: (f64, f64) = (30.0, 8.0);
 
 /// Below this on-screen size a card has no room for any text — it renders at
 /// cell level instead (solid status-colored fill). Semantic zoom: zoomed out,
@@ -44,6 +44,7 @@ pub struct AgentNode {
     /// Name of the most recent tool call, if any.
     pub last_tool: Option<String>,
     pub output_tokens: u64,
+    pub usage: crate::usage::Summary,
     /// Interactive agents (main, forks) word `Running` as "active": we know
     /// there are recent entries, not that a task is executing.
     pub interactive: bool,
@@ -161,16 +162,36 @@ impl NodeContent for AgentNode {
         )));
 
         // Footer row: status word + token count, separated to the edges.
-        let tokens = fmt_tokens(self.output_tokens);
-        let footer = if self.output_tokens > 0 {
+        let tokens = fmt_tokens(if self.usage.recorded {
+            self.usage.total()
+        } else {
+            self.output_tokens
+        });
+        let footer = if self.usage.recorded || self.output_tokens > 0 {
             Line::from(vec![
                 Span::styled(status_text, bg_style.fg(glyph_color)),
-                Span::styled(format!("  {tokens} tok"), bg_style.fg(palette.muted)),
+                Span::styled(
+                    format!(
+                        "  {tokens} {}",
+                        if self.usage.recorded && !self.usage.incomplete {
+                            "tok"
+                        } else {
+                            "tok+"
+                        }
+                    ),
+                    bg_style.fg(palette.muted),
+                ),
             ])
         } else {
             Line::from(Span::styled(status_text, bg_style.fg(glyph_color)))
         };
         lines.push(footer);
+        if self.usage.recorded {
+            lines.push(Line::from(Span::styled(
+                self.usage.cost_label(),
+                bg_style.fg(palette.text),
+            )));
+        }
 
         // Each row is one cell tall, stacked from the top; render only what fits.
         for (i, line) in lines.into_iter().enumerate() {
@@ -244,6 +265,7 @@ mod tests {
             tool_count: 3,
             last_tool: Some("Bash".into()),
             output_tokens: 1200,
+            usage: crate::usage::Summary::default(),
             interactive: false,
         };
         let ctx = NodeRenderContext {

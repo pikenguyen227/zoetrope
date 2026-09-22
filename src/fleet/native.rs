@@ -336,6 +336,7 @@ pub async fn run(path: PathBuf) -> Result<()> {
     let mut tick = tokio::time::interval(Duration::from_millis(16));
     let mut refresh = tokio::time::interval(Duration::from_secs(2));
     let mut status = tokio::time::interval(Duration::from_secs(1));
+    let mut telemetry = Telemetry::default();
     let mut last = tokio::time::Instant::now();
     let mut dirty = true;
     let result = loop {
@@ -344,6 +345,7 @@ pub async fn run(path: PathBuf) -> Result<()> {
         last = now;
         if dirty {
             fleet.sync();
+            super::activity::Activity::refresh(&mut fleet);
             dirty = false;
         }
         let focused = fleet.focused.is_some();
@@ -368,6 +370,7 @@ pub async fn run(path: PathBuf) -> Result<()> {
             },
             Some(event) = input_rx.recv() => { if route(&mut fleet, &event) { break Ok(()); } },
             _ = status.tick() => {
+                telemetry.refresh(&mut fleet);
                 for member in fleet.members.values_mut() { member.app.status_tick(); }
                 dirty = true;
             },
@@ -408,9 +411,27 @@ pub async fn run(path: PathBuf) -> Result<()> {
 /// Exposed to buffer tests so the real Fleet UI can be checked without a TTY.
 pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
     // Reuse the original graph, tool cards, inspector and single-session DVR.
-    let [header, body] =
-        Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).areas(frame.area());
+    let limits = quota_lines(fleet, chrono::Utc::now());
+    let activity_h = if fleet.focused.is_none() && frame.area().height >= 18 {
+        6
+    } else {
+        0
+    };
+    let [header, body, activity, quota] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Fill(1),
+        Constraint::Length(activity_h),
+        Constraint::Length(limits.len().min(6) as u16),
+    ])
+    .areas(frame.area());
     crate::ui::draw_in(frame, fleet.active(), body);
+    if activity_h > 0 {
+        fleet.activity.draw(frame, activity);
+    }
+    frame.render_widget(
+        Paragraph::new(limits.join("\n")).style(Style::default().fg(Color::Gray).bg(Color::Black)),
+        quota,
+    );
     let age = (chrono::Utc::now() - fleet.manifest.observed_at)
         .num_seconds()
         .max(0);
@@ -443,8 +464,11 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
         header,
     );
     if fleet.focused.is_none() && frame.area().height > 0 {
-        let area = frame.area();
-        let footer = ratatui::layout::Rect::new(area.x, area.bottom() - 1, area.width, 1);
+        let footer =
+            ratatui::layout::Rect::new(body.x, body.bottom().saturating_sub(1), body.width, 1);
+        // Clear the underlying session status, including its right-aligned
+        // hints and modifiers, before replacing it with Fleet status.
+        frame.render_widget(ratatui::widgets::Clear, footer);
         let agents: usize = fleet
             .members
             .values()
@@ -460,6 +484,106 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
             footer,
         );
     }
+}
+
+#[derive(Default)]
+struct Telemetry {
+    seen: BTreeMap<SessionKey, std::time::SystemTime>,
+}
+impl Telemetry {
+    fn refresh(&mut self, fleet: &mut Fleet) {
+        let Some(dir) = std::env::var_os("ZOE_TELEMETRY_DIR") else {
+            return;
+        };
+        for (key, member) in fleet
+            .members
+            .iter_mut()
+            .filter(|(key, m)| key.provider == "claude" && !m.retained)
+        {
+            if !key
+                .session_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
+                continue;
+            }
+            let path = Path::new(&dir).join(format!("claude-{}.json", key.session_id));
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if meta.len() > 16_384 {
+                continue;
+            }
+            let Ok(modified) = meta.modified() else {
+                continue;
+            };
+            if self.seen.get(key) == Some(&modified) && !member.app.session_info.quotas.is_empty() {
+                continue;
+            }
+            let Some(quota) = read_telemetry(&path, &key.session_id) else {
+                continue;
+            };
+            member.app.session_info.apply(&crate::fact::Fact {
+                agent: None,
+                ts: None,
+                kind: crate::fact::FactKind::Quota(quota),
+            });
+            self.seen.insert(key.clone(), modified);
+        }
+    }
+}
+fn read_telemetry(path: &Path, session_id: &str) -> Option<crate::usage::Quota> {
+    #[derive(serde::Deserialize)]
+    struct Snapshot {
+        schema: String,
+        session_id: String,
+        quota: crate::usage::Quota,
+    }
+    let data: Snapshot = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    (data.schema == "zoe.usage/v1" && data.session_id == session_id && data.quota.valid())
+        .then_some(data.quota)
+}
+
+/// Quotas are account snapshots, never summed across sessions. Each reported
+/// provider bucket remains separate; the newest observation wins.
+fn quota_lines(fleet: &Fleet, now: chrono::DateTime<chrono::Utc>) -> Vec<String> {
+    let mut buckets: BTreeMap<(String, String), crate::usage::Quota> = BTreeMap::new();
+    let mut providers = std::collections::BTreeSet::new();
+    for (key, m) in fleet.members.iter().filter(|(_, m)| !m.retained) {
+        let provider = key.provider.to_string();
+        providers.insert(provider.clone());
+        for (bucket, q) in &m.app.session_info.quotas {
+            let k = (provider.clone(), bucket.clone());
+            if buckets
+                .get(&k)
+                .is_none_or(|old| old.observed_at < q.observed_at)
+            {
+                buckets.insert(k, q.clone());
+            }
+        }
+    }
+    let mut lines = Vec::new();
+    for provider in providers {
+        let matching: Vec<_> = buckets
+            .iter()
+            .filter(|((p, _), _)| p == &provider)
+            .collect();
+        if matching.is_empty() {
+            lines.push(format!(
+                " {provider} account · 5h — · week — · limits not reported"
+            ));
+        } else {
+            for ((_, bucket), q) in matching {
+                let label = if bucket == &provider {
+                    provider.clone()
+                } else {
+                    format!("{provider}/{bucket}")
+                };
+                lines.push(format!(" {label} shared · {}", q.label(now)));
+            }
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -523,6 +647,24 @@ mod tests {
             );
         }
         fleet.sync();
+        super::super::activity::Activity::refresh(&mut fleet);
+        for (w, h) in [(140, 44), (80, 24), (40, 12)] {
+            let backend = ratatui::backend::TestBackend::new(w, h);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &mut fleet)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            if h >= 18 {
+                assert!(text.contains("Fleet activity"));
+                assert!(text.contains("Latest:"));
+            }
+            assert!(text.contains("5h"));
+        }
         assert_eq!(fleet.members.len(), 3);
         assert_eq!(fleet.overview.session.agent_count(), 5); // fleet + 3 roots + native child
         assert_eq!(fleet.overview.session.tool_count(), 4);
@@ -532,6 +674,45 @@ mod tests {
         assert!(resolve(&wrong).is_err()); // prefixes never pass identity validation
         wrong.key = manifest.sessions[1].key.clone();
         assert!(resolve(&wrong).is_err()); // named file belongs to another session
+    }
+
+    #[test]
+    fn limits_are_shared_not_summed_and_snapshots_require_exact_session() {
+        let fixture = Fixture::new();
+        let mut fleet = Fleet::new(fixture.manifest()).unwrap();
+        let now = chrono::Utc::now();
+        for (index, member) in fleet.members.values_mut().enumerate() {
+            let q = crate::usage::Quota {
+                bucket: "codex".into(),
+                observed_at: now + chrono::Duration::seconds(index as i64),
+                windows: vec![crate::usage::Window {
+                    minutes: 300,
+                    used_percent: 20.0 + index as f64,
+                    resets_at: None,
+                }],
+            };
+            member.app.session_info.quotas.insert("codex".into(), q);
+        }
+        let lines = quota_lines(&fleet, now);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("78% left"));
+        let p = fixture.0.join("quota.json");
+        let q = fleet
+            .members
+            .values()
+            .next()
+            .unwrap()
+            .app
+            .session_info
+            .quotas["codex"]
+            .clone();
+        std::fs::write(
+            &p,
+            serde_json::json!({"schema":"zoe.usage/v1","session_id":"exact","quota":q}).to_string(),
+        )
+        .unwrap();
+        assert!(read_telemetry(&p, "exact").is_some());
+        assert!(read_telemetry(&p, "other").is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

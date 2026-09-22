@@ -220,6 +220,7 @@ pub struct AgentInfo {
     tool_index: HashMap<String, usize>,
     /// Summed `usage.output_tokens`, counted once per assistant turn.
     pub output_tokens: u64,
+    pub usage: crate::usage::Book,
     pub first_ts: Option<DateTime<Utc>>,
     pub last_ts: Option<DateTime<Utc>>,
     /// `requestId`s whose usage has already been counted. Claude Code splits one
@@ -254,6 +255,7 @@ impl AgentInfo {
             tool_calls: Vector::new(),
             tool_index: HashMap::new(),
             output_tokens: 0,
+            usage: crate::usage::Book::default(),
             first_ts: None,
             last_ts: None,
             seen_dedup_keys: HashSet::new(),
@@ -417,7 +419,8 @@ impl SessionModel {
             FactKind::Activity
             | FactKind::Session { .. }
             | FactKind::Tally(_)
-            | FactKind::Title(_) => {}
+            | FactKind::Title(_)
+            | FactKind::Quota(_) => {}
             FactKind::Agent {
                 parent,
                 agent_type,
@@ -469,6 +472,11 @@ impl SessionModel {
                     && a.model.is_none()
                 {
                     a.model = Some(model.clone());
+                }
+            }
+            FactKind::Usage(usage) => {
+                if let Some(a) = self.agents.get_mut(id) {
+                    a.usage.apply(usage);
                 }
             }
             FactKind::Tokens { output, dedup } => {

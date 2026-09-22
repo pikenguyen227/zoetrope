@@ -14,6 +14,8 @@ use crate::fact::{Fact, FactKind};
 pub struct SessionInfo {
     /// Header title. Session identity, not an event.
     pub title: Option<String>,
+    /// Latest reported shared quota per provider bucket, never replayed.
+    pub quotas: std::collections::BTreeMap<String, crate::usage::Quota>,
     /// Labelled values, in the order first seen; the latest value per label
     /// wins.
     pub fields: Vec<(String, String)>,
@@ -25,6 +27,15 @@ impl SessionInfo {
     /// Fold one session-level fact. Anything else is ignored.
     pub fn apply(&mut self, fact: &Fact) {
         match &fact.kind {
+            FactKind::Quota(q) if q.valid() => {
+                if self
+                    .quotas
+                    .get(&q.bucket)
+                    .is_none_or(|old| old.observed_at <= q.observed_at)
+                {
+                    self.quotas.insert(q.bucket.clone(), q.clone());
+                }
+            }
             FactKind::Title(t) => self.title = Some(t.clone()),
             FactKind::Session { label, value } => {
                 match self.fields.iter_mut().find(|(l, _)| l == label) {

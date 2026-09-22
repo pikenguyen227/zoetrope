@@ -7,7 +7,8 @@ destination="$agentic_root/.tools/bin"
 cd "$repo"
 cargo build --locked --release
 mkdir -p "$destination"
-install -m 755 target/release/zoe "$destination/zoe-fleet"
+install -m 755 target/release/zoe "$destination/zoe-fleet.new"
+mv -f "$destination/zoe-fleet.new" "$destination/zoe-fleet"
 # Bash %q encodes even spaces/quotes in the checkout path without interpolation.
 {
   printf '#!/usr/bin/env bash\nset -euo pipefail\n'

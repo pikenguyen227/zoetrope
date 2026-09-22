@@ -1,6 +1,8 @@
 //! Multi-session membership and display projection. Native facts stay in their
 //! own App; only display IDs are namespaced. Firstmate is an external adapter.
 
+pub mod activity;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -203,6 +205,7 @@ pub struct Fleet {
     pub overview: App,
     pub focused: Option<SessionKey>,
     pub manifest_error: Option<String>,
+    pub activity: activity::Activity,
     pub collapsed: BTreeSet<SessionKey>,
     pub(crate) nodes: BTreeMap<String, (SessionKey, String)>,
 }
@@ -216,6 +219,7 @@ impl Fleet {
             members: BTreeMap::new(),
             focused: None,
             manifest_error: None,
+            activity: activity::Activity::default(),
             collapsed: BTreeSet::new(),
             nodes: BTreeMap::new(),
         };

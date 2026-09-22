@@ -58,13 +58,19 @@ seconds; transcript tailing and rendering run independently.
 
 | Key | Action |
 | --- | --- |
-| Tab / arrows / click | Select a node |
+| Tab / arrows / click and release | Select a node and open its reading panel |
+| Drag a card | Move it without opening/changing the reading panel |
+| Wheel over reading panel | Scroll tool history (wheel on canvas zooms) |
 | Enter | Open the selected session's original inspector and timeline |
 | Esc in a session | Return to the live fleet |
 | x in the fleet | Collapse/expand the selected session's native children |
 | r | Arrange the graph |
 | o / f | Overview / follow camera |
 | q or Ctrl+C | Quit |
+
+The fleet overview includes a live activity histogram across all attached sessions,
+including retained history. Its latest event, time range and failure count update
+as records arrive. The strip appears at terminal heights of 18 rows or more.
 
 The fleet overview is live-only. Inside a session, Space, the scrubber, `[` / `]`,
 and `g` retain their existing replay/follow behavior. Returning to Fleet brings that
@@ -110,3 +116,50 @@ bash -n fleet-plugin/open.sh fleet-plugin/pane.sh scripts/install-fleet.sh
 
 The existing browser lock requires Rust 1.90 or later. Check that unchanged
 single-session frontend with its own manifest and the wasm target.
+
+## Tokens, cost and account limits
+
+Agent cards and reading panels show recorded input + output tokens and a standard
+API-equivalent cost estimate. Cache reads/writes are included in input exactly once;
+reasoning is part of output, not added again. Repeated request usage is merged by
+request ID, including later higher output counts. Codex cumulative snapshots emit
+only positive advances. Tokens follow the session replay cursor.
+
+`tok+` means only partial usage was recorded. `API est. —` means usage or a model
+rate is unavailable, not zero spend. Prices are an offline snapshot verified on
+2026-09-22 against [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
+and [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+The table covers the GPT-6 Astra / GPT-5.6 family and listed recent Claude
+Opus/Sonnet/Haiku model IDs. It uses standard short-context rates, cache-read,
+5-minute cache-write and recorded 1-hour cache-write rates. Fast-mode, long-context,
+regional and tool surcharges, discounts and subscription billing are not included.
+**This is an API-equivalent estimate, not your actual subscription bill.** New or
+unrecognized model IDs deliberately show no dollar total rather than guessing.
+
+The footer reports five-hour and weekly windows by their actual duration. Quotas
+are shared account limits: they are never added across agents. It uses the newest
+reported snapshot per provider/limit bucket among current manifest members. If you
+use multiple accounts with the same provider/bucket, run separate Fleet viewers:
+transcripts do not expose a reliable account identity for partitioning them.
+Percentages are **remaining**; reset countdowns and observation age are shown.
+Snapshots older than five minutes are labeled stale. A passed reset time means
+“refresh pending”, not an assumed full allowance. Missing windows show `—`.
+These current account snapshots stay separate from session replay.
+
+Codex supplies rate-limit snapshots in its `token_count` records. Claude supplies
+them through its documented [status-line JSON](https://code.claude.com/docs/en/statusline),
+which normally appears after the first API response on a supported subscription.
+The optional `scripts/claude-telemetry.py` launcher adds a status-line bridge while
+preserving existing status-line output and explicit `--settings` overlays:
+
+```sh
+python3 scripts/claude-telemetry.py --launch /absolute/path/to/real/claude -- [normal Claude arguments]
+```
+
+It writes only exact session ID, reported quota windows and observation time to
+`Agentic/.tools/state/zoe-telemetry/`. No prompts, credentials or transcript bodies
+are written. Override with `ZOE_TELEMETRY_DIR`; use that same directory in the viewer.
+The Fleet Herdr launcher sets this directory automatically. Already-running Claude
+sessions need to be reopened through the bridge. The helper does not start an agent
+until you explicitly run the launcher; installation and tests use no model calls.
+Neither the viewer nor bridge makes network requests or refreshes account credentials.

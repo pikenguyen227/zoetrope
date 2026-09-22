@@ -35,6 +35,12 @@ def seed(output, at):
                 "thread_source": "subagent", "source": {"subagent": {"thread_spawn": {
                     "parent_thread_id": IDS[1], "depth": 1, "agent_path": "/root/research"}}}})
         text = record("session_meta", payload, at)
+        text += record("turn_context", {"model": "gpt-6-astra"}, at)
+        text += record("event_msg", {"type": "token_count", "info": {"total_token_usage": {
+            "input_tokens": 10000*(i+1), "output_tokens": 800*(i+1), "cached_input_tokens":5000*(i+1)}},
+            "rate_limits": {"limit_id":"codex", "primary":{"used_percent":32, "window_minutes":300,
+            "resets_at":int(at.timestamp())+9000}, "secondary":{"used_percent":61, "window_minutes":10080,
+            "resets_at":int(at.timestamp())+200000}}}, at)
         text += record("response_item", {"type": "function_call", "name": "shell",
             "call_id": "shared-call-id", "arguments": json.dumps({"command": "printf 'synthetic fixture'"})}, at + dt.timedelta(seconds=1))
         text += record("response_item", {"type": "function_call_output", "call_id": "shared-call-id",

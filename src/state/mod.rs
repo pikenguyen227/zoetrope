@@ -196,6 +196,8 @@ pub struct App {
     /// Screen rect of the scrubber bar from the last render, so the input
     /// handler can map a click/drag on it to a seek. `None` when not drawn.
     pub scrubber_area: Option<ratatui::layout::Rect>,
+    /// Last rendered reading panel, for pointer-local scrolling.
+    pub detail_area: Option<ratatui::layout::Rect>,
     /// Cached per-column scrubber tallies (head-independent), recomputed only when
     /// the item count or bar width changes — not every frame. See
     /// [`crate::ui::ScrubberTally`].
@@ -249,6 +251,7 @@ impl App {
             camera_glide: None,
             timeline: Timeline::new(),
             scrubber_area: None,
+            detail_area: None,
             scrubber_tally: None,
             era_cache: None,
             last_batch_at: None,
@@ -989,9 +992,21 @@ impl App {
         for event in events {
             let drop_camera = self.camera == Camera::Follow
                 || (self.camera == Camera::Overview
-                    && matches!(event, FlowEvent::ViewportChanged { .. }));
+                    && matches!(
+                        event,
+                        FlowEvent::ViewportChanged { .. }
+                            | FlowEvent::NodeDragStarted { .. }
+                            | FlowEvent::NodeDragged { .. }
+                    ));
             if drop_camera {
                 self.camera = Camera::Manual;
+                self.camera_glide = None;
+            }
+            if matches!(
+                event,
+                FlowEvent::NodeDragStarted { .. } | FlowEvent::NodeDragged { .. }
+            ) {
+                self.pending_center = None;
                 self.camera_glide = None;
             }
             if let FlowEvent::SelectionChanged { node_ids, .. } = &event {

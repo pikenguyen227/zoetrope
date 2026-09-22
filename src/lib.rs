@@ -33,6 +33,7 @@ pub mod provider;
 pub mod state;
 pub mod tailer;
 pub mod ui;
+pub mod usage;
 
 // The native frontend: terminal loop + crossterm input.
 //

@@ -326,7 +326,10 @@ pub enum EventMsg {
     TurnAborted,
     /// Cumulative and last-call usage; `last_token_usage` is the delta.
     #[serde(rename = "token_count")]
-    TokenCount { info: Option<TokenInfo> },
+    TokenCount {
+        info: Option<Box<TokenInfo>>,
+        rate_limits: Option<RateLimits>,
+    },
     /// An operation that ran, with what the request layer lacks: ownership
     /// (`thread_id`), timing, exit codes.
     #[serde(rename = "item_completed")]
@@ -350,6 +353,33 @@ pub struct TokenInfo {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TokenUsage {
     pub output_tokens: Option<u64>,
+    pub input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub cache_write_input_tokens: Option<u64>,
+}
+
+impl TokenUsage {
+    pub fn normalized(&self) -> crate::usage::Tokens {
+        crate::usage::Tokens {
+            input: self.input_tokens,
+            output: self.output_tokens,
+            cached: self.cached_input_tokens.unwrap_or(0),
+            cache_write: self.cache_write_input_tokens.unwrap_or(0),
+            cache_write_1h: 0,
+        }
+    }
+}
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RateLimits {
+    pub limit_id: Option<String>,
+    pub primary: Option<RateWindow>,
+    pub secondary: Option<RateWindow>,
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateWindow {
+    pub used_percent: Option<f64>,
+    pub window_minutes: Option<u32>,
+    pub resets_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
