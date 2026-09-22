@@ -130,7 +130,7 @@ derived from the fact (never from arrival), a `source` (`bridge` or `firstmate`)
 `at` and `at_quality`, the `attempt` (`task`, `spawn_gen`), an optional native
 `session`, and a `type` with its payload under a key of the same name:
 `spawned`, `bound`, `status`, `decision`, `steered`, `steer_acked`,
-`reclassified`, `torn_down`, `busy` or `coverage` (`{from, to}`, bridge only).
+`reclassified`, `torn_down`, `busy` or `coverage` (`{from, to, max_gap}`, bridge only; `max_gap` in seconds is optional).
 Types and validation are in `src/fleet/journal.rs`. The viewer tails complete
 lines from a byte offset, skips lines that do not validate, deduplicates by `id`,
 and orders by time, then same-second rank (spawned and bound before transcript
@@ -151,7 +151,8 @@ successive `fm-fleet-snapshot.v1` polls (`Bridge` in `scripts/firstmate-fleet.py
 - `bound` when the Herdr join is first made, `torn_down` when an attempt leaves
   the snapshot (a relaunch tears down the previous generation), both observed.
 - `coverage` windows while it polls: a segment at least once a minute and
-  whenever it emits anything else, split when polls stop for longer than a gap.
+  whenever it emits anything else, split when polls stop for longer than its
+  `max_gap` (60 s, or four poll intervals if longer), which each segment carries.
 - On restart it recovers what it wrote from the journal and re-emits nothing.
 
 Only the last status line is visible per poll, so lines that land between polls,
@@ -175,8 +176,9 @@ own live edges. Dead air is compressed only while every session is quiet.
   open decision) are highlighted in amber on the card and the scrubber strip.
 - Outside every coverage window, the scrubber is hatched, the header says so,
   and badges read `?`: the last record, unverified. At the live edge the same
-  holds once the bridge's newest window is over two minutes old: the adapter
-  has stopped, so today's state is not observed.
+  holds once the bridge's newest window is older than twice the `max_gap` its
+  segments carry (two minutes when absent): the adapter has stopped, so
+  today's state is not observed.
 - Space, `[` / `]` (member prompts and lifecycle transitions), `g`/End and the
   scrubber move the one playhead. Enter opens a session at that moment with its
   own DVR; Esc rejoins the fleet's moment.

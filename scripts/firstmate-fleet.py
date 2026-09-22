@@ -14,6 +14,7 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -394,7 +395,8 @@ class Bridge:
         start = self.window[0] if self.written is None else self.written
         self.written = self.window[1]
         return self.line("coverage", f"{self.run}/{start}-{self.window[1]}", self.window[1], "observed",
-                         coverage={"from": iso(start), "to": iso(self.window[1])})
+                         coverage={"from": iso(start), "to": iso(self.window[1]),
+                                   "max_gap": math.ceil(self.max_gap)})
 
     def close(self):
         """End the open window at its last poll, e.g. when the bridge stops."""

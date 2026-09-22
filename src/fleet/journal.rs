@@ -160,6 +160,11 @@ pub struct Busy {
 pub struct Window {
     pub from: DateTime<Utc>,
     pub to: DateTime<Utc>,
+    /// The longest pause, in seconds, the bridge still counts as observing:
+    /// its cadence, so the viewer knows how stale a running bridge's newest
+    /// segment may be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_gap: Option<u32>,
 }
 
 /// What an event says. Each payload sits under a key named after its type.
@@ -449,7 +454,12 @@ impl Lifecycle {
         for window in windows {
             match self.coverage.last_mut() {
                 // Bridge segments chain end to start; touching ones merge.
-                Some(last) if window.from <= last.to => last.to = last.to.max(window.to),
+                Some(last) if window.from <= last.to => {
+                    if window.to >= last.to {
+                        last.to = window.to;
+                        last.max_gap = window.max_gap;
+                    }
+                }
                 _ => self.coverage.push(window),
             }
         }
@@ -493,15 +503,17 @@ impl Lifecycle {
         i > 0 && t <= self.coverage[i - 1].to
     }
 
-    /// Whether the bridge is still observing at `now`. Its newest window
-    /// trails the present by up to a checkpoint while it runs, so that much
-    /// lag still counts; past it, the adapter has stopped.
+    /// Whether the bridge is still observing at `now`. While it runs, its
+    /// newest segment trails the present by up to a checkpoint (at most its
+    /// `max_gap`) plus a poll (within `max_gap`), so twice its `max_gap` of lag
+    /// still counts, or two minutes for a segment that does not say; past it,
+    /// the adapter has stopped.
     pub fn observing(&self, now: DateTime<Utc>) -> bool {
         !self.bridge
-            || self
-                .coverage
-                .last()
-                .is_some_and(|w| w.from <= now && now - w.to <= chrono::Duration::minutes(2))
+            || self.coverage.last().is_some_and(|w| {
+                let lag = chrono::Duration::seconds(w.max_gap.map_or(60, i64::from) * 2);
+                w.from <= now && now - w.to <= lag
+            })
     }
 
     /// Every attempt's state from the events at or before `t`; all of them for
@@ -710,6 +722,7 @@ mod tests {
                 coverage: Window {
                     from: at(from),
                     to: at(to),
+                    max_gap: None,
                 },
             },
         }
@@ -965,6 +978,16 @@ mod tests {
         // once it stops reporting, the present is a gap too.
         assert!(store.observing(at("08:11:00")));
         assert!(!store.observing(at("08:12:01")));
+        // A bridge polling every 150 s says so: its newest segment may trail
+        // by minutes and it is still observing.
+        let mut slow = coverage("c4", "08:10:00", "08:20:00");
+        if let Change::Coverage { coverage } = &mut slow.change {
+            coverage.max_gap = Some(600);
+        }
+        store.insert([slow]);
+        assert!(store.observing(at("08:23:40")));
+        assert!(store.observing(at("08:39:59")));
+        assert!(!store.observing(at("08:40:01")));
         assert_eq!(store.latest_at(Some(at("08:05:30"))).unwrap().id, "s2");
         assert_eq!(store.latest_at(None).unwrap().id, "down");
     }

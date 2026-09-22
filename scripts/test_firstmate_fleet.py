@@ -329,6 +329,18 @@ class BridgeTests(unittest.TestCase):
                                    (t(100), t(100)), (t(100), t(105))])
         self.assertEqual(bridge.close(), [])
 
+    def test_coverage_carries_the_cadence_the_viewer_waits_for(self):
+        # `--interval 150` polls every 150 s, so its max_gap is 600 s; each
+        # segment says so, and the viewer tolerates that much lag.
+        bridge = self.bridge(max_gap=max(60, 4 * 150))
+        segments = []
+        for now in (0, 150, 300):
+            lines, _ = observe(bridge, B + now, [])
+            segments += events(lines, "coverage")
+        self.assertTrue(segments)
+        self.assertEqual({e["coverage"]["max_gap"] for e in segments}, {600})
+        self.assertEqual(segments[-1]["coverage"]["to"], adapter.iso(B + 300))
+
     def test_every_line_has_the_viewer_schema(self):
         lines = crew_journal()
         self.assertTrue(lines)
