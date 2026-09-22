@@ -952,8 +952,6 @@ impl App {
         }
     }
 
-    /// The node id of the currently selected agent, if any (read from the flow
-    /// during render; copy it out before borrowing `app` mutably).
     /// Advance the running-card pulse by one frame of wall time, re-marking the
     /// cards only when the beat flips. Chrome, like the camera glide: it runs
     /// whether or not the playhead moves.
@@ -977,6 +975,8 @@ impl App {
         }
     }
 
+    /// The node id of the currently selected agent, if any (read from the flow
+    /// during render; copy it out before borrowing `app` mutably).
     pub fn selected_agent_id(&self) -> Option<String> {
         self.flow.selected_nodes().next().map(|n| n.id.clone())
     }

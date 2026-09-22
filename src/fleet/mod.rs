@@ -536,20 +536,41 @@ impl Fleet {
         if let Some(id) = self.overview.selected_agent_id()
             && let Some((key, _)) = self.nodes.get(&id)
         {
-            if !self.collapsed.remove(key) {
+            let key = key.clone();
+            let expanded = self.collapsed.remove(&key);
+            if !expanded {
                 self.collapsed.insert(key.clone());
             }
             self.sync();
+            // Collapsed subagents were outside the projection, so their marks
+            // froze: what they did meanwhile is history, not a burst.
+            if expanded && let Some(member) = self.members.get(&key) {
+                let model = &member.app.session;
+                self.overview.chips.adopt_agents(
+                    model
+                        .spawn_order()
+                        .filter(|local| *local != MAIN_ID)
+                        .map(|local| {
+                            let calls = model.agent(local).map_or(0, |a| a.tool_calls.len());
+                            (key.node_id(local), calls)
+                        }),
+                );
+            }
         }
     }
 
     pub fn back(&mut self) {
-        if let Some(key) = self.focused.take()
-            && let Some(member) = self.members.get_mut(&key)
+        let left = self.focused.take();
+        if let Some(key) = &left
+            && let Some(member) = self.members.get_mut(key)
         {
             member.app.go_live();
         }
         self.sync();
+        // The overview tray was not reconciled while a member was focused.
+        if left.is_some() {
+            self.overview.chips.adopt_baseline(&self.overview.session);
+        }
     }
 
     pub fn active(&mut self) -> &mut App {

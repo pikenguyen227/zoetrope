@@ -441,6 +441,56 @@ fn backfill_is_history_but_later_calls_chip() {
 }
 
 #[test]
+fn returning_from_focus_does_not_replay_a_burst() {
+    let mut fleet = Fleet::new(manifest()).unwrap();
+    let now = Utc::now();
+    let tick = std::time::Duration::from_millis(16);
+    fleet.event(
+        &key("worker"),
+        live("worker", now, call("a").into(), "main"),
+    );
+    fleet.sync();
+    fleet
+        .overview
+        .chips
+        .reconcile(tick, true, &fleet.overview.session);
+    fleet
+        .overview
+        .flow
+        .select_node(&key("worker").node_id(MAIN_ID));
+    fleet.inspect_selected();
+
+    // Activity while focused: the overview tray is not reconciled.
+    fleet.event(
+        &key("worker"),
+        live("worker", now, [call("b"), call("c")].concat(), "main"),
+    );
+    fleet.sync();
+    fleet.back();
+    fleet
+        .overview
+        .chips
+        .reconcile(tick, true, &fleet.overview.session);
+    assert_eq!(
+        fleet.overview.chips.len(),
+        0,
+        "back must not replay a burst"
+    );
+
+    // Activity after returning still chips.
+    fleet.event(
+        &key("worker"),
+        live("worker", now, call("d").into(), "main"),
+    );
+    fleet.sync();
+    fleet
+        .overview
+        .chips
+        .reconcile(tick, true, &fleet.overview.session);
+    assert_eq!(fleet.overview.chips.len(), 1, "fresh activity chips");
+}
+
+#[test]
 fn running_cards_pulse_on_the_app_clock() {
     let mut fleet = Fleet::new(manifest()).unwrap();
     fleet.event(
