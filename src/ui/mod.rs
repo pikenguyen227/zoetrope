@@ -65,12 +65,12 @@ pub(crate) fn draw_in(frame: &mut Frame, app: &mut App, area: Rect) {
     // the canvas render (borrow split: companions take &Flow, Widget is &mut).
     let selected = app.selected_agent_id();
 
-    // When an agent is selected, split the canvas 30/70 for the detail panel —
-    // the panel is what you're reading; the canvas only keeps the selected
-    // node (click-centered) in view for orientation.
+    // Keep the graph dominant when reading an agent. The panel takes 40% of
+    // the canvas, capped at 80 columns on wide terminals.
     let (flow_area, panel_area) = if selected.is_some() {
+        let panel_width = ((u32::from(canvas_area.width) * 40 / 100) as u16).min(80);
         let [left, right] =
-            Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(panel_width)])
                 .areas(canvas_area);
         (left, Some(right))
     } else {

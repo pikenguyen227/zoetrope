@@ -68,6 +68,9 @@ seconds; transcript tailing and rendering run independently.
 | o / f | Overview / follow camera |
 | q or Ctrl+C | Quit |
 
+The reading panel uses 40% of the canvas width, capped at 80 terminal columns,
+so the graph remains visible while inspecting an agent.
+
 The fleet overview includes a live activity histogram across all attached sessions,
 including retained history. Its latest event, time range and failure count update
 as records arrive. The strip appears at terminal heights of 18 rows or more.
