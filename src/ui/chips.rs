@@ -161,6 +161,12 @@ impl ChipTray {
         self.seeded
     }
 
+    /// How many chips are showing.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.chips.len()
+    }
+
     /// Absorb the model's current tool calls as history WITHOUT animating them —
     /// used on the live-attach backfill and after a seek. It only moves the
     /// `seen` mark to the end and clears the tray; the next `reconcile` then
@@ -175,6 +181,18 @@ impl ChipTray {
             if let Some(info) = model.agent(id) {
                 self.seen.insert(id.clone(), info.tool_calls.len());
             }
+        }
+        self.seeded = true;
+    }
+
+    /// [`adopt_baseline`](Self::adopt_baseline) for just the given agents, each
+    /// with its tool-call count as history, leaving every other agent's chips
+    /// and marks alone — for a tray over several sources, where one source's
+    /// backfill arriving must not wipe another's afterglows.
+    pub fn adopt_agents(&mut self, marks: impl IntoIterator<Item = (String, usize)>) {
+        for (id, seen) in marks {
+            self.chips.retain(|c| c.agent_id != id);
+            self.seen.insert(id, seen);
         }
         self.seeded = true;
     }

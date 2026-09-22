@@ -73,6 +73,7 @@ pub async fn run(
         let _ = app.flow.tick_auto_pan(elapsed);
         app.flow.tick_animation(elapsed);
         app.tick_camera(elapsed);
+        app.tick_pulse(elapsed);
         // Advance the replay playhead (paces replay; no-op while following a
         // live edge, where folding happens as Batches arrive).
         app.tick_timeline(elapsed);

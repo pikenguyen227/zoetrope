@@ -229,6 +229,14 @@ pub struct Usage {
     pub cache_creation_input_tokens: Option<u64>,
     #[serde(default)]
     pub cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_creation: Option<CacheCreation>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CacheCreation {
+    #[serde(default)]
+    pub ephemeral_1h_input_tokens: u64,
 }
 
 // ---------------------------------------------------------------------------

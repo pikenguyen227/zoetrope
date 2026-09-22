@@ -1,0 +1,18 @@
+id = "pikenguyen227.zoetrope-fleet"
+name = "Zoetrope Fleet"
+version = "0.1.0"
+description = "Observe a Firstmate crew in a persistent multi-session graph."
+platforms = ["macos", "linux"]
+min_herdr_version = "0.9.1"
+
+[[panes]]
+id = "fleet"
+title = "Team"
+placement = "tab"
+command = ["bash", "open.sh"]
+
+[[actions]]
+id = "open"
+title = "Zoetrope: Firstmate Fleet tab"
+contexts = ["pane", "workspace"]
+command = ["bash", "pane.sh"]

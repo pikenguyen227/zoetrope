@@ -38,6 +38,9 @@ impl EdgeContent for AgentEdge {
         } else {
             EdgeStyle::default()
         };
-        ctx.render_path(&style, None, buf);
+        // Native parent edges remain unlabelled; Fleet relationships carry
+        // explicit labels so delegation cannot be mistaken for native spawning.
+        let label = ctx.label.map(ratatui::text::Text::raw);
+        ctx.render_path(&style, label.as_ref(), buf);
     }
 }

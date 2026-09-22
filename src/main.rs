@@ -35,6 +35,8 @@ const CHANNEL_CAP: usize = 32;
 /// once running, regardless of how it launched.
 #[derive(Debug, Clone)]
 pub enum Cli {
+    /// View independent sessions registered in a Fleet manifest.
+    Fleet { manifest: PathBuf, inspect: bool },
     /// View a session in the TUI. `target`: a session file (replay it from the
     /// start), a project dir (follow its live session), a session id, or
     /// `None` (the current project). `follow` starts at the live edge instead
@@ -68,6 +70,8 @@ USAGE:
     zoe <file> --speed N    playback speed (default 8.0)
     zoe --provider <name>   force the format (claude, codex) instead of detecting it
     zoe inspect <file|id>   headless: print the session tree + info
+    zoe fleet <manifest>    live graph of registered independent sessions
+    zoe fleet <manifest> --inspect  validate and report without a TUI
     zoe --version           print the version and exit
 
 Once open, scrub/follow/pause/go-live are available no matter how you launched.";
@@ -76,6 +80,24 @@ Once open, scrub/follow/pause/go-live are available no matter how you launched."
 fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli> {
     // Skip argv[0].
     let mut args = args.skip(1).peekable();
+
+    if args.peek().map(String::as_str) == Some("fleet") {
+        args.next();
+        let mut manifest = None;
+        let mut inspect = false;
+        for arg in args {
+            match arg.as_str() {
+                "--inspect" => inspect = true,
+                flag if flag.starts_with('-') => bail!("unknown fleet flag {flag:?}"),
+                _ if manifest.is_none() => manifest = Some(PathBuf::from(arg)),
+                _ => bail!("fleet takes one manifest path"),
+            }
+        }
+        return Ok(Cli::Fleet {
+            manifest: manifest.ok_or_else(|| anyhow!("fleet requires a manifest path"))?,
+            inspect,
+        });
+    }
 
     let provider_flag = |args: &mut std::iter::Peekable<_>| -> Result<Option<Provider>> {
         let v: String = args
@@ -313,6 +335,14 @@ async fn main() -> Result<()> {
 
     let cli = parse_cli(std::env::args())?;
     match cli {
+        Cli::Fleet {
+            manifest,
+            inspect: true,
+        } => zoetrope::fleet::native::inspect(&manifest),
+        Cli::Fleet {
+            manifest,
+            inspect: false,
+        } => zoetrope::fleet::native::run(manifest).await,
         Cli::Inspect { target, provider } => run_inspect(target, provider).await,
         other => run_tui(other).await,
     }
@@ -328,6 +358,21 @@ mod tests {
         let mut v = vec!["zoe".to_string()];
         v.extend(args.iter().map(|s| s.to_string()));
         parse_cli(v.into_iter())
+    }
+
+    #[test]
+    fn fleet_requires_one_manifest_and_accepts_inspection() {
+        assert!(matches!(
+            cli(&["fleet", "crew.json", "--inspect"]).unwrap(),
+            Cli::Fleet { inspect: true, .. }
+        ));
+        assert!(matches!(
+            cli(&["fleet", "crew.json"]).unwrap(),
+            Cli::Fleet { inspect: false, .. }
+        ));
+        assert!(cli(&["fleet"]).is_err());
+        assert!(cli(&["fleet", "a.json", "b.json"]).is_err());
+        assert!(cli(&["fleet", "a.json", "--follow"]).is_err());
     }
 
     #[test]

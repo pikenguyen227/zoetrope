@@ -50,7 +50,7 @@ mod bytes;
 #[cfg(feature = "native")]
 mod live;
 #[cfg(feature = "native")]
-mod replay;
+pub(crate) mod replay;
 
 #[cfg(feature = "native")]
 use live::run_live;

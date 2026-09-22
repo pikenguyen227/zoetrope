@@ -32,8 +32,11 @@ use crate::state::{App, Camera, Mode, Transport};
 /// is selected, and draws the status bar (title, live/replay indicator, agent &
 /// tool counts, pause state, key hints).
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let area = frame.area();
+    draw_in(frame, app, frame.area());
+}
 
+/// Embed the unchanged session UI in a frontend-owned rectangle.
+pub(crate) fn draw_in(frame: &mut Frame, app: &mut App, area: Rect) {
     // Top: canvas (fill); one bordered timeline panel — the scrubber (6 rows),
     // plus an event-log line and a single divider on top when the session has
     // prompts (→ 8 rows); bottom: a one-row status bar.
@@ -62,18 +65,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // the canvas render (borrow split: companions take &Flow, Widget is &mut).
     let selected = app.selected_agent_id();
 
-    // When an agent is selected, split the canvas 30/70 for the detail panel —
-    // the panel is what you're reading; the canvas only keeps the selected
-    // node (click-centered) in view for orientation.
+    // Keep the graph dominant when reading an agent. The panel takes 40% of
+    // the canvas, capped at 80 columns on wide terminals.
     let (flow_area, panel_area) = if selected.is_some() {
+        let panel_width = ((u32::from(canvas_area.width) * 40 / 100) as u16).min(80);
         let [left, right] =
-            Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(panel_width)])
                 .areas(canvas_area);
         (left, Some(right))
     } else {
         (canvas_area, None)
     };
 
+    app.detail_area = panel_area;
     render_canvas(frame, flow_area, app, selected.is_none());
 
     // A user selection centers its node — resolved HERE, after the flow has
@@ -684,8 +688,8 @@ fn render_canvas(frame: &mut Frame, area: Rect, app: &mut App, show_minimap: boo
     frame.render_widget(Background::new(&app.flow), area);
     frame.render_widget(&mut app.flow, area);
     // Chips right after the flow (frame-exact anchors), under the minimap.
-    // `now_reference` drives the live-ticking duration on a single-tool chip.
-    let now = app.timeline.now_reference();
+    // `chrome_now` drives the live-ticking duration on a single-tool chip.
+    let now = app.chrome_now();
     chips::render(&app.chips, &app.flow, &app.session, now, frame.buffer_mut());
     if show_minimap {
         frame.render_widget(

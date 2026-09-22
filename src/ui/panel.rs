@@ -150,7 +150,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, agent_id: &str) {
         0
     };
     let [header_area, prov_area, tools_area] = Layout::vertical([
-        Constraint::Length(6),
+        Constraint::Length(if agent.usage.summary.recorded { 8 } else { 6 }),
         Constraint::Length(prov_rows),
         Constraint::Fill(1),
     ])
@@ -210,11 +210,13 @@ fn render_header(frame: &mut Frame, area: Rect, agent: &AgentInfo, palette: &rat
 
     // Counts: tools + tokens.
     lines.push(Line::from(Span::styled(
-        format!(
-            "{} tools · {} tok",
-            agent.tool_calls.len(),
-            agent.output_tokens
-        ),
+        if agent.usage.summary.recorded {
+            let u = &agent.usage.summary;
+            format!("{} tools · {} in + {} out = {} tok{} · {}\nCache: {} read / {} written · standard API equivalent, not your bill",
+                agent.tool_calls.len(), u.input, u.output, u.total(), if u.incomplete { "+ (partial)" } else { "" }, u.cost_label(), u.cached, u.cache_write)
+        } else {
+            format!("{} tools · {} output tok · total/cost unavailable", agent.tool_calls.len(), agent.output_tokens)
+        },
         bg.fg(palette.muted),
     )));
 

@@ -80,6 +80,10 @@ const LIVE_FRESH: std::time::Duration = std::time::Duration::from_secs(10);
 /// Duration of a Follow camera glide between focus targets.
 const GLIDE_SECS: f64 = 0.5;
 
+/// Half-period of the running-card pulse: one beat on, one off, so a ~1s
+/// heartbeat.
+const PULSE_HALF_MS: u64 = 480;
+
 /// Offset distance (world units) below which a glide is a no-op snap — avoids
 /// micro-glides and lets a stationary followed agent settle exactly on target.
 const GLIDE_SNAP_EPS: f64 = 0.5;
@@ -196,6 +200,8 @@ pub struct App {
     /// Screen rect of the scrubber bar from the last render, so the input
     /// handler can map a click/drag on it to a seek. `None` when not drawn.
     pub scrubber_area: Option<ratatui::layout::Rect>,
+    /// Last rendered reading panel, for pointer-local scrolling.
+    pub detail_area: Option<ratatui::layout::Rect>,
     /// Cached per-column scrubber tallies (head-independent), recomputed only when
     /// the item count or bar width changes — not every frame. See
     /// [`crate::ui::ScrubberTally`].
@@ -223,6 +229,13 @@ pub struct App {
     /// costs ONE seek (a backward seek rebuilds the whole model), not one per
     /// mouse event.
     pub pending_seek: Option<f64>,
+    /// Whether this App renders a projection it does not fold itself (the
+    /// Fleet overview): its timeline stays empty, so time-derived chrome reads
+    /// the wall clock instead of the playhead. See [`chrome_now`](Self::chrome_now).
+    pub wall_clock: bool,
+    /// Wall-time accumulated by [`tick_pulse`](Self::tick_pulse), modulo one
+    /// pulse cycle.
+    pulse_ms: u64,
     /// Ladder of folded-model snapshots, ascending by `folded`, used to start a
     /// backward seek near its target instead of re-folding from item zero.
     snapshots: Vec<Snapshot>,
@@ -249,6 +262,7 @@ impl App {
             camera_glide: None,
             timeline: Timeline::new(),
             scrubber_area: None,
+            detail_area: None,
             scrubber_tally: None,
             era_cache: None,
             last_batch_at: None,
@@ -256,6 +270,8 @@ impl App {
             show_info: false,
             pending_center: None,
             pending_seek: None,
+            wall_clock: false,
+            pulse_ms: 0,
             snapshots: Vec::new(),
         }
     }
@@ -936,6 +952,29 @@ impl App {
         }
     }
 
+    /// Advance the running-card pulse by one frame of wall time, re-marking the
+    /// cards only when the beat flips. Chrome, like the camera glide: it runs
+    /// whether or not the playhead moves.
+    pub fn tick_pulse(&mut self, dt: std::time::Duration) {
+        let before = self.pulse_ms / PULSE_HALF_MS;
+        self.pulse_ms = (self.pulse_ms + dt.as_millis() as u64) % (2 * PULSE_HALF_MS);
+        let after = self.pulse_ms / PULSE_HALF_MS;
+        if before != after {
+            graph::set_pulse(&mut self.flow, &self.session, after == 1);
+        }
+    }
+
+    /// The "now" that time-derived chrome (a pending chip's live duration)
+    /// reads: the timeline's [`now_reference`](Timeline::now_reference), or the
+    /// wall clock for a [`wall_clock`](Self::wall_clock) projection.
+    pub fn chrome_now(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        if self.wall_clock {
+            Some(chrono::Utc::now())
+        } else {
+            self.timeline.now_reference()
+        }
+    }
+
     /// The node id of the currently selected agent, if any (read from the flow
     /// during render; copy it out before borrowing `app` mutably).
     pub fn selected_agent_id(&self) -> Option<String> {
@@ -989,9 +1028,21 @@ impl App {
         for event in events {
             let drop_camera = self.camera == Camera::Follow
                 || (self.camera == Camera::Overview
-                    && matches!(event, FlowEvent::ViewportChanged { .. }));
+                    && matches!(
+                        event,
+                        FlowEvent::ViewportChanged { .. }
+                            | FlowEvent::NodeDragStarted { .. }
+                            | FlowEvent::NodeDragged { .. }
+                    ));
             if drop_camera {
                 self.camera = Camera::Manual;
+                self.camera_glide = None;
+            }
+            if matches!(
+                event,
+                FlowEvent::NodeDragStarted { .. } | FlowEvent::NodeDragged { .. }
+            ) {
+                self.pending_center = None;
                 self.camera_glide = None;
             }
             if let FlowEvent::SelectionChanged { node_ids, .. } = &event {

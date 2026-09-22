@@ -42,6 +42,9 @@ pub struct Stream {
     /// The cumulative output tokens last seen, so each `token_count` states
     /// only what it added.
     output_tokens: u64,
+    usage: crate::usage::Tokens,
+    usage_record: u64,
+    model: Option<String>,
 }
 
 impl Stream {
@@ -236,7 +239,51 @@ impl Stream {
             Payload::EventMsg(ev) => {
                 match ev {
                     EventMsg::ItemCompleted(ic) => self.item_facts(owner, ic, &mut out),
-                    EventMsg::TokenCount { info } => {
+                    EventMsg::TokenCount { info, rate_limits } => {
+                        if let Some(rate) = rate_limits
+                            && let Some(ts) = line.timestamp
+                        {
+                            out.push(Fact {
+                                agent: None,
+                                ts: None,
+                                kind: FactKind::Quota(crate::usage::Quota {
+                                    bucket: rate.limit_id.clone().unwrap_or_else(|| "codex".into()),
+                                    observed_at: ts,
+                                    windows: [&rate.primary, &rate.secondary]
+                                        .into_iter()
+                                        .flatten()
+                                        .filter_map(|w| {
+                                            Some(crate::usage::Window {
+                                                minutes: w.window_minutes?,
+                                                used_percent: w.used_percent?,
+                                                resets_at: w.resets_at,
+                                            })
+                                        })
+                                        .collect(),
+                                }),
+                            });
+                        }
+                        if let Some(info) = info {
+                            let usage = if let Some(total) = &info.total_token_usage {
+                                let total = total.normalized();
+                                let delta = total.delta(&self.usage);
+                                self.usage.merge(&total);
+                                (delta.total() > 0)
+                                    .then(|| (format!("total:{:?}", self.usage), delta))
+                            } else {
+                                info.last_token_usage.as_ref().map(|u| {
+                                    self.usage_record += 1;
+                                    (format!("last:{}", self.usage_record), u.normalized())
+                                })
+                            };
+                            if let Some((key, tokens)) = usage {
+                                out.push(by(FactKind::Usage(crate::usage::Usage {
+                                    key,
+                                    model: self.model.clone(),
+                                    tokens,
+                                })));
+                            }
+                        }
                         let total = info
                             .as_ref()
                             .and_then(|i| i.total_token_usage.as_ref())
@@ -267,6 +314,7 @@ impl Stream {
                     EventMsg::ThreadSettingsApplied { thread_settings } => {
                         if let Some(model) = thread_settings.as_ref().and_then(|s| s.model.clone())
                         {
+                            self.model = Some(model.clone());
                             out.push(by(FactKind::Model(model)));
                         }
                     }
@@ -279,6 +327,7 @@ impl Stream {
             }
             Payload::TurnContext(tc) => {
                 if let Some(model) = &tc.model {
+                    self.model = Some(model.clone());
                     out.push(by(FactKind::Model(model.clone())));
                 }
                 ensure_activity(&mut out, owner);
@@ -522,6 +571,56 @@ fn json_string_after(text: &str, key: &str) -> Option<String> {
 fn first_quoted(text: &str) -> Option<String> {
     let open = text.find('"')?;
     json_string_after(&text[open..], "\"")
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    #[test]
+    fn incomplete_quota_fields_do_not_discard_token_records() {
+        let mut stream = Stream::new();
+        stream
+            .push(r#"{"type":"session_meta","payload":{"id":"root","source":"cli"}}"#)
+            .unwrap();
+        let statement=stream.push(r#"{"timestamp":"2026-09-22T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":20}},"rate_limits":{"primary":{"used_percent":null,"window_minutes":null}}}}"#).unwrap();
+        assert!(
+            statement
+                .facts
+                .iter()
+                .any(|f| matches!(&f.kind, FactKind::Usage(u) if u.tokens.total()==120))
+        );
+    }
+
+    #[test]
+    fn cumulative_usage_repeats_and_rate_windows_are_independent() {
+        let mut stream = Stream::new();
+        let mut book = crate::usage::Book::default();
+        stream
+            .push(r#"{"type":"session_meta","payload":{"id":"root","source":"cli"}}"#)
+            .unwrap();
+        stream
+            .push(r#"{"type":"turn_context","payload":{"model":"gpt-6-astra"}}"#)
+            .unwrap();
+        let mut info = crate::state::SessionInfo::default();
+        for (i, o) in [(100, 20), (100, 20), (150, 30), (90, 10)] {
+            let line = format!(
+                r#"{{"timestamp":"2026-09-22T01:00:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{i},"output_tokens":{o},"cached_input_tokens":50,"reasoning_output_tokens":10}}}},"rate_limits":{{"limit_id":"codex","primary":{{"used_percent":25,"window_minutes":300,"resets_at":2000000000}},"secondary":{{"used_percent":60,"window_minutes":10080,"resets_at":2000010000}}}}}}}}"#
+            );
+            let mut statement = stream.push(&line).unwrap();
+            for f in statement.take_session_meta() {
+                info.apply(&f);
+            }
+            for f in statement.facts {
+                if let FactKind::Usage(u) = f.kind {
+                    book.apply(&u);
+                }
+            }
+        }
+        assert_eq!(book.summary.total(), 180); // reasoning and cache are subsets
+        assert_eq!(book.summary.cached, 50);
+        assert!(book.summary.usd.is_some());
+        assert_eq!(info.quotas["codex"].windows.len(), 2);
+    }
 }
 
 #[cfg(test)]

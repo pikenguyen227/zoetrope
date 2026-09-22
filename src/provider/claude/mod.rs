@@ -208,6 +208,29 @@ pub fn facts(source: &Source, entry: &Entry) -> Vec<Fact> {
                         dedup: e.envelope.request_id.clone(),
                     }));
                 }
+                if let Some(usage) = &msg.usage
+                    && let Some(key) = e.envelope.request_id.as_ref().or(e.envelope.uuid.as_ref())
+                {
+                    let cached = usage.cache_read_input_tokens.unwrap_or(0);
+                    let write = usage.cache_creation_input_tokens.unwrap_or(0);
+                    out.push(about(FactKind::Usage(crate::usage::Usage {
+                        key: key.clone(),
+                        model: msg.model.clone(),
+                        tokens: crate::usage::Tokens {
+                            // Claude input excludes cache reads and writes.
+                            input: usage
+                                .input_tokens
+                                .map(|n| n.saturating_add(cached).saturating_add(write)),
+                            output: usage.output_tokens,
+                            cached,
+                            cache_write: write,
+                            cache_write_1h: usage
+                                .cache_creation
+                                .as_ref()
+                                .map_or(0, |c| c.ephemeral_1h_input_tokens),
+                        },
+                    })));
+                }
                 // Blocks in order: a spawn carries the text nearest above it as
                 // its stated reason, which the fold reads off the last Reasoning.
                 for block in &msg.content {

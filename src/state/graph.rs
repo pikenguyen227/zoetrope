@@ -32,6 +32,9 @@ pub fn new_flow() -> AgentFlow {
     let mut flow = Flow::new()
         .with_theme(Theme::Custom(palette))
         .with_deselect_on_pane_click(false)
+        // A press is only a candidate click. Dragging must not open/reset the
+        // reading panel or change the selected agent.
+        .with_select_nodes_on_drag(false)
         // We drive the camera on selection ourselves (a center-glide via
         // `pending_center`), so suppress the library's instant ensure-visible pan
         // — otherwise the two stack into a jump-then-glide on off-screen nodes.
@@ -73,6 +76,7 @@ fn content_matches(info: &AgentInfo, node: &AgentNode) -> bool {
         && node.tool_count == info.tool_calls.len()
         && node.last_tool.as_deref() == info.last_tool()
         && node.output_tokens == info.output_tokens
+        && node.usage == info.usage.summary
         && node.interactive == info.is_interactive()
 }
 
@@ -85,7 +89,19 @@ fn build_content(info: &AgentInfo) -> AgentNode {
         tool_count: info.tool_calls.len(),
         last_tool: info.last_tool().map(str::to_string),
         output_tokens: info.output_tokens,
+        usage: info.usage.summary.clone(),
         interactive: info.is_interactive(),
+        pulse: false,
+    }
+}
+
+/// Set the running pulse's beat on every card. Cheap enough per flip (about
+/// twice a second), not meant for every frame.
+pub fn set_pulse(flow: &mut AgentFlow, model: &SessionModel, on: bool) {
+    for id in &model.spawn_order {
+        if let Some(content) = flow.node_content_mut(id) {
+            content.pulse = on;
+        }
     }
 }
 
@@ -119,7 +135,9 @@ pub fn sync(flow: &mut AgentFlow, model: &SessionModel, relayout: bool) -> bool 
             // visible changed — the per-second status tick and per-batch
             // syncs walk every agent, and most are unchanged.
             if !content_matches(info, existing) {
+                let pulse = existing.pulse;
                 *existing = build_content(info);
+                existing.pulse = pulse;
             }
         } else {
             // Sibling index for local placement — computed only for the rare
