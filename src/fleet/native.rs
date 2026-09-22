@@ -311,6 +311,16 @@ fn route(fleet: &mut Fleet, event: &Event) -> bool {
     crate::handler::handle_event(event, fleet.active())
 }
 
+/// Route every input event already queued, returning whether the app should quit.
+fn route_queued(fleet: &mut Fleet, input: &mut mpsc::UnboundedReceiver<Event>) -> bool {
+    while let Ok(event) = input.try_recv() {
+        if route(fleet, &event) {
+            return true;
+        }
+    }
+    false
+}
+
 pub async fn run(path: PathBuf) -> Result<()> {
     let (initial, mut last_text) = load_with_text(&path)?;
     let mut fleet = Fleet::new(initial).map_err(|e| anyhow!(e))?;
@@ -391,6 +401,13 @@ pub async fn run(path: PathBuf) -> Result<()> {
                     _ => { if fleet.manifest_error.take().is_some() { dirty = true; } },
                 }
             },
+        }
+        // Route all queued input before the next draw, as `tui::run` does. A
+        // drag delivers many events per frame; drawing once per event falls
+        // further behind the pointer whenever the terminal takes a frame
+        // slower than the loop produces one.
+        if route_queued(&mut fleet, &mut input_rx) {
+            break Ok(());
         }
         // Bounded drain keeps both high-volume fleets and pointer input responsive.
         for _ in 0..64 {
@@ -675,6 +692,47 @@ mod tests {
         assert!(resolve(&wrong).is_err()); // prefixes never pass identity validation
         wrong.key = manifest.sessions[1].key.clone();
         assert!(resolve(&wrong).is_err()); // named file belongs to another session
+    }
+
+    #[test]
+    fn a_frame_routes_every_queued_drag_event() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let fixture = Fixture::new();
+        let mut fleet = Fleet::new(fixture.manifest()).unwrap();
+        fleet.sync();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 44)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut fleet)).unwrap();
+        let mouse = |kind, column| {
+            Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        // A burst of pointer motion queued between two frames, as a terminal
+        // delivers it faster than the loop draws.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(mouse(MouseEventKind::Down(MouseButton::Left), 2))
+            .unwrap();
+        for column in 3..=32 {
+            tx.send(mouse(MouseEventKind::Drag(MouseButton::Left), column))
+                .unwrap();
+        }
+        let x = fleet.overview.flow.viewport.x;
+        assert!(!route_queued(&mut fleet, &mut rx));
+        assert!(rx.try_recv().is_err(), "every queued event is routed");
+        assert_eq!(fleet.overview.flow.viewport.x - x, 30.0);
+        assert_eq!(fleet.overview.camera, crate::state::Camera::Manual);
+        // A quit anywhere in the burst still ends the loop.
+        tx.send(mouse(MouseEventKind::Drag(MouseButton::Left), 33))
+            .unwrap();
+        tx.send(Event::Key(crossterm::event::KeyEvent::from(KeyCode::Char(
+            'q',
+        ))))
+        .unwrap();
+        assert!(route_queued(&mut fleet, &mut rx));
     }
 
     #[test]
