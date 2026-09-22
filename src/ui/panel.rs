@@ -195,7 +195,11 @@ fn render_header(frame: &mut Frame, area: Rect, lines: Vec<Line>, palette: &rata
 
 /// The header's lines, text rows pre-wrapped to `width` so the count is the
 /// rendered height.
-fn header_lines(agent: &AgentInfo, width: usize, palette: &rataflow::Palette) -> Vec<Line<'static>> {
+fn header_lines(
+    agent: &AgentInfo,
+    width: usize,
+    palette: &rataflow::Palette,
+) -> Vec<Line<'static>> {
     // Single-source vocabulary + presence colors (shared with cards/inspect).
     let status_text = agent.status_word();
     let status_color = crate::ui::status_color(agent.status, palette);
