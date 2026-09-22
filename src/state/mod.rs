@@ -685,6 +685,24 @@ impl App {
         self.commit_seek(target_fold);
     }
 
+    /// Park the playhead at `target` for an external clock (the Fleet's shared
+    /// playhead). A [`seek`](Self::seek) that never re-pins to the edge: even at
+    /// or past it, liveness reads `target` instead of the wall clock, and
+    /// appends beyond it stay buffered until the clock reaches them. Folds or
+    /// rebuilds through the same path as a seek, but only when the due prefix
+    /// changed; returns whether it did. A moved clock with nothing new due only
+    /// moves the "now" that the next [`status_tick`](Self::status_tick) reads.
+    pub fn park_at(&mut self, target: chrono::DateTime<chrono::Utc>) -> bool {
+        self.timeline.follow_head = false;
+        self.timeline.cursor = Some(target);
+        let fold = self.timeline.fold_target();
+        if fold == self.timeline.folded {
+            return false;
+        }
+        self.commit_seek(fold);
+        true
+    }
+
     /// Move the model to `target` folded items — the shared body of every seek
     /// (by time, fraction, or index). Assumes `cursor`/`follow_head` are already
     /// set. Forward folds in place; backward rebuilds (see `rebuild_to`). A

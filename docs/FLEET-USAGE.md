@@ -61,8 +61,12 @@ seconds; transcript tailing and rendering run independently.
 | Tab / arrows / click and release | Select a node and open its reading panel |
 | Drag a card | Move it without opening/changing the reading panel |
 | Wheel over reading panel | Scroll tool history (wheel on canvas zooms) |
-| Enter | Open the selected session's original inspector and timeline |
-| Esc in a session | Return to the live fleet |
+| Space | Pause or play the whole crew on the fleet timeline |
+| Click or drag the scrubber, `[` / `]` | Seek the fleet playhead; step between prompts and lifecycle events |
+| g / End | Back to the live edge |
+| s | Skip idle gaps (only while every session is quiet) or play in real time |
+| Enter | Open the selected session's inspector and timeline, at the fleet's moment |
+| Esc in a session | Return to the fleet at its moment |
 | x in the fleet | Collapse/expand the selected session's native children |
 | r | Arrange the graph |
 | o / f | Overview / follow camera |
@@ -71,13 +75,21 @@ seconds; transcript tailing and rendering run independently.
 The reading panel uses 40% of the canvas width, capped at 80 terminal columns,
 so the graph remains visible while inspecting an agent.
 
-The fleet overview includes a live activity histogram across all attached sessions,
-including retained history. Its latest event, time range and failure count update
-as records arrive. The strip appears at terminal heights of 18 rows or more.
+The fleet overview has one timeline for the whole crew: the upstream scrubber
+over every session's activity plus Firstmate lifecycle marks (`+` spawned, `▲`
+needs-decision or blocked, `✓` done, `⊘` torn down). Scrubbing shows the crew as
+it was then: sessions and attempts that did not exist yet are absent, torn-down
+ones are dimmed, and cards carry the task's status badge at that moment. Hatched
+stretches are times the adapter was not observing Firstmate; there badges read
+`?` and the header says the lifecycle there is unverified. The footer narrates
+the newest lifecycle event at the playhead. Inside a session, its own timeline
+works as before.
 
-The fleet overview is live-only. Inside a session, Space, the scrubber, `[` / `]`,
-and `g` retain their existing replay/follow behavior. Returning to Fleet brings that
-session to its live edge.
+Try it without Herdr on the synthetic crew (a finished run with a coverage gap):
+
+```sh
+cargo run --locked -- fleet assets/fleet/crew/fleet.json
+```
 
 ## Connections and history
 
@@ -96,9 +108,11 @@ Missing transcripts are unavailable; closed panes and cleanup do not erase obser
 membership. Transcript contents are neither copied into the journal nor retained if
 an agent deletes them.
 
-Automatic Captain lineage/handoff capture and combined historical fleet replay are
-future work. The journal records observed changes, not transitions before collection
-started. The manifest accepts at most 128 sessions and 4096 task attempts/links;
+Automatic Captain lineage/handoff capture and opening a finished crew as a replay
+are future work. The journal records lifecycle the adapter observed (see
+`FIRSTMATE-FLEET.md`, "Lifecycle journal"): a status line keeps its own stamp and a
+spawn its `spawn_gen` time, but lines written between polls or while no adapter
+ran are not recovered. The manifest accepts at most 128 sessions and 4096 task attempts/links;
 start a separately named archive for larger histories. Invalid refreshes retain the
 last usable view and show its age.
 

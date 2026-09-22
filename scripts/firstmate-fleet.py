@@ -3,14 +3,21 @@
 
 Live mode is only available inside Herdr. Offline fixtures call build_manifest;
 they never use a socket, launch an agent, or impersonate a Herdr environment.
+
+Beside the manifest, the journal records lifecycle events (spawned, bound,
+status, torn_down) and the coverage windows in which this adapter was
+observing, for the fleet timeline. See Bridge.
 """
 import argparse
 import copy
 import datetime as dt
 import fcntl
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -18,6 +25,8 @@ import tempfile
 import time
 
 SCHEMA = "zoetrope.fleet.v1"
+JOURNAL = "zoetrope.fleet.journal.v2"
+LEGACY_JOURNAL = "zoetrope.fleet.journal.v1"
 
 
 def now():
@@ -212,6 +221,7 @@ def snapshot_env(home, herdr):
 
 
 def collect(home, herdr, previous, captain_target):
+    """One observation: the joined manifest and the snapshot it was built from."""
     env = snapshot_env(home, herdr)
     command = [str(home / "bin" / "fm-fleet-snapshot.sh"), "--json"]
     before = run_json(command, env)
@@ -234,7 +244,168 @@ def collect(home, herdr, previous, captain_target):
     after = run_json(command, env)
     manifest = build_manifest(before, after, panes, previous, captain)
     manifest["diagnostics"].extend(errors)
-    return manifest
+    return manifest, after
+
+
+def iso(epoch):
+    return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def snapshot_epoch(snapshot):
+    """When the snapshot observed, in whole seconds, as Firstmate states it."""
+    epoch = snapshot.get("generated_epoch")
+    if isinstance(epoch, int) and not isinstance(epoch, bool):
+        return epoch
+    stamp = dt.datetime.fromisoformat(str(snapshot.get("generated")).replace("Z", "+00:00"))
+    if stamp.tzinfo is None:
+        raise ValueError("snapshot generated time has no zone")
+    return int(stamp.timestamp())
+
+
+def spawn_epoch(spawn_gen):
+    # fm-spawn.sh writes s<epoch>.<pid>.<rand>. Any other shape stays opaque.
+    match = re.match(r"s(\d{9,12})\.", spawn_gen or "")
+    return int(match.group(1)) if match else None
+
+
+class Bridge:
+    """Turn successive Firstmate snapshots into lifecycle events.
+
+    Times are only as good as their evidence, and each event says which
+    (at_quality): a status line's own [at=] stamp comes back exactly as
+    generated - last_event.age_seconds ("stamp"); a spawn from the epoch in its
+    spawn_gen ("derived"); everything else is when this bridge noticed it
+    ("observed"). Only the last status line is visible per poll, so lines that
+    land between polls, and anything while no bridge runs, are lost. Coverage
+    events say when the bridge was watching, so the timeline shows those gaps
+    instead of a steady state it never saw.
+    """
+
+    def __init__(self, fleet_id, run, max_gap=60, checkpoint=60):
+        self.fleet_id = fleet_id
+        self.run = run
+        self.max_gap = max_gap
+        self.checkpoint = checkpoint
+        # (task, spawn_gen) -> {"session": key or None, "status": mark or None, "down": bool}
+        self.attempts = {}
+        self.window = None  # [first, last] poll epochs of the open coverage window
+        self.written = None  # how far that window's coverage lines reach
+
+    def recover(self, records):
+        """Resume from journal records, so a restart re-emits nothing it wrote."""
+        for record in records:
+            if record.get("schema") != JOURNAL or record.get("kind") != "lifecycle":
+                continue
+            event = record.get("event") or {}
+            attempt = event.get("attempt")
+            if not isinstance(attempt, dict):
+                continue
+            state = self.state((attempt.get("task"), attempt.get("spawn_gen")))
+            kind = event.get("type")
+            if kind == "bound":
+                state["session"] = event.get("session")
+            elif kind == "status":
+                status = event.get("status") or {}
+                stamped = event.get("at_quality") == "stamp"
+                state["status"] = (status.get("digest"), event.get("at") if stamped else None)
+            elif kind == "torn_down":
+                state["down"] = True
+
+    def state(self, key):
+        return self.attempts.setdefault(key, {"session": None, "status": None, "down": False})
+
+    def line(self, kind, ident, at, quality, attempt=None, **payload):
+        event = {"id": f"bridge:{self.fleet_id}#{kind}/{ident}",
+                 "source": {"kind": "bridge", "run": self.run},
+                 "at": iso(at), "at_quality": quality}
+        if attempt:
+            event["attempt"] = {"task": attempt[0], "spawn_gen": attempt[1]}
+        event["type"] = kind
+        event.update(payload)
+        return {"schema": JOURNAL, "kind": "lifecycle", "event": event}
+
+    def observe(self, snapshot, manifest):
+        """Lifecycle lines for one successful poll: `snapshot` is what it saw,
+        `manifest` what it joined from that."""
+        now = snapshot_epoch(snapshot)
+        lines = []
+        present = set()
+        for task in snapshot["tasks"]:
+            gen = task.get("spawn_gen")
+            if not gen or task.get("remote"):
+                continue  # No attempt identity, or a remote home: out of reach.
+            key = (task["id"], gen)
+            present.add(key)
+            ident = f"{task['id']}/{gen}"
+            if key not in self.attempts:
+                epoch = spawn_epoch(gen)
+                at, quality = (epoch, "derived") if epoch is not None and epoch <= now else (now, "observed")
+                spawned = {k: task.get(k) for k in ("kind", "harness", "project") if task.get(k)}
+                lines.append(self.line("spawned", ident, at, quality, key, spawned=spawned))
+            state = self.state(key)
+            last = ((task.get("paths") or {}).get("status_log") or {}).get("last_event") or {}
+            raw, verb = last.get("raw") or "", last.get("state") or ""
+            if raw and verb:
+                age = last.get("age_seconds")
+                stamped = isinstance(age, int) and not isinstance(age, bool) and age >= 0
+                at, quality = (now - age, "stamp") if stamped else (now, "observed")
+                digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
+                mark = (digest, iso(at) if stamped else None)
+                if state["status"] != mark:
+                    status = {"value": verb, "digest": digest}
+                    found = re.search(r"\[key=([^\]\s]+)\]", raw)
+                    if found:
+                        status["key"] = found.group(1)
+                    note = (last.get("note") or "").strip()
+                    if note:
+                        status["note"] = note[:200]
+                    lines.append(self.line("status", f"{ident}/{at}/{digest}", at, quality, key,
+                                           status=status))
+                    state["status"] = mark
+        for task in manifest["tasks"]:
+            key = (task["id"], task["spawn_gen"])
+            state = self.attempts.get(key)
+            session = task.get("session")
+            if session and key in present and state["session"] != session:
+                lines.append(self.line("bound", f"{key[0]}/{key[1]}/{session['session_id']}", now,
+                                       "observed", key, session=session))
+                state["session"] = session
+        for key, state in self.attempts.items():
+            if key not in present and not state["down"]:
+                lines.append(self.line("torn_down", f"{key[0]}/{key[1]}", now, "observed", key))
+                state["down"] = True
+        return self.cover(now, bool(lines)) + lines
+
+    def cover(self, now, due=False):
+        """Extend the open coverage window to `now`, writing a segment when
+        other events need one or a checkpoint is due. Segments chain end to
+        start; a pause longer than max_gap starts a new window."""
+        lines = []
+        if self.window and now - self.window[1] > self.max_gap:
+            lines += self.close()
+        if not self.window:
+            self.window = [now, now]
+            due = True
+        self.window[1] = now
+        if due or now - self.written >= self.checkpoint:
+            lines.append(self.segment())
+        return lines
+
+    def segment(self):
+        start = self.window[0] if self.written is None else self.written
+        self.written = self.window[1]
+        return self.line("coverage", f"{self.run}/{start}-{self.window[1]}", self.window[1], "observed",
+                         coverage={"from": iso(start), "to": iso(self.window[1]),
+                                   "max_gap": math.ceil(self.max_gap)})
+
+    def close(self):
+        """End the open window at its last poll, e.g. when the bridge stops."""
+        lines = []
+        if self.window and self.written != self.window[1]:
+            lines.append(self.segment())
+        self.window = None
+        self.written = None
+        return lines
 
 
 def semantic(value):
@@ -243,6 +414,23 @@ def semantic(value):
     if isinstance(value, list):
         return [semantic(v) for v in value]
     return value
+
+
+def journal_records(output):
+    """Every complete, parseable journal record, oldest first."""
+    journal = output.with_suffix(".events.jsonl")
+    if not journal.exists():
+        return
+    # A trailing interrupted append is ignored; native transcript contents
+    # never enter this file.
+    with journal.open() as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict):
+                yield record
 
 
 def recover(output):
@@ -270,48 +458,50 @@ def recover(output):
             accept(json.loads(output.read_text()))
         except (ValueError, OSError):
             pass
-    journal = output.with_suffix(".events.jsonl")
-    if journal.exists():
-        # A trailing interrupted journal append is ignored. Replay the latest
-        # complete checkpoint; native transcript contents never enter this file.
-        with journal.open() as stream:
-            for line in stream:
-                try:
-                    record = json.loads(line)
-                    if isinstance(record, dict) and record.get("schema") == "zoetrope.fleet.journal.v1":
-                        accept(record.get("manifest"))
-                except ValueError:
-                    continue
+    # Replay the latest complete checkpoint, from either journal version.
+    for record in journal_records(output):
+        if (record.get("schema") == LEGACY_JOURNAL
+                or (record.get("schema") == JOURNAL and record.get("kind") == "manifest")):
+            accept(record.get("manifest"))
     return latest[1] if latest else None
 
 
-def publish(output, manifest, previous):
+def append_journal(output, records):
+    """Append whole lines in one write, after dropping an interrupted one."""
+    if not records:
+        return
+    journal = output.with_suffix(".events.jsonl")
+    # Repair only an interrupted final append, retaining every complete record.
+    if journal.exists():
+        with journal.open("r+b") as stream:
+            stream.seek(0, os.SEEK_END)
+            end = stream.tell()
+            if end:
+                stream.seek(end - 1)
+                if stream.read(1) != b"\n":
+                    cursor = end
+                    while cursor:
+                        start = max(0, cursor - 4096)
+                        stream.seek(start)
+                        chunk = stream.read(cursor - start)
+                        at = chunk.rfind(b"\n")
+                        if at >= 0:
+                            stream.truncate(start + at + 1)
+                            break
+                        cursor = start
+                    else:
+                        stream.truncate(0)
+    with journal.open("a") as stream:
+        stream.write("".join(json.dumps(record) + "\n" for record in records))
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def publish(output, manifest, previous, lifecycle=()):
+    records = list(lifecycle)
     if previous is None or semantic(previous) != semantic(manifest):
-        journal = output.with_suffix(".events.jsonl")
-        # Repair only an interrupted final append, retaining every complete record.
-        if journal.exists():
-            with journal.open("r+b") as stream:
-                stream.seek(0, os.SEEK_END)
-                end = stream.tell()
-                if end:
-                    stream.seek(end - 1)
-                    if stream.read(1) != b"\n":
-                        cursor = end
-                        while cursor:
-                            start = max(0, cursor - 4096)
-                            stream.seek(start)
-                            chunk = stream.read(cursor - start)
-                            at = chunk.rfind(b"\n")
-                            if at >= 0:
-                                stream.truncate(start + at + 1)
-                                break
-                            cursor = start
-                        else:
-                            stream.truncate(0)
-        with journal.open("a") as stream:
-            stream.write(json.dumps({"schema": "zoetrope.fleet.journal.v1", "manifest": manifest}) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        records.append({"schema": JOURNAL, "kind": "manifest", "manifest": manifest})
+    append_journal(output, records)
     fd, name = tempfile.mkstemp(prefix=".fleet-", dir=output.parent)
     try:
         with os.fdopen(fd, "w") as stream:
@@ -348,12 +538,18 @@ def main():
     except BlockingIOError:
         parser.error("a collector already owns this fleet; open its existing manifest")
     previous = recover(output)
+    bridge = None
     viewer = None
     try:
         while True:
             try:
-                manifest = collect(home, os.environ.get("HERDR_BIN_PATH", "herdr"), previous, args.captain)
-                publish(output, manifest, previous)
+                manifest, snapshot = collect(home, os.environ.get("HERDR_BIN_PATH", "herdr"),
+                                             previous, args.captain)
+                if bridge is None:
+                    bridge = Bridge(manifest["fleet_id"], f"{now()}/{os.getpid()}",
+                                    max_gap=max(60, 4 * args.interval))
+                    bridge.recover(journal_records(output))
+                publish(output, manifest, previous, bridge.observe(snapshot, manifest))
                 previous = manifest
             except (OSError, RuntimeError, ValueError, KeyError) as error:
                 message = f"fleet refresh failed; retaining last snapshot: {error}"
@@ -382,6 +578,11 @@ def main():
         if viewer and viewer.poll() is None:
             viewer.terminate()
             viewer.wait(timeout=5)
+        if bridge:
+            try:
+                append_journal(output, bridge.close())
+            except OSError:
+                pass
         lock.close()
 
 

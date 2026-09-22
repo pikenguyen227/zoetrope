@@ -1,6 +1,7 @@
 # Firstmate Fleet mode: implementation proposal
 
-Status: development prototype implemented and validated with synthetic fixtures.
+Status: development prototype implemented and validated with synthetic fixtures,
+including a fleet timeline over the adapter's lifecycle journal.
 Live Firstmate/Herdr validation is pending; see `FLEET-USAGE.md` for launch steps.
 Baseline: upstream commit `b1f31dd`, Zoetrope 0.2.0.
 Fork: https://github.com/pikenguyen227/zoetrope
@@ -114,9 +115,73 @@ remote snapshot behavior must be explicitly handled before enabling remote crews
   relayout deliberately rather than on every poll.
 - Watch registered files incrementally. Refresh Firstmate membership at a bounded,
   slower cadence; do not run the snapshot command on every transcript poll.
-- The first overview is live-only, with per-session inspection/replay. Do not
-  advertise a shared historical playhead until all sources can be reconstructed
-  at that playhead without leaking present-day runtime state into the past.
+- The overview has one wall-clock playhead across every session (see "Fleet
+  timeline" below). Never claim a reconstruction outside covered windows: where
+  lifecycle was not observed, show the gap, and never let present-day runtime
+  state leak into the past.
+
+## Lifecycle journal
+
+The adapter appends `zoetrope.fleet.journal.v2` lines to `<manifest>.events.jsonl`.
+Manifest checkpoints are `{"schema":…,"kind":"manifest","manifest":{…}}` (v1
+checkpoints still recover). Lifecycle lines are
+`{"schema":…,"kind":"lifecycle","event":{…}}`, where the event carries an `id`
+derived from the fact (never from arrival), a `source` (`bridge` or `firstmate`),
+`at` and `at_quality`, the `attempt` (`task`, `spawn_gen`), an optional native
+`session`, and a `type` with its payload under a key of the same name:
+`spawned`, `bound`, `status`, `decision`, `steered`, `steer_acked`,
+`reclassified`, `torn_down`, `busy` or `coverage` (`{from, to, max_gap}`, bridge only; `max_gap` in seconds is optional).
+Types and validation are in `src/fleet/journal.rs`. The viewer tails complete
+lines from a byte offset, skips lines that do not validate, deduplicates by `id`,
+and orders by time, then same-second rank (spawned and bound before transcript
+items, torn_down after), then source order.
+
+`at_quality` says how the time is known: `stamp` (the author's `[at=]`),
+`firstmate` (Firstmate's own transition), `derived` (a `spawn_gen` epoch),
+`observed` (when an observer noticed), `backfill`, or `unknown` (no `at`; never
+placed on the timeline).
+
+Until Firstmate writes a lifecycle feed of its own, the adapter bridges it from
+successive `fm-fleet-snapshot.v1` polls (`Bridge` in `scripts/firstmate-fleet.py`):
+
+- `status` from `paths.status_log.last_event`, at `generated - age_seconds`
+  (`stamp`); observed time when the age is unknown. A repeated last line is not
+  re-emitted.
+- `spawned` at the epoch in `spawn_gen` (`derived`); observed time otherwise.
+- `bound` when the Herdr join is first made, `torn_down` when an attempt leaves
+  the snapshot (a relaunch tears down the previous generation), both observed.
+- `coverage` windows while it polls: a segment at least once a minute and
+  whenever it emits anything else, split when polls stop for longer than its
+  `max_gap` (60 s, or four poll intervals if longer), which each segment carries.
+- On restart it recovers what it wrote from the journal and re-emits nothing.
+
+Only the last status line is visible per poll, so lines that land between polls,
+and anything while no bridge runs, are lost. Coverage is how the viewer knows.
+Remote homes and tasks without a `spawn_gen` are left out.
+
+## Fleet timeline
+
+One wall-clock playhead across all sessions (`src/fleet/timeline.rs`). The
+overview's upstream `Timeline` holds a merged index — one mark per dated member
+transcript item and per dated lifecycle event — that it never folds; it provides
+the upstream scrubber, pacing, markers and transport. Its cursor drives every
+member through its own seek path (`App::park_at`), so each member's model,
+liveness and chips are as of that moment; following the edge, members ride their
+own live edges. Dead air is compressed only while every session is quiet.
+
+- Membership is as of the playhead: a session that has recorded nothing yet is
+  absent, an attempt not yet spawned is absent, a torn-down attempt is dimmed.
+  In the past, cards read the journal, never the manifest, which describes today.
+- Cards carry the attempt's status badge; `needs-decision` and `blocked` (or an
+  open decision) are highlighted in amber on the card and the scrubber strip.
+- Outside every coverage window, the scrubber is hatched, the header says so,
+  and badges read `?`: the last record, unverified. At the live edge the same
+  holds once the bridge's newest window is older than twice the `max_gap` its
+  segments carry (two minutes when absent): the adapter has stopped, so
+  today's state is not observed.
+- Space, `[` / `]` (member prompts and lifecycle transitions), `g`/End and the
+  scrubber move the one playhead. Enter opens a session at that moment with its
+  own DVR; Esc rejoins the fleet's moment.
 
 ## Delivery sequence
 
@@ -132,8 +197,10 @@ remote snapshot behavior must be explicitly handled before enabling remote crews
    future work. Capture explicit handoffs and new-session
    continuations, preserve completed attempts, and exercise Claude fixtures without
    launching Claude. A provider switch must not reassign old workers retroactively.
-4. **Future: combined history.** Ordered lifecycle/transcript events, deterministic tie
-   handling, source-local order, late-event snapshot invalidation, and fleet replay.
+4. **Partial: combined history.** Implemented: the lifecycle journal, the snapshot
+   bridge that feeds it, and the fleet timeline over the live fleet, with coverage
+   gaps. Future: a Firstmate-written lifecycle feed replacing the bridge, and
+   opening a finished crew as a replay.
 
 Build a separate `zoe-fleet` development executable before changing any installed
 plugin or shortcut. Keep the existing `zoe` and its single-session behavior intact.

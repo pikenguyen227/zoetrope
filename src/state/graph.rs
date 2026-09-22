@@ -92,6 +92,7 @@ fn build_content(info: &AgentInfo) -> AgentNode {
         usage: info.usage.summary.clone(),
         interactive: info.is_interactive(),
         pulse: false,
+        crew: None,
     }
 }
 
@@ -136,8 +137,10 @@ pub fn sync(flow: &mut AgentFlow, model: &SessionModel, relayout: bool) -> bool 
             // syncs walk every agent, and most are unchanged.
             if !content_matches(info, existing) {
                 let pulse = existing.pulse;
+                let crew = existing.crew.take();
                 *existing = build_content(info);
                 existing.pulse = pulse;
+                existing.crew = crew;
             }
         } else {
             // Sibling index for local placement — computed only for the rare

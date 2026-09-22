@@ -52,6 +52,58 @@ pub struct AgentNode {
     /// [`App::tick_pulse`](crate::state::App::tick_pulse). Presentation only:
     /// the graph sync never compares it and carries it across rebuilds.
     pub pulse: bool,
+    /// Firstmate lifecycle as of the playhead, on a Fleet card: the task's
+    /// status badge, and whether the attempt is gone. `None` everywhere else.
+    /// Presentation only, like `pulse`: the Fleet sets it after each sync.
+    pub crew: Option<CrewMark>,
+}
+
+/// A Fleet card's lifecycle badge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrewMark {
+    pub label: String,
+    pub tone: CrewTone,
+    /// The attempt was torn down by then: drawn muted, still present.
+    pub dimmed: bool,
+}
+
+/// How a badge reads. `Attention` is the one that must catch the eye.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrewTone {
+    /// Waiting on the operator: `needs-decision`, `blocked`, an open decision.
+    Attention,
+    Failed,
+    Active,
+    Settled,
+    Quiet,
+    /// Outside every coverage window: the last record, not verified.
+    Unknown,
+}
+
+/// Needs-decision and blocked, distinct from gold selection and red failure.
+pub const ATTENTION: ratatui::style::Color = ratatui::style::Color::Indexed(208);
+
+impl CrewTone {
+    fn glyph(self) -> char {
+        match self {
+            Self::Attention => '▲',
+            Self::Failed => '✗',
+            Self::Active => '▸',
+            Self::Settled => '✓',
+            Self::Quiet => '·',
+            Self::Unknown => '?',
+        }
+    }
+
+    fn color(self, palette: &rataflow::Palette) -> ratatui::style::Color {
+        match self {
+            Self::Attention => ATTENTION,
+            Self::Failed => palette.error,
+            Self::Active => palette.success,
+            Self::Settled => palette.accent,
+            Self::Quiet | Self::Unknown => palette.subtle,
+        }
+    }
 }
 
 use crate::ui::truncate;
@@ -84,8 +136,19 @@ impl NodeContent for AgentNode {
 
         // Cell level (semantic zoom): too small for any text — a bordered card
         // carries no information here, so paint a solid status-colored block.
+        let crew = self.crew.as_ref();
+        let attention = crew.is_some_and(|c| c.tone == CrewTone::Attention && !c.dimmed);
+        let dimmed = crew.is_some_and(|c| c.dimmed);
         if area.width < CELL_MIN_WIDTH || area.height < CELL_MIN_HEIGHT {
-            let mut fill = Style::default().bg(glyph_color);
+            // Zoomed out, a crew waiting on the operator still stands out.
+            let fill_color = if attention {
+                ATTENTION
+            } else if dimmed {
+                palette.muted
+            } else {
+                glyph_color
+            };
+            let mut fill = Style::default().bg(fill_color);
             if ctx.selected {
                 fill = fill.add_modifier(Modifier::REVERSED);
             }
@@ -99,9 +162,12 @@ impl NodeContent for AgentNode {
 
         let border_color = if ctx.selected {
             palette.accent
+        } else if attention {
+            ATTENTION
         } else {
             palette.muted
         };
+        let text_color = if dimmed { palette.muted } else { palette.text };
         let bg_style = Style::default().bg(palette.surface);
         let border_style = bg_style.fg(border_color);
 
@@ -137,15 +203,26 @@ impl NodeContent for AgentNode {
         let title = truncate(&self.title, title_budget);
         let title_line = Line::from(vec![
             Span::styled(format!("{glyph} "), bg_style.fg(glyph_color)),
-            Span::styled(
-                title,
-                bg_style.fg(palette.text).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(title, bg_style.fg(text_color).add_modifier(Modifier::BOLD)),
         ]);
 
         // Build the candidate lines in priority order.
         let mut lines: Vec<Line> = Vec::new();
         lines.push(title_line);
+
+        if let Some(crew) = crew {
+            let color = if crew.dimmed {
+                palette.muted
+            } else {
+                crew.tone.color(&palette)
+            };
+            let mut style = bg_style.fg(color);
+            if attention {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            let badge = truncate(&format!("{} {}", crew.tone.glyph(), crew.label), inner_w);
+            lines.push(Line::from(Span::styled(badge, style)));
+        }
 
         if let Some(desc) = self.description.as_ref().filter(|d| !d.is_empty()) {
             let desc = truncate(desc, inner_w);
@@ -273,6 +350,7 @@ mod tests {
             usage: crate::usage::Summary::default(),
             interactive: false,
             pulse: false,
+            crew: None,
         };
         let ctx = NodeRenderContext {
             id: "main",

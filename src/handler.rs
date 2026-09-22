@@ -384,6 +384,7 @@ mod tests {
                         usage: Default::default(),
                         interactive: true,
                         pulse: false,
+                        crew: None,
                     },
                 ))
                 .unwrap();
@@ -465,6 +466,7 @@ mod tests {
                     usage: crate::usage::Summary::default(),
                     interactive: false,
                     pulse: false,
+                    crew: None,
                 },
             )
         };
@@ -520,6 +522,7 @@ mod tests {
                 usage: crate::usage::Summary::default(),
                 interactive: false,
                 pulse: false,
+                crew: None,
             },
         );
         app.flow.add_node(node).unwrap();
@@ -553,6 +556,7 @@ mod tests {
                 usage: crate::usage::Summary::default(),
                 interactive: false,
                 pulse: false,
+                crew: None,
             },
         );
         app.flow.add_node(node).unwrap();
