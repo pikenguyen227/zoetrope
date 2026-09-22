@@ -1,0 +1,46 @@
+src/fleet/tests.rs
+  s_e1a56889829dbf::t_2b072cb30351e4 252-296,299-362,366-374,381,392-407,417-427,432-478
+  s_e1a56889829dbf::t_8ed8ecb3586df1 363-365,375-380,382-391
+  s_e1a56889829dbf::t_d3bf8daf016a4e 297-298,408-416,428-431
+src/handler.rs
+  s_e1a56889829dbf::t_3d21c10e1eb725 386,467,522,555
+src/ui/nodes.rs
+  s_e1a56889829dbf::t_3d21c10e1eb725 125-128,275
+  s_e1a56889829dbf::t_a1bac97b05afa4 54
+  s_e1a56889829dbf::t_3556ee68e650b5 51-53
+src/state/graph.rs
+  s_e1a56889829dbf::t_3556ee68e650b5 94-104,138,140
+src/state/mod.rs
+  s_e1a56889829dbf::t_0518817806368a 83-86,232-238,273-274,957-979
+src/fleet/mod.rs
+  s_e1a56889829dbf::t_fa0f7aba435a2e 390-395
+  s_e1a56889829dbf::t_a888158c863f77 14,211-213,219-220,222,230,281-284,373-389,396-397,443-445,451,459-463,502-503,509-516,528-530
+src/ui/mod.rs
+  s_e1a56889829dbf::t_0518817806368a 691-692
+src/tui.rs
+  s_e1a56889829dbf::t_0518817806368a 76
+src/fleet/native.rs
+  s_e1a56889829dbf::t_0518817806368a 356
+src/ui/chips.rs
+  s_e1a56889829dbf::t_7a1e71dd83ae05 194,196-199
+  s_e1a56889829dbf::t_2b072cb30351e4 164-169
+  s_e1a56889829dbf::t_a888158c863f77 188-193,195
+web/wasm/src/main.rs
+  s_e1a56889829dbf::t_0518817806368a 222
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3df3da0486e1fd0cd877bb71d69bcf20467910a6",
+  "prompts": {},
+  "sessions": {
+    "s_e1a56889829dbf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5405a46b-b597-44d7-8b0c-9619000dcdc5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
