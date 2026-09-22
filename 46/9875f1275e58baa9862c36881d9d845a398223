@@ -1,0 +1,19 @@
+src/ui/panel.rs
+  s_914019092995f4::t_a81094f1842c3a 198-202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "469875f1275e58baa9862c36881d9d845a398223",
+  "prompts": {},
+  "sessions": {
+    "s_914019092995f4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a4c211db-ae1a-46f1-99b6-8ab5b2a372aa",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
