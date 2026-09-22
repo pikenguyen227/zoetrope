@@ -6,6 +6,12 @@ if [ "${HERDR_ENV:-}" != 1 ]; then
   echo "Open Fleet from a genuine Herdr pane." >&2
   exit 1
 fi
+# The pane title and tab label are separate in Herdr. Rename this newly
+# created tab, never the focused Captain tab from the invocation context.
+if [ -n "${HERDR_TAB_ID:-}" ]; then
+  "${HERDR_BIN_PATH:-herdr}" tab rename "$HERDR_TAB_ID" Team >/dev/null ||
+    printf 'Fleet: could not rename its tab to Team.\n' >&2
+fi
 # Configuration stays outside the repository; no user's session IDs ship here.
 config="${ZOE_FLEET_STATE_DIR:-$agentic_root/.tools/state/zoe-fleet}"
 mkdir -p "$config"

@@ -7,7 +7,7 @@ min_herdr_version = "0.9.1"
 
 [[panes]]
 id = "fleet"
-title = "Zoetrope Fleet"
+title = "Team"
 placement = "tab"
 command = ["bash", "open.sh"]
 

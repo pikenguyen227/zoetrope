@@ -35,7 +35,7 @@ fleet membership node) and 4 edges. No Herdr server or model is involved.
 ## Firstmate in Herdr
 
 Run `zoe-fleet-open` from a shell **inside Herdr**. It links the separate
-`pikenguyen227.zoetrope-fleet` plugin and opens a dedicated tab. The adapter refuses
+`pikenguyen227.zoetrope-fleet` plugin and opens a dedicated tab named **Team**. The adapter refuses
 to run outside Herdr. Close an existing Fleet collector before opening another.
 
 Once linked, invoke **Zoetrope: Firstmate Fleet tab** through the plugin manager
