@@ -87,7 +87,7 @@ class AdapterTests(unittest.TestCase):
         timed_out = {"state": "unknown", "source": "none", "detail": "", "raw": ""}
         working = {"state": "working", "source": "pane", "detail": "harness busy",
                    "raw": "state: working · source: pane · harness busy"}
-        cases = (([unreachable], True), ([timed_out], True), ([unreachable, timed_out], True),
+        cases = (([unreachable], True), ([timed_out], False), ([unreachable, timed_out], False),
                  ([unreachable, working], False), ([working], False), ([], False))
         for states, expected in cases:
             snap = snapshot()

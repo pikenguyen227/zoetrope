@@ -49,12 +49,10 @@ def check_snapshot(snapshot):
 
 
 def unreachable(task):
-    # fm-crew-state.sh folds a Herdr it cannot run into "backend unreachable";
-    # when that read outlives the snapshot's bound, only an empty line remains.
+    # fm-crew-state.sh folds a Herdr it cannot run into "backend unreachable".
     state = task.get("current_state") or {}
     return (state.get("source") == "none"
-            and ((state.get("detail") or "").startswith("backend unreachable")
-                 or not state.get("raw")))
+            and (state.get("detail") or "").startswith("backend unreachable"))
 
 
 def build_manifest(before, after, panes, previous=None, captain=None, observed=None):
