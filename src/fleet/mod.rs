@@ -11,7 +11,7 @@ use rataflow::{Edge, Reconnectable};
 use serde::{Deserialize, Serialize};
 
 use crate::state::session::{AgentInfo, AgentKind, AgentStatus, MAIN_ID, SessionModel};
-use crate::state::{App, Mode, graph};
+use crate::state::{App, Camera, Mode, graph};
 use crate::tailer::UiEvent;
 
 #[cfg(feature = "native")]
@@ -208,13 +208,18 @@ pub struct Fleet {
     pub activity: activity::Activity,
     pub collapsed: BTreeSet<SessionKey>,
     pub(crate) nodes: BTreeMap<String, (SessionKey, String)>,
+    /// Members whose loaded history the overview's chip tray has absorbed, so
+    /// a backfill arriving does not replay as a burst of fresh chips.
+    baselined: BTreeSet<SessionKey>,
 }
 
 impl Fleet {
     pub fn new(manifest: Manifest) -> Result<Self, String> {
         manifest.validate()?;
+        let mut overview = App::new(manifest.fleet_id.clone(), Mode::Live);
+        overview.wall_clock = true;
         let mut fleet = Self {
-            overview: App::new(manifest.fleet_id.clone(), Mode::Live),
+            overview,
             manifest: manifest.clone(),
             members: BTreeMap::new(),
             focused: None,
@@ -222,6 +227,7 @@ impl Fleet {
             activity: activity::Activity::default(),
             collapsed: BTreeSet::new(),
             nodes: BTreeMap::new(),
+            baselined: BTreeSet::new(),
         };
         fleet.update(manifest)?;
         Ok(fleet)
@@ -272,7 +278,10 @@ impl Fleet {
         }
         match &event {
             UiEvent::Error(error) => member.error = Some(error.clone()),
-            UiEvent::SessionReset { .. } => member.loaded = false,
+            UiEvent::SessionReset { .. } => {
+                member.loaded = false;
+                self.baselined.remove(key);
+            }
             _ => {
                 member.loaded = true;
                 member.error = None;
@@ -361,6 +370,31 @@ impl Fleet {
             projection.agents.insert(id.clone(), agent);
             projection.spawn_order.push_back(id);
         }
+        // The crew root reads busy while any member agent is working.
+        let busy = projection
+            .agents
+            .values()
+            .any(|a| a.status == AgentStatus::Running);
+        if let Some(home) = projection.agents.get_mut(FLEET_ROOT) {
+            home.status = if busy {
+                AgentStatus::Running
+            } else {
+                AgentStatus::Idle
+            };
+        }
+        // Absorb each member's history once it loads: the tray counts calls by
+        // display ID, and only calls after this mark are fresh activity.
+        for (key, member) in &self.members {
+            if member.loaded && self.baselined.insert(key.clone()) {
+                let model = &member.app.session;
+                self.overview
+                    .chips
+                    .adopt_agents(model.spawn_order().map(|local| {
+                        let calls = model.agent(local).map_or(0, |a| a.tool_calls.len());
+                        (key.node_id(local), calls)
+                    }));
+            }
+        }
         self.overview
             .flow
             .retain_nodes(|n| projection.agent(&n.id).is_some());
@@ -406,12 +440,15 @@ impl Fleet {
         let before: BTreeSet<_> = self.overview.flow.nodes().map(|n| n.id.clone()).collect();
         let mut structural = graph::sync(&mut self.overview.flow, &projection, false);
         for (id, target) in member_edges {
+            let running = projection
+                .agent(&target)
+                .is_some_and(|a| a.status == AgentStatus::Running);
             if !self.overview.flow.edges().iter().any(|e| e.id == id) {
                 structural |= self
                     .overview
                     .flow
                     .add_edge(
-                        Edge::new(id, FLEET_ROOT, target)
+                        Edge::new(id.clone(), FLEET_ROOT, target)
                             .with_label("member")
                             .with_selectable(false)
                             .with_deletable(false)
@@ -419,6 +456,11 @@ impl Fleet {
                     )
                     .is_ok();
             }
+            // A working member reads on its edge, as a native child does.
+            if let Some(content) = self.overview.flow.edge_content_mut(&id) {
+                content.running = running;
+            }
+            self.overview.flow.set_edge_animated(&id, running);
         }
         // New independent roots otherwise all land at (0,0). Stable local
         // placement, with an explicit `r` for a full graph layout.
@@ -457,11 +499,21 @@ impl Fleet {
             }
             self.overview.flow.set_edge_animated(&id, running);
         }
+        let after: BTreeSet<_> = self.overview.flow.nodes().map(|n| n.id.clone()).collect();
+        structural |= after != before;
         self.overview.session = projection;
         self.overview.session_info.title = Some(self.manifest.label.clone());
         self.overview.layout_dirty |= structural;
         if before.is_empty() && structural {
             self.overview.relayout_now();
+        } else {
+            // The overview never folds, so the camera follow-up a fold runs
+            // for a single session (`App::commit_fold`) happens here.
+            match self.overview.camera {
+                Camera::Overview if structural => self.overview.flow.request_fit_view(),
+                Camera::Follow => self.overview.track_activity(),
+                _ => {}
+            }
         }
         self.overview.last_error = self.manifest_error.clone();
     }
@@ -473,6 +525,9 @@ impl Fleet {
         {
             member.app.flow.select_node(local);
             member.app.pending_center = Some(local.clone());
+            // Its tray was not reconciled while unfocused: absorb what already
+            // happened instead of replaying it as a burst.
+            member.app.chips.adopt_baseline(&member.app.session);
             self.focused = Some(key.clone());
         }
     }
@@ -481,20 +536,41 @@ impl Fleet {
         if let Some(id) = self.overview.selected_agent_id()
             && let Some((key, _)) = self.nodes.get(&id)
         {
-            if !self.collapsed.remove(key) {
+            let key = key.clone();
+            let expanded = self.collapsed.remove(&key);
+            if !expanded {
                 self.collapsed.insert(key.clone());
             }
             self.sync();
+            // Collapsed subagents were outside the projection, so their marks
+            // froze: what they did meanwhile is history, not a burst.
+            if expanded && let Some(member) = self.members.get(&key) {
+                let model = &member.app.session;
+                self.overview.chips.adopt_agents(
+                    model
+                        .spawn_order()
+                        .filter(|local| *local != MAIN_ID)
+                        .map(|local| {
+                            let calls = model.agent(local).map_or(0, |a| a.tool_calls.len());
+                            (key.node_id(local), calls)
+                        }),
+                );
+            }
         }
     }
 
     pub fn back(&mut self) {
-        if let Some(key) = self.focused.take()
-            && let Some(member) = self.members.get_mut(&key)
+        let left = self.focused.take();
+        if let Some(key) = &left
+            && let Some(member) = self.members.get_mut(key)
         {
             member.app.go_live();
         }
         self.sync();
+        // The overview tray was not reconciled while a member was focused.
+        if left.is_some() {
+            self.overview.chips.adopt_baseline(&self.overview.session);
+        }
     }
 
     pub fn active(&mut self) -> &mut App {

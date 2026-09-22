@@ -249,3 +249,280 @@ fn real_fleet_ui_renders_both_sessions() {
     assert!(text.contains("Worker"));
     assert!(text.contains("delegates"));
 }
+
+/// Facts stamped at `at`, so wall-clock liveness reads them as current.
+fn live(id: &str, at: DateTime<Utc>, facts: Vec<FactKind>, agent: &str) -> UiEvent {
+    UiEvent::Batch {
+        session_id: id.into(),
+        statements: vec![Statement {
+            at: Some(at),
+            facts: facts
+                .into_iter()
+                .map(|kind| Fact {
+                    agent: Some(agent.into()),
+                    ts: Some(at),
+                    kind,
+                })
+                .collect(),
+        }],
+    }
+}
+
+fn child(parent: &str) -> FactKind {
+    FactKind::Agent {
+        kind: AgentKind::Subagent,
+        parent: Some(parent.into()),
+        agent_type: Some("Research".into()),
+        description: None,
+        spawned_by: None,
+        interactive: false,
+    }
+}
+
+fn call(id: &str) -> [FactKind; 2] {
+    [
+        FactKind::ToolStart {
+            call: id.into(),
+            name: "Read".into(),
+            summary: None,
+        },
+        FactKind::ToolEnd {
+            call: id.into(),
+            outcome: crate::fact::Outcome::Ok,
+        },
+    ]
+}
+
+fn draw(fleet: &mut Fleet) -> ratatui::Terminal<ratatui::backend::TestBackend> {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+    terminal.draw(|frame| native::draw(frame, fleet)).unwrap();
+    terminal
+}
+
+#[test]
+fn overview_camera_reframes_as_the_crew_grows() {
+    let mut fleet = Fleet::new(manifest()).unwrap();
+    draw(&mut fleet);
+    let now = Utc::now();
+    for id in ["captain", "worker"] {
+        fleet.event(&key(id), live(id, now, vec![FactKind::Activity], "main"));
+    }
+    fleet.sync();
+    draw(&mut fleet);
+    // A fan of subagents lands below one worker, wider than the first frame.
+    for n in 0..8 {
+        fleet.event(
+            &key("worker"),
+            live("worker", now, vec![child("main")], &format!("sub{n}")),
+        );
+    }
+    fleet.sync();
+    let terminal = draw(&mut fleet);
+    let area = terminal.backend().buffer().area;
+    for node in fleet.overview.flow.nodes() {
+        let (l, t, r, b) = fleet.overview.flow.node_terminal_rect(&node.id).unwrap();
+        assert!(
+            l >= 0 && t >= 0 && r <= area.width as i32 && b <= area.height as i32,
+            "{} is off screen at ({l},{t})-({r},{b})",
+            node.id
+        );
+    }
+}
+
+#[test]
+fn overview_follow_retargets_to_the_latest_activity() {
+    let mut fleet = Fleet::new(manifest()).unwrap();
+    let now = Utc::now();
+    fleet.event(
+        &key("captain"),
+        live("captain", now, vec![FactKind::Activity], "main"),
+    );
+    fleet.sync();
+    draw(&mut fleet);
+    fleet.overview.camera = Camera::Follow;
+    fleet.overview.track_activity();
+    assert_eq!(
+        fleet.overview.selected_agent_id(),
+        Some(key("captain").node_id("main"))
+    );
+    let later = now + chrono::Duration::seconds(1);
+    fleet.event(
+        &key("worker"),
+        live("worker", later, vec![FactKind::Activity], "main"),
+    );
+    fleet.sync();
+    assert_eq!(
+        fleet.overview.selected_agent_id(),
+        Some(key("worker").node_id("main"))
+    );
+}
+
+#[test]
+fn member_edges_and_crew_root_follow_member_liveness() {
+    let mut fleet = Fleet::new(manifest()).unwrap();
+    let edge = |fleet: &Fleet| {
+        // The captain is a member root; the worker hangs off its link instead.
+        let id = format!("member:{}", key("captain").node_id(MAIN_ID));
+        fleet
+            .overview
+            .flow
+            .edges()
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| (e.animated, e.content.running))
+            .unwrap()
+    };
+    let root = |fleet: &Fleet| fleet.overview.session.agent(FLEET_ROOT).unwrap().status;
+    // Hours-old activity reads idle.
+    let old = Utc::now() - chrono::Duration::hours(3);
+    fleet.event(
+        &key("captain"),
+        live("captain", old, vec![FactKind::Activity], "main"),
+    );
+    fleet.sync();
+    assert_eq!(edge(&fleet), (false, false));
+    assert_eq!(root(&fleet), AgentStatus::Idle);
+    fleet.event(
+        &key("captain"),
+        live("captain", Utc::now(), vec![FactKind::Activity], "main"),
+    );
+    fleet.sync();
+    assert_eq!(edge(&fleet), (true, true));
+    assert_eq!(root(&fleet), AgentStatus::Running);
+}
+
+#[test]
+fn backfill_is_history_but_later_calls_chip() {
+    let mut fleet = Fleet::new(manifest()).unwrap();
+    let now = Utc::now();
+    fleet.event(
+        &key("worker"),
+        live("worker", now, [call("a"), call("b")].concat(), "main"),
+    );
+    fleet.sync();
+    let tick = std::time::Duration::from_millis(16);
+    fleet
+        .overview
+        .chips
+        .reconcile(tick, true, &fleet.overview.session);
+    assert_eq!(
+        fleet.overview.chips.len(),
+        0,
+        "attach backfill must not chip"
+    );
+    fleet.event(
+        &key("worker"),
+        live("worker", now, call("c").into(), "main"),
+    );
+    fleet.sync();
+    fleet
+        .overview
+        .chips
+        .reconcile(tick, true, &fleet.overview.session);
+    assert_eq!(fleet.overview.chips.len(), 1, "fresh activity chips");
+    // No timeline of its own: pending durations tick against the wall clock.
+    assert!(fleet.overview.chrome_now().is_some());
+    assert!(fleet.overview.timeline.now_reference().is_none());
+
+    // What the worker did while unfocused is history once you open it.
+    fleet.event(
+        &key("worker"),
+        live("worker", now, call("d").into(), "main"),
+    );
+    fleet.sync();
+    fleet
+        .overview
+        .flow
+        .select_node(&key("worker").node_id(MAIN_ID));
+    fleet.inspect_selected();
+    let app = fleet.active();
+    app.chips.reconcile(tick, true, &app.session);
+    assert_eq!(app.chips.len(), 0, "focus must not replay a burst");
+}
+
+#[test]
+fn returning_from_focus_does_not_replay_a_burst() {
+    let mut fleet = Fleet::new(manifest()).unwrap();
+    let now = Utc::now();
+    let tick = std::time::Duration::from_millis(16);
+    fleet.event(
+        &key("worker"),
+        live("worker", now, call("a").into(), "main"),
+    );
+    fleet.sync();
+    fleet
+        .overview
+        .chips
+        .reconcile(tick, true, &fleet.overview.session);
+    fleet
+        .overview
+        .flow
+        .select_node(&key("worker").node_id(MAIN_ID));
+    fleet.inspect_selected();
+
+    // Activity while focused: the overview tray is not reconciled.
+    fleet.event(
+        &key("worker"),
+        live("worker", now, [call("b"), call("c")].concat(), "main"),
+    );
+    fleet.sync();
+    fleet.back();
+    fleet
+        .overview
+        .chips
+        .reconcile(tick, true, &fleet.overview.session);
+    assert_eq!(
+        fleet.overview.chips.len(),
+        0,
+        "back must not replay a burst"
+    );
+
+    // Activity after returning still chips.
+    fleet.event(
+        &key("worker"),
+        live("worker", now, call("d").into(), "main"),
+    );
+    fleet.sync();
+    fleet
+        .overview
+        .chips
+        .reconcile(tick, true, &fleet.overview.session);
+    assert_eq!(fleet.overview.chips.len(), 1, "fresh activity chips");
+}
+
+#[test]
+fn running_cards_pulse_on_the_app_clock() {
+    let mut fleet = Fleet::new(manifest()).unwrap();
+    fleet.event(
+        &key("worker"),
+        live("worker", Utc::now(), vec![FactKind::Activity], "main"),
+    );
+    fleet.sync();
+    let worker = key("worker").node_id(MAIN_ID);
+    let glyphs = |fleet: &mut Fleet| {
+        let terminal = draw(fleet);
+        let buf = terminal.backend().buffer();
+        (
+            buf.content.iter().filter(|c| c.symbol() == "○").count(),
+            buf.content.iter().filter(|c| c.symbol() == "●").count(),
+        )
+    };
+    fleet.overview.relayout_now();
+    let (off, _) = glyphs(&mut fleet);
+    assert_eq!(off, 0);
+    let half = std::time::Duration::from_millis(480);
+    fleet.overview.tick_pulse(half);
+    assert!(fleet.overview.flow.node_content_mut(&worker).unwrap().pulse);
+    let (off, _) = glyphs(&mut fleet);
+    assert!(off >= 1, "a running card shows its off beat");
+    // A content rebuild keeps the beat instead of snapping it back.
+    fleet.event(
+        &key("worker"),
+        live("worker", Utc::now(), call("x").into(), "main"),
+    );
+    fleet.sync();
+    assert!(fleet.overview.flow.node_content_mut(&worker).unwrap().pulse);
+    fleet.overview.tick_pulse(half);
+    let (off, _) = glyphs(&mut fleet);
+    assert_eq!(off, 0);
+}

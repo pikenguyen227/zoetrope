@@ -91,6 +91,17 @@ fn build_content(info: &AgentInfo) -> AgentNode {
         output_tokens: info.output_tokens,
         usage: info.usage.summary.clone(),
         interactive: info.is_interactive(),
+        pulse: false,
+    }
+}
+
+/// Set the running pulse's beat on every card. Cheap enough per flip (about
+/// twice a second), not meant for every frame.
+pub fn set_pulse(flow: &mut AgentFlow, model: &SessionModel, on: bool) {
+    for id in &model.spawn_order {
+        if let Some(content) = flow.node_content_mut(id) {
+            content.pulse = on;
+        }
     }
 }
 
@@ -124,7 +135,9 @@ pub fn sync(flow: &mut AgentFlow, model: &SessionModel, relayout: bool) -> bool 
             // visible changed — the per-second status tick and per-batch
             // syncs walk every agent, and most are unchanged.
             if !content_matches(info, existing) {
+                let pulse = existing.pulse;
                 *existing = build_content(info);
+                existing.pulse = pulse;
             }
         } else {
             // Sibling index for local placement — computed only for the rare

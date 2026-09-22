@@ -48,6 +48,10 @@ pub struct AgentNode {
     /// Interactive agents (main, forks) word `Running` as "active": we know
     /// there are recent entries, not that a task is executing.
     pub interactive: bool,
+    /// The off beat of the running pulse, flipped by
+    /// [`App::tick_pulse`](crate::state::App::tick_pulse). Presentation only:
+    /// the graph sync never compares it and carries it across rebuilds.
+    pub pulse: bool,
 }
 
 use crate::ui::truncate;
@@ -118,9 +122,10 @@ impl NodeContent for AgentNode {
             return;
         }
 
-        // Pulse: alive agents breathe on the shared animation clock (~1s
-        // cycle at the default 120ms phase step) — the wide-shot heartbeat.
-        let glyph = if self.status == AgentStatus::Running && (ctx.animation_phase / 4) % 2 == 1 {
+        // Pulse: alive agents breathe on the app's pulse clock (~1s cycle) —
+        // the wide-shot heartbeat. Not rataflow's animation phase: that wraps
+        // with the edge dash pattern every few steps, too fast to read.
+        let glyph = if self.status == AgentStatus::Running && self.pulse {
             '○'
         } else {
             self.status.glyph()
@@ -267,6 +272,7 @@ mod tests {
             output_tokens: 1200,
             usage: crate::usage::Summary::default(),
             interactive: false,
+            pulse: false,
         };
         let ctx = NodeRenderContext {
             id: "main",

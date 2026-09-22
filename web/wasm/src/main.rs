@@ -219,6 +219,7 @@ fn main() -> io::Result<()> {
             let _ = app.flow.tick_auto_pan(elapsed);
             app.flow.tick_animation(elapsed);
             app.tick_camera(elapsed);
+            app.tick_pulse(elapsed);
             app.tick_timeline(elapsed);
             app.status_tick();
             zoetrope::ui::draw(frame, &mut app);

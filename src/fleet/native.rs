@@ -353,6 +353,7 @@ pub async fn run(path: PathBuf) -> Result<()> {
         let _ = app.flow.tick_auto_pan(elapsed);
         app.flow.tick_animation(elapsed);
         app.tick_camera(elapsed);
+        app.tick_pulse(elapsed);
         if focused {
             app.tick_timeline(elapsed);
         } else {
