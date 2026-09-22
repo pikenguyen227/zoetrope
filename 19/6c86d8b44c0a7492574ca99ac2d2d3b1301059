@@ -1,0 +1,19 @@
+docs/DESIGN.md
+  s_d3db414622c369::t_30aba40c3f81b2 318
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "196c86d8b44c0a7492574ca99ac2d2d3b1301059",
+  "prompts": {},
+  "sessions": {
+    "s_d3db414622c369": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c0bce805-b503-442e-9662-dcaf35dc7fd2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
