@@ -1,0 +1,33 @@
+assets/fleet/crew/sessions/2026/09/22/rollout-2026-09-22T08-00-00-c0c0c0c0-0000-4000-8000-000000000003.jsonl
+  s_fb7c458f629d2b::t_2d718473b05f03 1-24
+assets/fleet/crew/fleet.events.jsonl
+  s_fb7c458f629d2b::t_8c0a8b66f1944b 1-32
+assets/fleet/crew/fleet.json
+  s_fb7c458f629d2b::t_2d718473b05f03 1-96
+assets/fleet/crew/sessions/2026/09/22/rollout-2026-09-22T08-00-00-c0c0c0c0-0000-4000-8000-000000000001.jsonl
+  s_fb7c458f629d2b::t_2d718473b05f03 1-14
+assets/fleet/crew/sessions/2026/09/22/rollout-2026-09-22T08-00-00-c0c0c0c0-0000-4000-8000-000000000002.jsonl
+  s_fb7c458f629d2b::t_2d718473b05f03 1-18
+scripts/firstmate-fleet.py
+  s_fb7c458f629d2b::t_3d748c8275a0ee 6-9,15,19,27-28,223,246-406,417-433,459-463,467-471,496-499,501-502,539,544-550,579-583
+  s_fb7c458f629d2b::t_8c571525a3b212 472-495
+scripts/test_firstmate_fleet.py
+  s_fb7c458f629d2b::t_d3ded2849045c6 344-346
+  s_fb7c458f629d2b::t_8c0a8b66f1944b 158-343,347-391
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b9adc598f1839dc402ae5f5e0fdceced61968138",
+  "prompts": {},
+  "sessions": {
+    "s_fb7c458f629d2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6b062c70-af05-4d4f-8928-9faa3b7c7a63",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
