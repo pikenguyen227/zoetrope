@@ -131,7 +131,7 @@ session from disk, or drop a transcript on the page. It stays local there too.
 **The graph**
 - A node per agent: the main session, its subagents, and workflow groups with their
   children nested underneath
-- Status, current tool, tool count and output tokens on every card
+- Status, current tool, tool count, tokens (input including cache reads, plus output) and an API-equivalent cost estimate on every card
 - Edges animate while an agent is working, and settle when it finishes
 - Tool calls surface as chips beneath their agent (`⚒ bash ×5`, or `⚒ bash 0.5s`
   ticking during a single call), resolving to `✓` or `✗`

@@ -1,36 +1,36 @@
   ◌ [main] claude  (idle) — id=main
       model: claude-opus-4-8
-      tools: 9 (9✓ 0✗ 0⏳)   tokens: 1420
+      tools: 9 (9✓ 0✗ 0⏳)   tokens: 21220 (19800 in + 1420 out) · API est. $0.135
     ✓ [subagent] Explore  (done) — id=a1000000000000001
         Map the theme system
         model: claude-opus-4-8
-        tools: 2 (2✓ 0✗ 0⏳)   tokens: 220
+        tools: 2 (2✓ 0✗ 0⏳)   tokens: 2920 (2700 in + 220 out) · API est. $0.019
         ↳ prompt: Add a dark mode toggle to the settings page. Explore the theme system, implement the component, add tests, and check the official Claude Code theming docs.
         ↳ thought: I'll delegate this across a few subagents and integrate their results.
     ✓ [subagent] general-purpose  (done) — id=a2000000000000002
         Implement the toggle component
         model: claude-opus-4-8
-        tools: 2 (2✓ 0✗ 0⏳)   tokens: 700
+        tools: 2 (2✓ 0✗ 0⏳)   tokens: 4500 (3800 in + 700 out) · API est. $0.036
         ↳ prompt: Add a dark mode toggle to the settings page. Explore the theme system, implement the component, add tests, and check the official Claude Code theming docs.
         ↳ thought: I'll delegate this across a few subagents and integrate their results.
     ✓ [subagent] general-purpose  (done) — id=a3000000000000003
         Write tests for the toggle
         model: claude-opus-4-8
-        tools: 4 (3✓ 1✗ 0⏳)   tokens: 820
+        tools: 4 (3✓ 1✗ 0⏳)   tokens: 8170 (7350 in + 820 out) · API est. $0.057
         ↳ prompt: Add a dark mode toggle to the settings page. Explore the theme system, implement the component, add tests, and check the official Claude Code theming docs.
         ↳ thought: I'll delegate this across a few subagents and integrate their results.
     ✓ [subagent] claude-code-guide  (done) — id=a4000000000000004
         Check Claude Code theming docs
         model: claude-opus-4-8
-        tools: 1 (1✓ 0✗ 0⏳)   tokens: 180
+        tools: 1 (1✓ 0✗ 0⏳)   tokens: 1700 (1520 in + 180 out) · API est. $0.012
         ↳ prompt: Add a dark mode toggle to the settings page. Explore the theme system, implement the component, add tests, and check the official Claude Code theming docs.
         ↳ thought: I'll delegate this across a few subagents and integrate their results.
     ✓ [group] code-review  (done) — id=wf_demo01
         Review the change across correctness and accessibility, then report confirmed findings.
-        tools: 0 (0✓ 0✗ 0⏳)   tokens: 0
+        tools: 0 (0✓ 0✗ 0⏳)   tokens: 0 output · total/cost unavailable
       ✓ [subagent] workflow-subagent  (done) — id=w1000000000000001
           model: claude-opus-4-8
-          tools: 1 (1✓ 0✗ 0⏳)   tokens: 250
+          tools: 1 (1✓ 0✗ 0⏳)   tokens: 2150 (1900 in + 250 out) · API est. $0.016
       ✓ [subagent] workflow-subagent  (done) — id=w2000000000000002
           model: claude-opus-4-8
-          tools: 1 (1✓ 0✗ 0⏳)   tokens: 250
+          tools: 1 (1✓ 0✗ 0⏳)   tokens: 2110 (1860 in + 250 out) · API est. $0.016
