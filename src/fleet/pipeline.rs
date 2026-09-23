@@ -340,15 +340,37 @@ impl Fleet {
     }
 
     /// List the selected card's run agents, found by `find`; or say why not.
+    /// Never silent: with nothing to list, the header says which of no card,
+    /// no run, or the collector's own trouble reading runs stands in the way.
     pub fn list_agents(&mut self, find: impl FnOnce(&str, Life) -> Agents) {
+        let Some(id) = self.overview.selected_agent_id() else {
+            self.prompt = Some(Prompt::Notice(
+                "Select a worker's card first: p lists the pipeline agents of the validation \
+                 run its card shows"
+                    .into(),
+            ));
+            return;
+        };
         let Some(run) = self.selected_run() else {
+            let label = self.worker(&id).map_or(id, |w| w.label);
             let when = self
                 .at()
                 .map_or_else(|| "now".into(), |t| format!("at {}", clock(t)));
-            self.prompt = Some(Prompt::Notice(format!(
-                "No validation run on the selected card {when}: select a worker whose card \
-                 shows one, then p lists the run's pipeline agents"
-            )));
+            let mut note = format!(
+                "No validation run attributed to {label} {when}, so no pipeline agents to list"
+            );
+            // The collector's word on why it may have read none.
+            let why: Vec<_> = self
+                .manifest
+                .diagnostics
+                .iter()
+                .filter(|d| d.contains("no-mistakes"))
+                .map(String::as_str)
+                .collect();
+            if !why.is_empty() {
+                note = format!("{note} · collector: {}", why.join("; "));
+            }
+            self.prompt = Some(Prompt::Notice(note));
             return;
         };
         let Some(life) = self.run_life(&run) else {

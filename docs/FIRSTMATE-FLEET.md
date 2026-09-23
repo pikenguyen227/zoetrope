@@ -227,6 +227,14 @@ as graph nodes of its own.
   ID that is not a no-mistakes run ID (a ULID) is left out, the last with a
   diagnostic. Once attributed, a run is read until it ends, even after its
   task leaves the snapshot: runs outlive their workers.
+- **no-mistakes on the snapshot's `PATH`.** Firstmate attributes a run only
+  when `command -v no-mistakes` finds the CLI, and a Herdr plugin pane's `PATH`
+  rarely holds it. The adapter takes `ZOE_NO_MISTAKES_BIN`, else the first
+  `no-mistakes` on its own `PATH` (`find_no_mistakes`), appends that directory
+  to the snapshot's `PATH` after Herdr's, and reads runs with that binary.
+  `fleet-plugin/open.sh` names the one in `.tools/bin` when its `PATH` has
+  none. Without one, every `validation_run` is null, which is a manifest
+  diagnostic rather than a crew that merely never validates.
 - **Two allow-listed reads, nothing else.** `no-mistakes axi status --run
   <id>`, which reads the run's record without the daemon's socket, and
   `no-mistakes daemon status`, both from `/`, with

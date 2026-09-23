@@ -52,8 +52,15 @@ registered. An earlier Captain keeps its membership and history but is no
 longer registered, so it counts as finished below.
 
 Default arrangement: `Agentic/firstmate` beside `Agentic/zoetrope`. Override with
-`FM_HOME`, `ZOE_FLEET_BIN`, or `ZOE_FLEET_STATE_DIR` if needed. By default, the
-manifest and checkpoint journal live in `Agentic/.tools/state/zoe-fleet/`.
+`FM_HOME`, `ZOE_FLEET_BIN`, `ZOE_FLEET_STATE_DIR` or `ZOE_NO_MISTAKES_BIN` if
+needed. By default, the manifest and checkpoint journal live in
+`Agentic/.tools/state/zoe-fleet/`, and no-mistakes is the one on `PATH`, else
+`Agentic/.tools/bin/no-mistakes`: without it no card shows a validation run.
+
+Installing a rebuild replaces the binary, not a viewer already running it:
+that viewer's header says `zoe-fleet was rebuilt at …; this viewer still runs
+the old build`, and only reopening the Team tab runs the new one. A change to
+the adapter needs the same reopen.
 
 The adapter reads `fm-fleet-snapshot.sh --json` before and after exact Herdr pane
 registrations. Changed generations/endpoints defer a join. The canonical snapshot
@@ -183,6 +190,9 @@ cannot be placed in the run: no dated record
 unreadable: Permission denied …            the file could not be read
 ```
 
+`p` with nothing to list says why in the header: no card is selected, or no
+validation run is attributed to the selected card at the playhead, followed
+by the collector's diagnostic about no-mistakes when it gave one.
 A run with nothing filed under its worktree says so: its agents may not have
 started yet, their transcripts may have been removed, or they may not be
 Claude's. An opened transcript is read-only and followed live while it is
