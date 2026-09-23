@@ -491,47 +491,61 @@ impl Lifecycle {
     ///
     /// A bridged spawn, teardown or status gives way only to the feed's own
     /// record of it: the attempt's spawn, its teardown, a status stamped at
-    /// the same moment or, for a status line without a stamp, one saying the
-    /// same verb and key. So a status the feed lost still places from the
-    /// bridge, and a session join, which no feed knows, always does. `Reach`
-    /// in `scripts/firstmate-fleet.py` keeps the adapter from writing what
-    /// the feed already holds.
+    /// the same moment or, for a status line without a stamp, the feed's
+    /// status nearest when the bridge noticed it (the last before, or the
+    /// first after) if it says the same verb and key. So a status the feed
+    /// lost still places from the bridge, and a session join, which no feed
+    /// knows, always does. `Reach` in `scripts/firstmate-fleet.py` keeps the
+    /// adapter from writing what the feed already holds.
     fn superseded(&self) -> BTreeSet<&str> {
-        type Mark<'a> = (
-            &'a Attempt,
-            &'static str,
-            Option<DateTime<Utc>>,
-            Option<&'a str>,
-            Option<&'a str>,
-        );
+        type Mark<'a> = (&'a Attempt, &'static str, Option<DateTime<Utc>>);
         fn mark(e: &LifecycleEvent) -> Option<Mark<'_>> {
             let attempt = e.attempt.as_ref()?;
             match &e.change {
-                Change::Spawned { .. } => Some((attempt, "spawned", None, None, None)),
-                Change::TornDown { .. } => Some((attempt, "torn_down", None, None, None)),
+                Change::Spawned { .. } => Some((attempt, "spawned", None)),
+                Change::TornDown { .. } => Some((attempt, "torn_down", None)),
                 Change::Status { .. } if e.at_quality == AtQuality::Stamp => {
-                    Some((attempt, "status", e.at, None, None))
+                    Some((attempt, "status", e.at))
                 }
-                Change::Status { status } => Some((
-                    attempt,
-                    "status",
-                    None,
-                    Some(status.value.as_str()),
-                    status.key.as_deref(),
-                )),
                 _ => None,
             }
         }
-        let held: BTreeSet<Mark> = self
-            .events
-            .values()
-            .filter(|e| e.source.kind == SourceKind::Firstmate)
-            .filter_map(mark)
-            .collect();
+        type Said<'a> = (DateTime<Utc>, &'a str, Option<&'a str>);
+        fn saying(e: &LifecycleEvent) -> Option<(&Attempt, Said<'_>)> {
+            let Change::Status { status } = &e.change else {
+                return None;
+            };
+            Some((
+                e.attempt.as_ref()?,
+                (e.at?, status.value.as_str(), status.key.as_deref()),
+            ))
+        }
+        let feed = || {
+            self.events
+                .values()
+                .filter(|e| e.source.kind == SourceKind::Firstmate)
+        };
+        let held: BTreeSet<Mark> = feed().filter_map(mark).collect();
+        let mut said: BTreeMap<&Attempt, Vec<Said>> = BTreeMap::new();
+        for (attempt, s) in feed().filter_map(saying) {
+            said.entry(attempt).or_default().push(s);
+        }
+        let nearest = |attempt: &Attempt, (at, value, key): Said| {
+            let feed = said.get(attempt).map_or(&[][..], Vec::as_slice);
+            let before = feed.iter().filter(|s| s.0 <= at).max_by_key(|s| s.0);
+            let after = feed.iter().filter(|s| s.0 > at).min_by_key(|s| s.0);
+            [before, after]
+                .into_iter()
+                .flatten()
+                .any(|s| (s.1, s.2) == (value, key))
+        };
         self.events
             .values()
             .filter(|e| e.source.kind == SourceKind::Bridge)
-            .filter(|e| mark(e).is_some_and(|m| held.contains(&m)))
+            .filter(|e| match mark(e) {
+                Some(m) => held.contains(&m),
+                None => saying(e).is_some_and(|(attempt, s)| nearest(attempt, s)),
+            })
             .map(|e| e.id.as_str())
             .collect()
     }
@@ -1116,25 +1130,33 @@ mod tests {
             bound,
             event("other", "08:05:00", "other", status("working")),
         ]);
-        // The feed began at 08:04 and records one of those lines, noticed at
-        // 08:06:30; it lost the 08:06 one.
+        // The feed records two of those lines, each noticed a little after
+        // the bridge did; it lost the repeated 08:06 one.
         let mut since = feed(coverage("cov", "08:04:00", "08:10:00"), 0);
         since.attempt = None;
-        let mut noticed = feed(event("s", "08:06:30", "impl", status("needs-decision")), 1);
-        noticed.at_quality = AtQuality::Observed;
-        store.insert([since, noticed]);
-        // Its record replaces the bridge's (s2); the rest stand, and a bridged
-        // spawn and teardown stand until the feed records its own.
+        let [first, noticed] = [
+            ("w", "08:01:10", "working"),
+            ("s", "08:05:10", "needs-decision"),
+        ]
+        .map(|(id, t, value)| {
+            let mut e = feed(event(id, t, "impl", status(value)), 1);
+            e.at_quality = AtQuality::Observed;
+            e
+        });
+        store.insert([since, first, noticed]);
+        // Each record replaces the bridge's line nearest it (s1, s2). s3 says
+        // what the feed's earlier line did but stands, and a bridged spawn and
+        // teardown stand until the feed records its own.
         assert_eq!(
             ids(&store),
             [
                 "spawn",
                 "bound",
-                "s1",
+                "firstmate:fmh#w",
                 "c1",
                 "other",
-                "s3",
                 "firstmate:fmh#s",
+                "s3",
                 "c2",
                 "down",
                 "c3",
@@ -1143,12 +1165,12 @@ mod tests {
         );
         let impl_ = attempt("impl").unwrap();
         assert_eq!(
-            store.state_at(Some(at("08:05:30")))[&impl_]
+            store.state_at(Some(at("08:06:30")))[&impl_]
                 .status
                 .as_ref()
                 .unwrap()
                 .at,
-            at("08:01:00")
+            at("08:06:00")
         );
         let spawned = Change::Spawned {
             spawned: Spawned::default(),
@@ -1164,11 +1186,11 @@ mod tests {
             [
                 "firstmate:fmh#born",
                 "bound",
-                "s1",
+                "firstmate:fmh#w",
                 "c1",
                 "other",
-                "s3",
                 "firstmate:fmh#s",
+                "s3",
                 "c2",
                 "firstmate:fmh#gone",
                 "c3",
@@ -1186,7 +1208,7 @@ mod tests {
                 .contains_key(&attempt("other").unwrap())
         );
         // What was superseded is still held, for a removal to count.
-        assert_eq!(store.count_for(&[impl_].into()), 9);
+        assert_eq!(store.count_for(&[impl_].into()), 10);
         // The feed covered the bridge's 08:07-08:08:30 gap.
         assert!(store.covered(at("08:07:30")));
         assert!(!store.covered(at("07:58:30")));

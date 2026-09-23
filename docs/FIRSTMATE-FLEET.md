@@ -184,7 +184,8 @@ Feed events replace the bridge events that say the same thing
 it from writing them in the first place). A bridged spawn, teardown or status
 gives way only to the feed's own record of it: the attempt's spawn, its
 teardown, a status stamped at the same moment or, for a status line without a
-stamp, one with the same verb and key. So a status the feed lost to a skipped
+stamp, the feed's status nearest when the bridge noticed it (the last before, or
+the first after) if it has the same verb and key. So a status the feed lost to a skipped
 `seq` still places from the bridge, and a session join (`bound`), which no feed
 knows, always stays. Bridge events stay in the journal for removal to count;
 they no longer place on the timeline.

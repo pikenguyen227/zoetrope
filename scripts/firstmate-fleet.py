@@ -444,14 +444,16 @@ class Reach:
 
     A bridged spawn, teardown or status gives way only to the feed's own
     record of it: the attempt's spawn, its teardown, a status stamped at the
-    same moment or, for a status line without a stamp, one saying the same
-    verb and key. So a status the feed lost is bridged, and one the bridge
-    sees before Firstmate records it is written and gives way once the feed
-    has it.
+    same moment or, for a status line without a stamp, the feed's status
+    nearest when the bridge noticed it (the last before, or the first after)
+    if it says the same verb and key. So a status the feed lost is bridged,
+    and one the bridge sees before Firstmate records it is written and gives
+    way once the feed has it.
     """
 
     def __init__(self):
         self.marks = set()  # what the feed holds, as mark() of its events
+        self.said = {}  # (task, spawn_gen) -> [(at, verb, key)] of its feed statuses
 
     @staticmethod
     def mark(event):
@@ -461,20 +463,40 @@ class Reach:
         key = (attempt.get("task"), attempt.get("spawn_gen"), event.get("type"))
         if event.get("type") in ("spawned", "torn_down"):
             return key
-        if event.get("type") == "status":
-            if event.get("at_quality") == "stamp":
-                return key + (event.get("at"),)
-            status = event.get("status") or {}
-            return key + (None, status.get("value"), status.get("key"))
+        if event.get("type") == "status" and event.get("at_quality") == "stamp":
+            return key + (event.get("at"),)
         return None
 
+    @staticmethod
+    def saying(event):
+        attempt = event.get("attempt")
+        if event.get("type") != "status" or not isinstance(attempt, dict) or not event.get("at"):
+            return None, None
+        status = event.get("status") or {}
+        return ((attempt.get("task"), attempt.get("spawn_gen")),
+                (event["at"], status.get("value"), status.get("key")))
+
     def add(self, event):
+        if (event.get("source") or {}).get("kind") != "firstmate":
+            return
         mark = self.mark(event)
-        if (event.get("source") or {}).get("kind") == "firstmate" and mark is not None:
+        if mark is not None:
             self.marks.add(mark)
+        attempt, said = self.saying(event)
+        if said is not None:
+            self.said.setdefault(attempt, []).append(said)
 
     def holds(self, event):
-        return self.mark(event) in self.marks
+        mark = self.mark(event)
+        if mark is not None:
+            return mark in self.marks
+        attempt, said = self.saying(event)
+        if said is None:
+            return False
+        feed = self.said.get(attempt, [])
+        nearest = (max((s for s in feed if s[0] <= said[0]), default=None, key=lambda s: s[0]),
+                   min((s for s in feed if s[0] > said[0]), default=None, key=lambda s: s[0]))
+        return any(s is not None and s[1:] == said[1:] for s in nearest)
 
 
 # Firstmate's at_source as the journal's at_quality. An inbox time is the one

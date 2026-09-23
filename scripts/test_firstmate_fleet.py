@@ -1029,11 +1029,18 @@ class FeedTests(unittest.TestCase):
         # A stamped status, by its stamp.
         self.assertTrue(reach.holds(fact("bridge", "status", B + 120, "stamp", **said("working"))))
         self.assertFalse(reach.holds(fact("bridge", "status", B + 130, "stamp", **said("working"))))
-        # A status without a stamp, by verb and key, whenever it was noticed.
+        # A status without a stamp, by verb and key of the feed's status
+        # nearest when it was noticed: the last before, or the first after.
         self.assertTrue(reach.holds(fact("bridge", "status", B + 40, **said("blocked", "ci"))))
+        self.assertTrue(reach.holds(fact("bridge", "status", B + 20, **said("blocked", "ci"))))
         self.assertFalse(reach.holds(fact("bridge", "status", B + 40, **said("blocked"))))
-        self.assertFalse(reach.holds(fact("bridge", "status", B + 40, **said("working"))))
         self.assertFalse(reach.holds(fact("bridge", "status", B + 40, task="other", **said("blocked", "ci"))))
+        # A repeat the feed lost is not held by the feed's earlier line.
+        self.assertFalse(reach.holds(fact("bridge", "status", B + 20, **said("working"))))
+        self.assertFalse(reach.holds(fact("bridge", "status", B + 130, **said("blocked", "ci"))))
+        # Whatever the feed's time quality: a line stamped after the snapshot
+        # reads as unstamped to the bridge.
+        self.assertTrue(reach.holds(fact("bridge", "status", B + 110, **said("working"))))
 
     def test_feed_fixture_is_adapter_output(self):
         # Regenerate with ZOE_REGENERATE_CREW=1 after changing the scenario.
