@@ -1,0 +1,34 @@
+docs/DESIGN.md
+  s_a67a99cde7a393::t_9e0b9236be7feb 318-319,333
+assets/codex/desktop-0.150.0.model.txt
+  s_a67a99cde7a393::t_5d25966fc55de6 3,7,13,19,25,31,37
+README.md
+  s_a67a99cde7a393::t_9e0b9236be7feb 134
+src/state/render.rs
+  s_a67a99cde7a393::t_0bd2c4c703b6d9 127-159,161-164,166-191
+  s_a67a99cde7a393::t_fd95d179a03a23 160,165
+  s_a67a99cde7a393::t_5d25966fc55de6 92-107,109
+  s_a67a99cde7a393::t_786693f6094cce 192
+assets/claude/demo.model.txt
+  s_a67a99cde7a393::t_5d25966fc55de6 3,7,13,19,25,30,33,36
+assets/codex/cli-0.149.1.model.txt
+  s_a67a99cde7a393::t_5d25966fc55de6 3,7,13,19
+assets/codex/cli-0.153.4.model.txt
+  s_a67a99cde7a393::t_5d25966fc55de6 3,7,13,19,25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f0d5cd798e0207b84728c9725f18b38bcbb5c641",
+  "prompts": {},
+  "sessions": {
+    "s_a67a99cde7a393": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5e87d27e-5018-47db-97ca-493c3972217b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
