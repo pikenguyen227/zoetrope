@@ -162,14 +162,13 @@ runs; its `docs/configuration.md` owns that contract. The adapter translates it
   `events.v1.<first-seq>.jsonl` by file identity, falls back to `seq` when that
   file is gone, and leaves a final line without its newline for the next read.
   A skipped `seq` is an event Firstmate could not write: it is counted and stays
-  in the manifest diagnostics. Archive and delete leave the cursor, so removed
-  history does not come back.
+  in the manifest diagnostics, and this home's coverage breaks from the last
+  record before it (or the coverage already written) to the first after it.
+  Archive and delete leave the cursor, so removed history does not come back.
 - `task.spawned`, `task.status`, `task.decision`, `task.steered`,
   `task.steer_acked`, `task.reclassified`, `task.torn_down` and `task.busy`
-  become the journal type of the same name. A relaunch also ends the attempt it
-  replaces (`torn_down`, outcome `relaunched`, at the relaunch). `feed.*`
-  bookkeeping and a status line without a verb (continuation prose) are not
-  events. A task without a `spawn_gen` is the manifest's `unresolved` attempt.
+  become the journal type of the same name. `feed.*` bookkeeping and a status
+  line without a verb (continuation prose) are not events. A task without a `spawn_gen` is the manifest's `unresolved` attempt.
 - The event `id` is `firstmate:<home id>#<feed key>` and the `source` is
   `{kind: firstmate, home, seq}`. `at_source` maps to `at_quality`: `stamp`
   stays, `firstmate` and `inbox` (Firstmate's own clock) are `firstmate`, a
@@ -184,10 +183,12 @@ For an attempt the feed reports on, feed events replace bridge events
 (`Lifecycle::superseded` in `src/fleet/journal.rs`; the adapter's `Reach` keeps
 it from writing them in the first place). A feed that recorded the attempt's
 spawn, live or by backfill, holds its whole life; otherwise it holds the attempt
-from the earlier of its coverage start and its first fact about the attempt. A
-bridged spawn or teardown gives way only to the feed's own record of it, and a
-session join (`bound`), which no feed knows, always stays. Bridge events stay in
-the journal for removal to count; they no longer place on the timeline.
+from the earlier of its coverage start and its first fact about the attempt.
+Neither holds in a hole between the home's coverage windows, where the feed lost
+events: there the bridge's status and other facts place. A bridged spawn or
+teardown gives way only to the feed's own record of it, and a session join
+(`bound`), which no feed knows, always stays. Bridge events stay in the journal
+for removal to count; they no longer place on the timeline.
 
 ### The snapshot bridge
 

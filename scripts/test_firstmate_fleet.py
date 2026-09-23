@@ -847,12 +847,9 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(payload(22), [{"busy": {"state": "busy"}}])
         self.assertEqual(payload(25), [{"steer_acked": {"msg": "001"}}])
         self.assertEqual(translate(25)[0]["at_quality"], "observed")
-        # A relaunch ends the attempt it replaces, at the relaunch.
-        relaunch = translate(17)
-        self.assertEqual([(e["type"], e["attempt"]["spawn_gen"], e["at"]) for e in relaunch],
-                         [("spawned", GENS["tests-2"], adapter.iso(B + 600)),
-                          ("torn_down", GENS["tests"], adapter.iso(B + 600))])
-        self.assertEqual(relaunch[1]["torn_down"], {"outcome": "relaunched"})
+        # A relaunch is the new attempt's spawn; it invents no teardown.
+        self.assertEqual([(e["type"], e["attempt"]["spawn_gen"], e["at"]) for e in translate(17)],
+                         [("spawned", GENS["tests-2"], adapter.iso(B + 600))])
         # Bookkeeping, prose, unknown types and taskless records are not events.
         for seq in (1, 6, 23):
             self.assertEqual(translate(seq), [])
@@ -913,7 +910,7 @@ class FeedTests(unittest.TestCase):
         # Rotation renames the file being read; its tail and the new file follow.
         writer.advance(B + 612)
         self.assertTrue((writer.directory / "events.v1.1.jsonl").exists())
-        self.assertEqual(seqs(self.poll(feeds, B + 620, writer.pointer())[0]), [17, 17, 18])
+        self.assertEqual(seqs(self.poll(feeds, B + 620, writer.pointer())[0]), [17, 18])
         # A restarted adapter resumes from the saved cursor.
         feeds.save()
         again = adapter.Feeds(self.root / "fleet.feeds.json")
@@ -950,10 +947,12 @@ class FeedTests(unittest.TestCase):
                    if e["source"]["kind"] == "firstmate"]
         t = lambda n: adapter.iso(B + n)
         # From feed.started, chained, straight across B+480..B+660 when no
-        # adapter ran: Firstmate kept writing.
+        # adapter ran: Firstmate kept writing. Only the lost seq 19 breaks it,
+        # from what was covered before it to seq 20's recording.
         self.assertEqual(windows[0][0], t(200))
         self.assertEqual(windows[-1][1], t(960))
-        self.assertTrue(all(a[1] == b[0] for a, b in zip(windows, windows[1:])))
+        self.assertEqual([(a[1], b[0]) for a, b in zip(windows, windows[1:]) if a[1] != b[0]],
+                         [(t(660), t(703))])
 
     def test_feed_replaces_the_bridge_for_an_attempt(self):
         records, _ = feed_journal(self.root)
@@ -968,11 +967,14 @@ class FeedTests(unittest.TestCase):
         self.assertEqual([k for k, _ in about("impl", "impl", "firstmate")],
                          ["spawned", "status", "steered", "steer_acked", "status", "decision",
                           "status", "decision", "status", "torn_down"])
-        # The relaunch happened while no adapter ran: the feed has it at its
-        # real time and the bridge, noticing later, writes nothing of it.
-        self.assertEqual(about("tests", "tests", "bridge"), [("bound", adapter.iso(B + 450))])
-        self.assertIn(("torn_down", adapter.iso(B + 600)), about("tests", "tests", "firstmate"))
-        self.assertEqual(about("tests", "tests-2", "bridge"), [("bound", adapter.iso(B + 690))])
+        # The relaunch happened while no adapter ran: the feed has the new
+        # spawn at its real time; the old attempt's end is the bridge's, noticed.
+        self.assertEqual(about("tests", "tests", "bridge"),
+                         [("bound", adapter.iso(B + 450)), ("torn_down", adapter.iso(B + 660))])
+        self.assertNotIn("torn_down", [k for k, _ in about("tests", "tests", "firstmate")])
+        # Inside the hole seq 19 left, the bridge's status speaks.
+        self.assertEqual(about("tests", "tests-2", "bridge"),
+                         [("bound", adapter.iso(B + 690)), ("status", adapter.iso(B + 700))])
         # Reach itself: whole life after a spawn; otherwise from the feed's start.
         reach = adapter.Reach()
         reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "coverage",
@@ -984,6 +986,16 @@ class FeedTests(unittest.TestCase):
         self.assertFalse(reach.covers(("old", "g"), "spawned", B + 10))
         self.assertFalse(reach.covers(("old", "g"), "torn_down", B + 10))
         self.assertFalse(reach.covers(("other", "g"), "status", B + 10))
+        # A hole between the home's windows is not the feed's, even for an
+        # attempt whose spawn it recorded.
+        reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "coverage",
+                   "at": adapter.iso(B + 200), "coverage": {"from": adapter.iso(B + 90),
+                                                            "to": adapter.iso(B + 200)}})
+        reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "spawned",
+                   "at": adapter.iso(B - 50), "attempt": {"task": "old", "spawn_gen": "g"}})
+        self.assertTrue(reach.covers(("old", "g"), "status", B - 1))
+        self.assertFalse(reach.covers(("old", "g"), "status", B + 75))
+        self.assertTrue(reach.covers(("old", "g"), "status", B + 90))
 
     def test_feed_fixture_is_adapter_output(self):
         # Regenerate with ZOE_REGENERATE_CREW=1 after changing the scenario.

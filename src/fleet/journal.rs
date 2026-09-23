@@ -492,8 +492,10 @@ impl Lifecycle {
     /// or by backfill (which replays the whole status log), holds its whole
     /// life. Otherwise the feed holds it from the earliest of when the feed's
     /// coverage of that home began and the first fact it records about the
-    /// attempt. A bridged spawn or teardown gives way only to the feed's own
-    /// record of it, and a session join, which no feed knows, never does.
+    /// attempt. Neither holds in a hole between that home's coverage windows,
+    /// where the feed lost events. A bridged spawn or teardown gives way only
+    /// to the feed's own record of it, and a session join, which no feed
+    /// knows, never does.
     /// `Reach` in `scripts/firstmate-fleet.py` keeps the adapter from writing
     /// what this would drop.
     fn superseded(&self) -> BTreeSet<&str> {
@@ -505,13 +507,12 @@ impl Lifecycle {
             first: Option<DateTime<Utc>>,
         }
         let feed = |e: &&LifecycleEvent| e.source.kind == SourceKind::Firstmate;
-        let mut homes: BTreeMap<Option<&str>, DateTime<Utc>> = BTreeMap::new();
+        let mut homes: BTreeMap<Option<&str>, Vec<Window>> = BTreeMap::new();
         let mut held: BTreeMap<&Attempt, Held> = BTreeMap::new();
         for event in self.events.values().filter(feed) {
             let home = event.source.home.as_deref();
             if let Change::Coverage { coverage } = &event.change {
-                let start = homes.entry(home).or_insert(coverage.from);
-                *start = (*start).min(coverage.from);
+                homes.entry(home).or_default().push(*coverage);
                 continue;
             }
             let Some(attempt) = &event.attempt else {
@@ -526,6 +527,22 @@ impl Lifecycle {
                 (a, b) => a.or(b),
             };
         }
+        for windows in homes.values_mut() {
+            windows.sort();
+        }
+        let in_hole = |windows: &[Window], at: Option<DateTime<Utc>>| {
+            let mut reach: Option<DateTime<Utc>> = None;
+            for window in windows {
+                if reach
+                    .zip(at)
+                    .is_some_and(|(r, at)| r < at && at < window.from)
+                {
+                    return true;
+                }
+                reach = Some(reach.map_or(window.to, |r| r.max(window.to)));
+            }
+            false
+        };
         self.events
             .values()
             .filter(|e| e.source.kind == SourceKind::Bridge)
@@ -533,13 +550,15 @@ impl Lifecycle {
                 let Some(held) = e.attempt.as_ref().and_then(|a| held.get(a)) else {
                     return false;
                 };
+                let windows = homes.get(&held.home).map_or(&[][..], Vec::as_slice);
                 match e.change {
                     Change::Bound | Change::Coverage { .. } => false,
                     Change::Spawned { .. } => held.spawned,
                     Change::TornDown { .. } => held.torn_down,
+                    _ if in_hole(windows, e.at) => false,
                     _ if held.spawned => true,
                     _ => {
-                        let start = [homes.get(&held.home).copied(), held.first]
+                        let start = [windows.first().map(|w| w.from), held.first]
                             .into_iter()
                             .flatten()
                             .min();
@@ -1254,14 +1273,23 @@ mod tests {
         // Session joins still come from the bridge.
         let joins = store.sessions();
         assert!(joins.contains_key(&impl_) && joins.contains_key(&relaunched));
-        // The relaunch happened while no adapter ran: it ends the first
-        // attempt at its real time.
+        // The relaunch happened while no adapter ran: the feed records only
+        // the new spawn, so the first attempt ends when the bridge noticed.
         let live = store.state_at(None);
         assert_eq!(
             live[&tests].torn_down,
-            Some((at("08:10:00"), AtQuality::Firstmate))
+            Some((at("08:11:00"), AtQuality::Observed))
         );
-        assert_eq!(live[&tests].outcome.as_deref(), Some("relaunched"));
+        assert_eq!(live[&tests].outcome, None);
+        // Seq 19 was lost: in the hole it leaves, the bridge's status places.
+        assert!(
+            store
+                .ordered()
+                .any(|e| e.attempt.as_ref() == Some(&relaunched)
+                    && e.source.kind == SourceKind::Bridge
+                    && matches!(e.change, Change::Status { .. })
+                    && e.at == Some(at("08:11:40")))
+        );
         assert_eq!(
             live[&attempt("survey", "s1790064420.4103.3")]
                 .kind

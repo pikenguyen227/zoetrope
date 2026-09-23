@@ -377,9 +377,7 @@ class Bridge:
                 at, quality = (now - age, "stamp") if stamped else (now, "observed")
                 digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
                 mark = (digest, iso(at) if stamped else None)
-                if state["status"] != mark and self.reach.covers(key, "status", at):
-                    state["status"] = mark
-                elif state["status"] != mark:
+                if state["status"] != mark and not self.reach.covers(key, "status", at):
                     status = {"value": verb, "digest": digest}
                     found = re.search(r"\[key=([^\]\s]+)\]", raw)
                     if found:
@@ -449,12 +447,13 @@ class Reach:
     A feed that recorded an attempt's spawn, live or by backfill (which also
     replays its whole status log), holds its whole life. Otherwise it holds
     the attempt from the earliest of when the feed's coverage of that home
-    began and the first fact it records about the attempt. A spawn or
-    teardown is replaced only by the feed's own record of it.
+    began and the first fact it records about the attempt. Neither holds in a
+    hole between that home's coverage windows, where the feed lost events. A
+    spawn or teardown is replaced only by the feed's own record of it.
     """
 
     def __init__(self):
-        self.homes = {}  # feed home -> first covered epoch
+        self.homes = {}  # feed home -> its coverage windows, as (from, to) epochs
         self.attempts = {}  # (task, spawn_gen) -> what the feed holds about it
 
     def add(self, event):
@@ -464,9 +463,8 @@ class Reach:
         try:
             at = epoch_of(event["at"]) if event.get("at") else None
             if event.get("type") == "coverage":
-                start = epoch_of(event["coverage"]["from"])
-                home = source.get("home")
-                self.homes[home] = min(self.homes.get(home, start), start)
+                window = (epoch_of(event["coverage"]["from"]), epoch_of(event["coverage"]["to"]))
+                self.homes.setdefault(source.get("home"), []).append(window)
                 return
         except (KeyError, TypeError, ValueError):
             return
@@ -485,9 +483,15 @@ class Reach:
             return False
         if kind in ("spawned", "torn_down"):
             return kind in held["types"]
+        windows = sorted(self.homes.get(held["home"], []))
+        reach = None
+        for start, end in windows:
+            if reach is not None and reach < at < start:
+                return False
+            reach = end if reach is None else max(reach, end)
         if "spawned" in held["types"]:
             return True
-        starts = [t for t in (self.homes.get(held["home"]), held["first"]) if t is not None]
+        starts = [t for t in (windows[0][0] if windows else None, held["first"]) if t is not None]
         return bool(starts) and at >= min(starts)
 
 
@@ -501,10 +505,7 @@ AT_QUALITY = {"stamp": "stamp", "firstmate": "firstmate", "inbox": "firstmate",
 def translate(record, home):
     """An fm-lifecycle.v1 record as journal lifecycle events: none for the
     feed's own bookkeeping (feed.started, feed.backfilled), a status line
-    without a verb (continuation prose), or a type this adapter does not know.
-
-    A relaunch also ends the attempt it replaces, which Firstmate records only
-    as the new spawn's previous_spawn_gen, so that becomes its torn_down."""
+    without a verb (continuation prose), or a type this adapter does not know."""
     kind, data, task = record.get("type"), record.get("data"), record.get("task")
     key = record.get("key")
     if not (isinstance(task, dict) and isinstance(task.get("id"), str) and task["id"]
@@ -552,21 +553,13 @@ def translate(record, home):
     seq = record.get("seq")
     if isinstance(seq, int) and not isinstance(seq, bool):
         source["seq"] = seq
-    attempt = {"task": task["id"], "spawn_gen": text(task.get("spawn_gen")) or "unresolved"}
-
-    def event(ident, attempt, payload):
-        line = {"id": f"firstmate:{home}#{ident}", "source": source}
-        if at is not None:
-            line["at"] = iso(at)
-        line.update(at_quality=quality, attempt=attempt, type=next(iter(payload)), **payload)
-        return {"schema": JOURNAL, "kind": "lifecycle", "event": line}
-
-    events = [event(key, attempt, payload)]
-    previous = text(data.get("previous_spawn_gen"))
-    if kind == "task.spawned" and data.get("relaunch") is True and previous:
-        events.append(event(f"{key}/relaunched", dict(attempt, spawn_gen=previous),
-                            {"torn_down": {"outcome": "relaunched"}}))
-    return events
+    line = {"id": f"firstmate:{home}#{key}", "source": source}
+    if at is not None:
+        line["at"] = iso(at)
+    line.update(at_quality=quality,
+                attempt={"task": task["id"], "spawn_gen": text(task.get("spawn_gen")) or "unresolved"},
+                type=next(iter(payload)), **payload)
+    return [{"schema": JOURNAL, "kind": "lifecycle", "event": line}]
 
 
 def feed_files(active):
@@ -641,7 +634,8 @@ class Feeds:
     offset read up to, the last seq, and how far this home's coverage lines
     reach. A cleared or trimmed journal keeps it, so removed history does not
     come back. Seqs are gap-free, so a missing one is an event Firstmate could
-    not write: it is counted and reported, never papered over.
+    not write: it is counted and reported, never papered over, and this home's
+    coverage breaks from the last record before it to the first after it.
 
     Firstmate writes its feed whether or not this adapter runs, so this
     home's feed covers from its feed.started to the latest read: one coverage
@@ -732,23 +726,33 @@ class Feeds:
                 return [], None  # Enabled, nothing written yet.
             raise FileNotFoundError(errno.ENOENT, "no such directory", str(active.parent))
         cursor = dict(self.cursors.get(path) or {"file": None, "offset": 0, "seq": 0, "home": home,
-                                                 "since": None, "written": None, "lost": 0,
-                                                 "gaps": 0, "gap": None, "bad": 0})
+                                                 "since": None, "written": None, "recorded": None,
+                                                 "lost": 0, "gaps": 0, "gap": None, "bad": 0})
         records, bad, file, offset = read_feed(active, cursor)
         if records and cursor["seq"] and max(r["seq"] for r in records) < cursor["seq"] \
                 and file != cursor["file"]:
             # Nothing past the cursor, only a shorter history: a new feed.
-            cursor.update(seq=0, since=None)
+            cursor.update(seq=0, since=None, recorded=None)
         lines = []
         for record in records:
             seq = record["seq"]
             if seq <= cursor["seq"]:
                 continue  # Already read, before a rotation or restart.
+            recorded = record.get("recorded_at")
+            recorded = recorded if isinstance(recorded, int) and not isinstance(recorded, bool) else None
             if seq > cursor["seq"] + 1:
                 cursor["lost"] += seq - cursor["seq"] - 1
                 cursor["gaps"] += 1
                 cursor["gap"] = [cursor["seq"] + 1, seq - 1]
+                if primary and cursor["since"] is not None:
+                    start = cursor["written"] if cursor["written"] is not None else cursor["since"]
+                    before = max(start, cursor.get("recorded") or start)
+                    if before > start:
+                        lines.append(self.segment(cursor, path, before))
+                    cursor["written"] = max(before, recorded if recorded is not None else now)
             cursor["seq"] = seq
+            if recorded is not None:
+                cursor["recorded"] = recorded
             identity = (record.get("home") or {}).get("id")
             if isinstance(identity, str) and identity:
                 cursor["home"] = identity
