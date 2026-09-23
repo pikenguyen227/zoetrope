@@ -89,10 +89,25 @@ fn tree(model: &SessionModel, parent: Option<&str>, depth: usize, out: &mut Stri
         if let Some(model_name) = &agent.model {
             out.push_str(&format!("{indent}    model: {model_name}\n"));
         }
+        // Tokens as the card and panel count them: the recorded input (cache
+        // reads and writes included) plus output, and the API-equivalent
+        // cost; output alone when no input was recorded.
+        let u = &agent.usage.summary;
+        let tokens = if u.recorded {
+            format!(
+                "{}{} ({} in + {} out) · {}",
+                u.total(),
+                if u.incomplete { "+" } else { "" },
+                u.input,
+                u.output,
+                u.cost_label()
+            )
+        } else {
+            format!("{} output · total/cost unavailable", agent.output_tokens)
+        };
         out.push_str(&format!(
-            "{indent}    tools: {} ({ok}✓ {err}✗ {pending}⏳)   tokens: {}\n",
+            "{indent}    tools: {} ({ok}✓ {err}✗ {pending}⏳)   tokens: {tokens}\n",
             agent.tool_calls().len(),
-            agent.output_tokens
         ));
         // Provenance: what triggered this agent (the panel's `↳ prompt`/`↳ thought`).
         if let Some(ctx) = model.provenance(agent) {
@@ -107,5 +122,71 @@ fn tree(model: &SessionModel, parent: Option<&str>, depth: usize, out: &mut Stri
         // Recurse into this agent's children (groups have subagent children,
         // main has direct subagents + groups).
         tree(model, Some(id), depth + 1, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::session::MAIN_ID;
+
+    /// The main agent's `tools:` row as `inspect` prints it.
+    fn tokens_row(model: &SessionModel) -> String {
+        agents(model)
+            .lines()
+            .find(|l| l.trim_start().starts_with("tools:"))
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    fn with_usage(summary: crate::usage::Summary) -> SessionModel {
+        let mut model = SessionModel::new("s".into());
+        let main = model.agents.get_mut(MAIN_ID).unwrap();
+        main.output_tokens = 5;
+        main.usage.summary = summary;
+        model
+    }
+
+    #[test]
+    fn tokens_read_as_the_card_counts_them() {
+        // Input (cache reads and writes included) plus output, then the cost:
+        // the total the card shows, not the output alone.
+        let model = with_usage(crate::usage::Summary {
+            input: 1000,
+            output: 20,
+            cached: 800,
+            recorded: true,
+            usd: Some(0.0124),
+            ..Default::default()
+        });
+        assert_eq!(
+            tokens_row(&model),
+            "tools: 0 (0✓ 0✗ 0⏳)   tokens: 1020 (1000 in + 20 out) · API est. $0.012"
+        );
+    }
+
+    #[test]
+    fn partial_and_unpriced_usage_say_so() {
+        let model = with_usage(crate::usage::Summary {
+            input: 10,
+            output: 2,
+            recorded: true,
+            incomplete: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            tokens_row(&model),
+            "tools: 0 (0✓ 0✗ 0⏳)   tokens: 12+ (10 in + 2 out) · API est. —"
+        );
+    }
+
+    #[test]
+    fn output_alone_when_no_input_was_recorded() {
+        let model = with_usage(crate::usage::Summary::default());
+        assert_eq!(
+            tokens_row(&model),
+            "tools: 0 (0✓ 0✗ 0⏳)   tokens: 5 output · total/cost unavailable"
+        );
     }
 }
