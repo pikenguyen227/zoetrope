@@ -42,6 +42,14 @@ Once linked, invoke **Zoetrope: Firstmate Fleet tab** through the plugin manager
 with a Captain pane focused to include that pane's exact session as a Captain.
 Opening from Shell still discovers Firstmate workers; a Shell pane is not guessed
 to be a Captain. The adapter does not launch Claude, Codex, or any workers.
+The crew's root card takes the Captain pane's Herdr workspace name (else the
+Fleet tab's own workspace), and reads `Firstmate · Control Tower` when Herdr
+cannot name one.
+
+One Captain stands at a time: the session the Captain pane registers, or, while
+that pane has none (a Shell pane, or between Captain sessions), the last Captain
+registered. An earlier Captain keeps its membership and history but is no
+longer registered, so it counts as finished below.
 
 Default arrangement: `Agentic/firstmate` beside `Agentic/zoetrope`. Override with
 `FM_HOME`, `ZOE_FLEET_BIN`, or `ZOE_FLEET_STATE_DIR` if needed. By default, the
@@ -103,7 +111,8 @@ torn down (the journal's `torn_down`: it left the Firstmate snapshot), or, at
 the live edge, once the adapter no longer registers it: its session is gone
 from the manifest, or every task joined to it has runtime `not observed`, as
 for history the journal never recorded. An idle or quiet worker has not
-finished, and neither has a Captain, which has no attempt to finish. Attempt
+finished, and neither has the standing Captain, which has no attempt to finish;
+an earlier Captain finishes once a later one takes its place. Attempt
 cards without a session finish when torn down or, at the live edge, when their
 task is `not observed`. Scrubbed into the past, only the journal counts.
 

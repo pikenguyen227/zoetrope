@@ -162,7 +162,7 @@ impl Fleet {
                 .collect();
             let registered = !super::finished(
                 key,
-                member.retained,
+                member.unregistered(),
                 None,
                 &crew,
                 &joins,

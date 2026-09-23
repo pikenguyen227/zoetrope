@@ -55,9 +55,13 @@ pub struct SessionSpec {
     /// Optional exact fixture/export file, relative to the manifest directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<PathBuf>,
+    /// The adapter's runtime for a session no attempt names, such as a
+    /// Captain: `not observed` once a later Captain took its place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<Observation>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Observation {
     pub value: String,
@@ -208,6 +212,17 @@ impl Member {
     fn active(&self) -> bool {
         self.app.session.last_activity.is_some()
     }
+
+    /// Whether the adapter no longer registers it: gone from the manifest, or
+    /// an earlier Captain the manifest reads as `not observed`.
+    fn unregistered(&self) -> bool {
+        self.retained
+            || self
+                .spec
+                .runtime
+                .as_ref()
+                .is_some_and(|r| r.value == NOT_OBSERVED)
+    }
 }
 
 /// An overview plus independent, fully functional session inspectors.
@@ -269,7 +284,7 @@ fn left(task: &Task) -> bool {
 /// attempt to its name, such as a Captain, while it is still registered.
 fn finished(
     key: &SessionKey,
-    retained: bool,
+    unregistered: bool,
     at: Option<DateTime<Utc>>,
     crew: &BTreeMap<Attempt, AttemptState>,
     joins: &BTreeMap<Attempt, SessionKey>,
@@ -286,7 +301,7 @@ fn finished(
         .peekable();
     let unobserved = joined.peek().is_some() && joined.all(left);
     // Registration is today's fact; the past reads the journal alone.
-    torn_down || (at.is_none() && (retained || unobserved))
+    torn_down || (at.is_none() && (unregistered || unobserved))
 }
 
 /// Whether an attempt card has finished as of `at`: torn down by then, or, at
@@ -532,7 +547,7 @@ impl Fleet {
             }
             if finished(
                 key,
-                member.retained,
+                member.unregistered(),
                 at,
                 &crew,
                 &joins,
@@ -603,6 +618,8 @@ impl Fleet {
                     }
                     if member.retained && at.is_none() {
                         detail.push("retained history · no longer registered".into());
+                    } else if member.unregistered() && at.is_none() {
+                        detail.push("no longer registered".into());
                     }
                     agent.description = Some(detail.join("\n"));
                     if !member.loaded || member.error.is_some() {
@@ -611,6 +628,17 @@ impl Fleet {
                     }
                     if let Some((_, state)) = attempt_for(key) {
                         marks.insert(id.clone(), crew_mark(state, covered));
+                    } else if at.is_none() && member.unregistered() {
+                        // An earlier Captain has no attempt to be torn down;
+                        // shown, it reads as gone all the same.
+                        marks.insert(
+                            id.clone(),
+                            CrewMark {
+                                label: "no longer registered".into(),
+                                tone: CrewTone::Quiet,
+                                dimmed: true,
+                            },
+                        );
                     }
                 }
                 projection.last_activity = projection.last_activity.max(agent.last_ts);

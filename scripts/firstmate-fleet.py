@@ -40,6 +40,8 @@ SCHEMA = "zoetrope.fleet.v1"
 # in ZOE_FLEET_REQUEST (REQUEST_EXIT in src/fleet/native.rs).
 REQUEST_EXIT = 75
 NOT_OBSERVED = "not observed"
+# The fleet's name when no Herdr workspace names it.
+LABEL = "Firstmate · Control Tower"
 JOURNAL = "zoetrope.fleet.journal.v2"
 LEGACY_JOURNAL = "zoetrope.fleet.journal.v1"
 FEED = "fm-lifecycle.v1"
@@ -81,11 +83,13 @@ def unreachable(task):
             and (state.get("detail") or "").startswith("backend unreachable"))
 
 
-def build_manifest(before, after, panes, previous=None, captain=None, observed=None):
+def build_manifest(before, after, panes, previous=None, captain=None, observed=None,
+                   workspace=None):
     """Join only stable generations/endpoints captured on both sides of pane reads.
 
     `panes` is keyed by Firstmate's exact session:pane target. `captain` is an
     explicitly chosen pane record, a current member rather than inferred ancestry.
+    `workspace` is the Herdr workspace's name, which names the fleet.
     """
     check_snapshot(before)
     check_snapshot(after)
@@ -102,12 +106,11 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
     diagnostics = []
     for task in attempts.values():
         task["runtime"] = observation("not observed", "firstmate.snapshot", when)
-    if captain:
-        key = registered(captain)
-        if key:
-            sessions[identity(key)] = {"key": key, "label": "Captain · " + key["provider"]}
-        else:
-            diagnostics.append("Captain pane has no supported registered session yet")
+    standing = registered(captain) if captain else None
+    if standing:
+        # Newest registration last: it is the Captain that stands.
+        sessions.pop(identity(standing), None)
+        sessions[identity(standing)] = {"key": standing, "label": "Captain · " + standing["provider"]}
     earlier = {task["id"]: task for task in before["tasks"]}
     records = {r.get("id"): r for r in after.get("backlog", {}).get("records", [])}
     for current in after["tasks"]:
@@ -157,6 +160,21 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
     if local and all(unreachable(t) for t in local):
         diagnostics.append("Firstmate reads every task as backend unreachable; "
                            "task state is unknown until herdr is on the snapshot's PATH")
+    # A session no attempt names is a Captain. One Captain stands at a time:
+    # the pane's, or else the last registered. Earlier ones keep their
+    # membership and history, but are no longer registered.
+    joined = {identity(t["session"]) for t in attempts.values() if t.get("session")}
+    captains = [k for k in sessions if k not in joined]
+    for k in captains:
+        sessions[k].pop("runtime", None)
+        if k != captains[-1]:
+            sessions[k]["runtime"] = observation(NOT_OBSERVED, "herdr.pane.get", when)
+    if captain and not standing:
+        # The pane is only where this collector looks; a Captain it registered
+        # before, or another collector did, still stands.
+        diagnostics.append(f"Captain pane {captain.get('pane_id')} has no supported registered "
+                           "session; showing the last Captain registered" if captains else
+                           "Captain pane has no supported registered session yet")
     # Capture continuation only when two distinct native IDs are explicitly
     # registered under distinct launch generations of the SAME Firstmate task.
     links = {link["id"]: link for link in previous.get("links", [])}
@@ -179,7 +197,7 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                     "to": attempt["session"], "kind": "continues",
                     "evidence": f"Firstmate task {current['id']}: observed launch generation {last['spawn_gen']} -> {attempt['spawn_gen']}",
                     "observed_at": when})
-    return {"schema": SCHEMA, "fleet_id": fleet_id, "label": "Firstmate · Control Tower",
+    return {"schema": SCHEMA, "fleet_id": fleet_id, "label": workspace or LABEL,
             "observed_at": when, "sessions": list(sessions.values()),
             "tasks": list(attempts.values()), "links": list(links.values()),
             "diagnostics": diagnostics}
@@ -259,9 +277,25 @@ def collect(home, herdr, previous, captain_target):
         except (RuntimeError, ValueError, KeyError) as error:
             errors.append(f"Captain: {error}")
     after = run_json(command, env)
-    manifest = build_manifest(before, after, panes, previous, captain)
+    manifest = build_manifest(before, after, panes, previous, captain,
+                              workspace=workspace_name(herdr, captain))
     manifest["diagnostics"].extend(errors)
     return manifest, after
+
+
+def workspace_name(herdr, captain):
+    """The Herdr workspace the Captain pane sits in, else this pane's; None
+    when neither is known or Herdr cannot name it."""
+    workspace = (captain or {}).get("workspace_id") or os.environ.get("HERDR_WORKSPACE_ID")
+    if not workspace:
+        return None
+    try:
+        data = run_json([herdr, "workspace", "get", workspace], timeout=8)
+        label = data["result"]["workspace"]["label"]
+    except (RuntimeError, ValueError, KeyError, TypeError):
+        return None
+    label = label.strip() if isinstance(label, str) else ""
+    return label if label and label.isprintable() else None
 
 
 def iso(epoch):
@@ -988,10 +1022,11 @@ class Worker:
 
     def registered(self):
         """Whether the adapter, when it last observed, still registered it. A
-        session with no attempt (a Captain, an explicit member) has nothing
-        that says it left, so it counts as registered."""
+        session with no attempt (a Captain) counts as registered until a
+        later Captain takes its place."""
         if self.session and not self.attempts:
-            return True
+            spec = next((s for s in self.manifest["sessions"] if s["key"] == self.session), {})
+            return (spec.get("runtime") or {}).get("value") != NOT_OBSERVED
         tasks = {(t["id"], t["spawn_gen"]): t for t in self.manifest["tasks"]}
         return any(key in tasks and (tasks[key].get("runtime") or {}).get("value") != NOT_OBSERVED
                    for key in self.attempts)
