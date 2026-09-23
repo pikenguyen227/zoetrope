@@ -127,7 +127,8 @@ fixing, `▲` waiting at a gate, `✗` failed. A narrow card drops the glyphs
 before the headline, and ends a strip it cannot fit whole in `…`. The band
 reads `?` wherever nobody was reading the run (before the adapter first read
 it, while it was down, when a read failed or was not understood) and once the
-no-mistakes daemon is down, since its record may then be stale. A run that
+no-mistakes daemon is down, since its record may then be stale (a read that
+says the run ended is still taken). A run that
 had ended cannot change and never reads `?`; a gate with ask-user findings
 stays amber, since it stays open until someone answers it. Runs outlive their
 workers: press `v` to see a finished worker's card while its CI still runs.
@@ -141,8 +142,8 @@ active round's start worked out from its age. A panel too short for the table
 keeps the step the run is at and says how many rows it left out.
 
 On the scrubber, `▷` marks a run's start, `▲` a gate parking on ask-user
-findings (`△` on others), and `✓` / `✗` its end; each step a read found is a
-`[` / `]` chapter. A stretch where a run was alive but unread is hatched.
+findings (`△` on others), and `✓` / `✗` its end, each a `[` / `]` chapter;
+the steps between are not. A stretch where a run was alive but unread is hatched.
 Read failures, format drift and a down daemon are manifest diagnostics in the
 header. Try it on the synthetic crew with the runs the adapter read beside it
 (`assets/fleet/validation`):

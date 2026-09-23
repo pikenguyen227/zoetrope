@@ -1549,7 +1549,8 @@ class ValidationTests(unittest.TestCase):
         lines, notes = self.poll(B + 610)
         self.assertEqual(self.seen(lines), [("daemon_down", adapter.iso(B + 610), "observed", None)])
         self.assertEqual(notes, ["no-mistakes daemon is down: 1 validation run(s) unverified"])
-        self.assertEqual(self.reader.calls[-1], ("daemon", "status"), "no run read while it is down")
+        self.assertEqual(self.reader.calls[-1], ("axi", "status", "--run", IMPL_RUN),
+                         "read, but a record still running is not taken")
         lines, _ = self.poll(B + 620)
         self.assertEqual(self.seen(lines), [], "said once")
         # Back up, nothing changed: a sighting all the same, to end the doubt.
@@ -1560,6 +1561,22 @@ class ValidationTests(unittest.TestCase):
         lines, notes = self.poll(B + 640)
         self.assertEqual((events(lines, "validation"), notes),
                          ([], ["no-mistakes daemon did not answer; validation unverified"]))
+
+    def test_a_run_that_ended_is_taken_while_the_daemon_is_down(self):
+        self.poll(B + 600, text="impl-review")
+        self.down = {B + 610, B + 620, B + 630}
+        self.poll(B + 610)
+        lines, notes = self.poll(B + 620, text="impl-passed")
+        self.assertEqual(self.seen(lines), [("ended", adapter.iso(B + 620), "observed", adapter.iso(B + 600))])
+        self.assertEqual(notes, [])
+        calls = len(self.reader.calls)
+        self.assertEqual((self.poll(B + 630), len(self.reader.calls)), (([], []), calls))
+        # Down from the start: no daemon_down for a run whose end is read.
+        runs, self.captures = {TESTS_RUN: ("impl", B, [])}, {IMPL_RUN: []}
+        self.runs.clear(); self.runs.update(runs); self.captures[IMPL_RUN] = runs[TESTS_RUN][2]
+        self.validation, self.down = self.collector(), {B + 700}
+        lines, notes = self.poll(B + 700, text=capture("impl-passed").replace(IMPL_RUN, TESTS_RUN))
+        self.assertEqual([p for p, *_ in self.seen(lines)], ["started", "ended"])
 
     def test_drift_and_failed_reads_write_nothing_and_break_coverage(self):
         self.poll(B + 600, text="impl-review")

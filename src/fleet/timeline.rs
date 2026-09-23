@@ -41,9 +41,6 @@ pub enum MarkKind {
     RunPassed,
     RunFailed,
     RunCancelled,
-    /// A step of a validation run moved on: a chapter, not a glyph (a run
-    /// has nine steps, which would crowd the strip).
-    RunStep,
     Other,
 }
 
@@ -75,7 +72,7 @@ impl MarkKind {
                         Self::RunPassed
                     }
                 }
-                Phase::Seen | Phase::DaemonDown | Phase::Gone => Self::RunStep,
+                Phase::Seen | Phase::DaemonDown | Phase::Gone => Self::Other,
             },
             _ => Self::Other,
         }
@@ -96,7 +93,7 @@ impl MarkKind {
             Self::RunPassed => ("✓", palette.success),
             Self::RunFailed => ("✗", palette.error),
             Self::RunCancelled => ("✗", palette.subtle),
-            Self::RunStep | Self::Other => return None,
+            Self::Other => return None,
         })
     }
 }

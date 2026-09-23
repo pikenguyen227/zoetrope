@@ -1093,7 +1093,7 @@ class NoMistakes:
     run, touches the daemon, or opens no-mistakes' database."""
 
     def __init__(self, binary=None, timeout=NM_TIMEOUT):
-        self.binary = binary or os.environ.get("ZOE_NO_MISTAKES_BIN") or "no-mistakes"
+        self.binary = binary or "no-mistakes"
         self.timeout = timeout
 
     def call(self, *argv):
@@ -1148,7 +1148,8 @@ class Validation:
       active round's start is derived from its age, to the second;
     - `daemon_down` when `no-mistakes daemon status` answers that the daemon
       is down, so a record still saying running is a dead instrument's: the
-      view reads the run as unverified, and an open gate stays open;
+      view reads the run as unverified, and an open gate stays open. The
+      record is still read, and taken only when it says the run ended;
     - `gone` when the run's record can no longer be found.
 
     `validation_coverage` events are the windows in which each run was read,
@@ -1247,13 +1248,20 @@ class Validation:
             daemon = "unanswered"
             notes.append(f"no-mistakes could not be run: {error.strerror or error}")
         if daemon != "up":
+            unverified = 0
             for key in due:
+                if daemon == "down":
+                    lines += self.read(key, ended_only=True)[0]
+                    if self.runs[key]["final"]:
+                        continue
                 lines += self.stop(key)
+                unverified += 1
                 if daemon == "down" and not self.runs[key]["down"]:
                     lines.append(self.event(key, "daemon_down", self.clock()))
                     self.runs[key]["down"] = True
-            notes.append(f"no-mistakes daemon is down: {len(due)} validation run(s) unverified"
-                         if daemon == "down" else "no-mistakes daemon did not answer; validation unverified")
+            if unverified:
+                notes.append(f"no-mistakes daemon is down: {unverified} validation run(s) unverified"
+                             if daemon == "down" else "no-mistakes daemon did not answer; validation unverified")
             return lines, notes
         for key in due:
             found, note = self.read(key)
@@ -1262,8 +1270,10 @@ class Validation:
                 notes.append(f"{key[0]}: validation run {key[2]} {note}")
         return lines, notes
 
-    def read(self, key):
-        """Lines for one run's read, and a diagnostic when it failed."""
+    def read(self, key, ended_only=False):
+        """Lines for one run's read, and a diagnostic when it failed. With
+        `ended_only` (the daemon is down) only a run that ended is taken: a
+        record still saying running may be a dead daemon's."""
         state = self.runs[key]
         try:
             read, ages = read_run(self.reader.status(key[2]), key[2])
@@ -1278,6 +1288,8 @@ class Validation:
             return self.stop(key), f"output not understood ({error}); unverified until it reads again"
         except (OSError, TimeoutError) as error:
             return self.stop(key), f"unreadable: {getattr(error, 'strerror', None) or error}"
+        if ended_only and read["status"] not in RUN_ENDED:
+            return self.stop(key), None
         now = self.clock()
         lines = []
         if read != state["state"] or state["down"]:

@@ -229,7 +229,7 @@ as graph nodes of its own.
   <id>`, which reads the run's record without the daemon's socket, and
   `no-mistakes daemon status`, both from `/`, with
   `NO_MISTAKES_NO_UPDATE_CHECK=1` (no network) and a 5 s timeout
-  (`NoMistakes`; `ZOE_NO_MISTAKES_BIN` names another binary). The adapter never
+  (`NoMistakes`). The adapter never
   responds to, aborts, reruns, syncs or attaches to a run, never starts, stops
   or restarts the daemon, and never opens no-mistakes' database.
 - **Strict parsing.** The CLI prints TOON only (`read_run`): the run's status,
@@ -260,7 +260,8 @@ as graph nodes of its own.
   a viewer that predates it skips it rather than counting it as lifecycle
   coverage.
 - **A dead instrument proves nothing.** While the daemon is down its records
-  may still say running, so no run is read, `daemon_down` is written once, and
+  may still say running, so a read is taken only when it says the run ended
+  (an ended run cannot be stale); otherwise `daemon_down` is written once, and
   the run stays unverified until a read after the daemon is back (which writes
   a `seen` even when nothing changed). A timeout is neither up nor down.
 - **Restarts** recover what was written from the journal: nothing is

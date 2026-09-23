@@ -1320,13 +1320,12 @@ mod tests {
         for glyph in ["▷", "✓", "▲"] {
             assert!(markers.contains(glyph), "{glyph} missing from {markers:?}");
         }
-        // Each step a read found is a chapter: `]` from impl's done lands on
-        // its run's start, then its first read.
+        // The run's start is a chapter; a step a read found is not.
         seek(&mut fleet, "08:07:40");
         route(&mut fleet, &key(KeyCode::Char(']')));
         assert_eq!(fleet.at(), Some(at("08:07:45")));
         route(&mut fleet, &key(KeyCode::Char(']')));
-        assert_eq!(fleet.at(), Some(at("08:08:00")));
+        assert_ne!(fleet.at(), Some(at("08:08:00")));
     }
 
     #[test]
