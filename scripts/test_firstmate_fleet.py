@@ -184,6 +184,23 @@ def fm_task(task_id, gen, now, statuses=(), target=None, stamped=True):
     return row
 
 
+def identify(row, offset):
+    """Give a task row's last status line the feed identity Firstmate
+    publishes for it."""
+    stream = row["spawn_gen"]
+    row["paths"]["status_log"]["last_event"].update(
+        offset=offset, stream=stream, lifecycle_key=f"status/{row['id']}/{stream}/@{offset}")
+    return row
+
+
+def fed(key, at, verb, note, at_source="stamp"):
+    """The journal event the feed's record of a line of t's becomes."""
+    record = {"schema": adapter.FEED, "seq": 1, "key": key, "type": "task.status", "at": at,
+              "at_source": at_source, "task": {"id": "t", "spawn_gen": "one"},
+              "data": {"verb": verb, "key": None, "note": note}}
+    return adapter.translate(record, "fmh")[0]["event"]
+
+
 def fm_snapshot(now, tasks):
     return {"schema": "fm-fleet-snapshot.v1", "fm_home": HOME, "generated": adapter.iso(now),
             "generated_epoch": now, "tasks": tasks, "backlog": {"records": []}}
@@ -324,6 +341,55 @@ class BridgeTests(unittest.TestCase):
             seen += [(e["at"], e["at_quality"], e["status"]["note"]) for e in events(lines, "status")]
         self.assertEqual(seen, [(adapter.iso(B + 70), "observed", "on it"),
                                 (adapter.iso(B + 100), "observed", "on it again")])
+
+    def test_a_keyed_status_gives_way_only_to_the_feed_event_of_its_key(self):
+        # Firstmate names each polled line by its feed key, so the feed's
+        # record of a line replaces the bridged copy exactly, stamped or not.
+        bridge = self.bridge()
+        bridge.reach.add(fed("status/t/one/@0", B + 60, "working", "on it"))
+        statuses = [(B + 60, "working", "on it"), (B + 60, "blocked", "ci", "ci")]
+        held, _ = observe(bridge, B + 70, [identify(fm_task("t", "one", B + 70, statuses[:1],
+                                                            stamped=False), 0)])
+        self.assertEqual(events(held, "status"), [])
+        # Another line stamped at that same moment is not the feed's record,
+        # though a stamp alone would have matched it.
+        other, _ = observe(bridge, B + 100, [identify(fm_task("t", "one", B + 100, statuses), 30)])
+        self.assertEqual([(e["at"], e["status"]["value"], e["status"]["lifecycle_key"])
+                          for e in events(other, "status")],
+                         [(adapter.iso(B + 60), "blocked", "status/t/one/@30")])
+
+    def test_a_status_without_identity_is_matched_as_before(self):
+        # All three identity fields null (or absent, as test_an_unstamped_
+        # status_is_always_bridged shows): a stamp still matches the feed's
+        # record, and an unstamped line is bridged beside it.
+        for stamped, expected in ((True, []), (False, [adapter.iso(B + 70)])):
+            bridge = self.bridge()
+            bridge.reach.add(fed("status/t/one/@0", B + 60, "working", "on it"))
+            row = fm_task("t", "one", B + 70, [(B + 60, "working", "on it")], stamped=stamped)
+            row["paths"]["status_log"]["last_event"].update(offset=None, stream=None, lifecycle_key=None)
+            lines, _ = observe(bridge, B + 70, [row])
+            self.assertEqual([e["at"] for e in events(lines, "status")], expected, stamped)
+            self.assertNotIn("lifecycle_key", json.dumps(lines))
+
+    def test_identical_unstamped_lines_at_two_offsets_are_two_lines(self):
+        def row(now, offset):
+            task = fm_task("t", "one", now, [(B, "working", "on it")], stamped=False)
+            task["paths"]["status_log"]["last_event"]["raw"] = "working: on it"
+            return identify(task, offset) if offset is not None else task
+        bridge, seen = self.bridge(), []
+        for now, offset in ((B + 10, 0), (B + 20, 0), (B + 30, 40)):
+            lines, _ = observe(bridge, now, [row(now, offset)])
+            seen += lines
+        self.assertEqual([(e["at"], e["status"]["lifecycle_key"]) for e in events(seen, "status")],
+                         [(adapter.iso(B + 10), "status/t/one/@0"),
+                          (adapter.iso(B + 30), "status/t/one/@40")])
+        # A restart knows the line it last wrote, and a poll without identity
+        # compares it by words, as before.
+        again = adapter.Bridge(FLEET, "run-2")
+        again.recover(seen)
+        for now, offset in ((B + 40, 40), (B + 50, None)):
+            lines, _ = observe(again, now, [row(now, offset)])
+            self.assertEqual(events(lines, "status"), [])
 
     def test_teardown_and_relaunch_are_observed(self):
         bridge = self.bridge()
@@ -808,15 +874,22 @@ class FeedWriter:
 
 def feed_rows(now):
     """The snapshot's task rows and Herdr panes at `now`: an attempt's last
-    status line is the newest the feed dates at or before it."""
+    status line is the newest the feed dates at or before it. Firstmate
+    publishes impl's lines' feed identity; the other attempts' lines carry
+    none, so they are matched by stamp."""
     tasks, panes = [], {}
     for (task, gen), ((start, end), session, bound) in FEED_TASKS.items():
         if not (start <= now and (end is None or now < end)):
             continue
+        records = [r for r in FEED_RECORDS if r["type"] == "task.status" and r["task"]["spawn_gen"] == GENS[gen]
+                   and r["data"]["verb"] and r["seq"] != 19]
         lines = [(r["at"], r["data"]["verb"], r["data"]["note"], *([r["data"]["key"]] if r["data"]["key"] else []))
-                 for r in FEED_RECORDS if r["type"] == "task.status" and r["task"]["spawn_gen"] == GENS[gen]
-                 and r["data"]["verb"] and r["seq"] != 19]
-        tasks.append(fm_task(task, GENS[gen], now, lines))
+                 for r in records]
+        row = fm_task(task, GENS[gen], now, lines)
+        seen = [r for r in records if r["at"] <= now]
+        if gen == "impl" and seen:
+            identify(row, seen[-1]["data"]["offset"])
+        tasks.append(row)
         if session and now >= bound:
             panes[f"crew:w1:{task}"] = pane(session)
     return tasks, panes

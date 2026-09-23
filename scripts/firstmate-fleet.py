@@ -292,10 +292,12 @@ class Bridge:
     (at_quality): a status line's own [at=] stamp comes back exactly as
     generated - last_event.age_seconds ("stamp"); a spawn from the epoch in its
     spawn_gen ("derived"); everything else is when this bridge noticed it
-    ("observed"). Only the last status line is visible per poll, so lines that
-    land between polls, and anything while no bridge runs, are lost. Coverage
-    events say when the bridge was watching, so the timeline shows those gaps
-    instead of a steady state it never saw.
+    ("observed"). A status line carries the feed key Firstmate publishes for
+    it (last_event.lifecycle_key) when it could establish one: that key, not
+    the words or the time, is which line it is. Only the last status line is
+    visible per poll, so lines that land between polls, and anything while no
+    bridge runs, are lost. Coverage events say when the bridge was watching,
+    so the timeline shows those gaps instead of a steady state it never saw.
 
     Where a Firstmate feed has recorded a fact (Reach), the bridge keeps
     quiet about it: it still joins sessions, which no feed knows, but writes
@@ -307,7 +309,8 @@ class Bridge:
         self.run = run
         self.max_gap = max_gap
         self.checkpoint = checkpoint
-        # (task, spawn_gen) -> {"session": key or None, "status": mark or None, "down": bool}
+        # (task, spawn_gen) -> {"session": key or None, "down": bool,
+        #                       "status": (digest, stamp, feed key) of the last line, or None}
         self.attempts = {}
         self.window = None  # [first, last] poll epochs of the open coverage window
         self.written = None  # how far that window's coverage lines reach
@@ -332,7 +335,8 @@ class Bridge:
             elif kind == "status":
                 status = event.get("status") or {}
                 stamped = event.get("at_quality") == "stamp"
-                state["status"] = (status.get("digest"), event.get("at") if stamped else None)
+                state["status"] = (status.get("digest"), event.get("at") if stamped else None,
+                                   status.get("lifecycle_key"))
             elif kind == "torn_down":
                 state["down"] = True
 
@@ -377,16 +381,22 @@ class Bridge:
                 stamped = isinstance(age, int) and not isinstance(age, bool) and age >= 0
                 at, quality = (now - age, "stamp") if stamped else (now, "observed")
                 digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
-                mark = (digest, iso(at) if stamped else None)
+                lifecycle_key = last.get("lifecycle_key")
+                if not (isinstance(lifecycle_key, str) and lifecycle_key):
+                    lifecycle_key = None  # Firstmate could not establish it, or predates it.
+                mark = (digest, iso(at) if stamped else None, lifecycle_key)
                 status = {"value": verb, "digest": digest}
+                if lifecycle_key:
+                    status["lifecycle_key"] = lifecycle_key
                 found = re.search(r"\[key=([^\]\s]+)\]", raw)
                 if found:
                     status["key"] = found.group(1)
                 note = (last.get("note") or "").strip()
                 if note:
                     status["note"] = note[:200]
-                line = self.line("status", f"{ident}/{at}/{digest}", at, quality, key, status=status)
-                if state["status"] != mark and not self.reach.holds(line["event"]):
+                suffix = f"/{lifecycle_key}" if lifecycle_key else ""
+                line = self.line("status", f"{ident}/{at}/{digest}{suffix}", at, quality, key, status=status)
+                if not same_line(state["status"], mark) and not self.reach.holds(line["event"]):
                     lines.append(line)
                     state["status"] = mark
         for task in manifest["tasks"]:
@@ -437,17 +447,31 @@ class Bridge:
         return lines
 
 
+def same_line(before, now):
+    """Whether two sightings, each (digest, stamp, feed key), are the same
+    status line: by feed key when both carry one, so identical words at two
+    offsets are two lines; otherwise, as before the key existed, by words and
+    stamp."""
+    if before is None:
+        return False
+    if before[2] and now[2]:
+        return before[2] == now[2]
+    return before[:2] == now[:2]
+
+
 class Reach:
     """What Firstmate's own feed has recorded, so its events replace the
     bridge's (Lifecycle::superseded in src/fleet/journal.rs applies the same
     rule to what the journal already holds).
 
     A bridged spawn, teardown or status gives way only to the feed's own
-    record of it: the attempt's spawn, its teardown, or a status stamped at
-    the same moment. So a status the feed lost is bridged, and one the bridge
-    sees before Firstmate records it is written and gives way once the feed
-    has it. A status line without a stamp has no identity the two sides
-    share, so its bridged record always stands, even beside the feed's.
+    record of it: the attempt's spawn, its teardown, or, for a status, the
+    feed event whose key is the line's lifecycle_key. A status without that
+    key falls back to a feed status stamped at the same moment. So a status
+    the feed lost is bridged, and one the bridge sees before Firstmate records
+    it is written and gives way once the feed has it. A status line with
+    neither key nor stamp has no identity the two sides share, so its bridged
+    record always stands, even beside the feed's.
     """
 
     def __init__(self):
@@ -465,14 +489,30 @@ class Reach:
             return key + (event.get("at"),)
         return None
 
+    @staticmethod
+    def feed_key(event):
+        """A feed event's own key: its ID is firstmate:<home>#<key> (translate)."""
+        prefix = f"firstmate:{(event.get('source') or {}).get('home')}#"
+        ident = event.get("id")
+        if isinstance(ident, str) and ident.startswith(prefix) and len(ident) > len(prefix):
+            return ident[len(prefix):]
+        return None
+
     def add(self, event):
         if (event.get("source") or {}).get("kind") != "firstmate":
             return
         mark = self.mark(event)
         if mark is not None:
             self.marks.add(mark)
+        key = self.feed_key(event) if event.get("type") == "status" else None
+        if key is not None:
+            self.marks.add(("line", key))
 
     def holds(self, event):
+        if event.get("type") == "status":
+            key = (event.get("status") or {}).get("lifecycle_key")
+            if key:
+                return ("line", key) in self.marks
         mark = self.mark(event)
         return mark is not None and mark in self.marks
 

@@ -115,6 +115,11 @@ pub struct Status {
     /// A digest of the raw line, so a writer can recognise it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
+    /// The key of the feed event recording this line, as Firstmate's
+    /// snapshot publishes it (`last_event.lifecycle_key`), on a bridged
+    /// status whose identity Firstmate could establish.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,9 +290,14 @@ impl LifecycleEvent {
             }
             Change::Status { status } => {
                 text(&status.value, "status value", 64)?;
-                for value in [&status.key, &status.note, &status.digest]
-                    .into_iter()
-                    .flatten()
+                for value in [
+                    &status.key,
+                    &status.note,
+                    &status.digest,
+                    &status.lifecycle_key,
+                ]
+                .into_iter()
+                .flatten()
                 {
                     text(value, "status field", MAX_TEXT)?;
                 }
@@ -490,36 +500,65 @@ impl Lifecycle {
     /// timeline.
     ///
     /// A bridged spawn, teardown or status gives way only to the feed's own
-    /// record of it: the attempt's spawn, its teardown, or a status stamped at
-    /// the same moment. So a status the feed lost still places from the
-    /// bridge, and a session join, which no feed knows, always does. A status
-    /// line without a stamp has no identity the two sides share, so its
-    /// bridged record always places, even beside the feed's. `Reach` in
+    /// record of it: the attempt's spawn, its teardown, or, for a status, the
+    /// feed event whose key is the line's `lifecycle_key`. A status without
+    /// that key falls back to a feed status stamped at the same moment. So a
+    /// status the feed lost still places from the bridge, and a session join,
+    /// which no feed knows, always does. A status line with neither key nor
+    /// stamp has no identity the two sides share, so its bridged record
+    /// always places, even beside the feed's. `Reach` in
     /// `scripts/firstmate-fleet.py` keeps the adapter from writing what the
     /// feed already holds.
     fn superseded(&self) -> BTreeSet<&str> {
-        type Mark<'a> = (&'a Attempt, &'static str, Option<DateTime<Utc>>);
+        #[derive(PartialEq, Eq, PartialOrd, Ord)]
+        enum Mark<'a> {
+            Fact(&'a Attempt, &'static str, Option<DateTime<Utc>>),
+            /// A status line, by its feed key.
+            Line(&'a str),
+        }
         fn mark(e: &LifecycleEvent) -> Option<Mark<'_>> {
             let attempt = e.attempt.as_ref()?;
             match &e.change {
-                Change::Spawned { .. } => Some((attempt, "spawned", None)),
-                Change::TornDown { .. } => Some((attempt, "torn_down", None)),
+                Change::Spawned { .. } => Some(Mark::Fact(attempt, "spawned", None)),
+                Change::TornDown { .. } => Some(Mark::Fact(attempt, "torn_down", None)),
                 Change::Status { .. } if e.at_quality == AtQuality::Stamp => {
-                    Some((attempt, "status", e.at))
+                    Some(Mark::Fact(attempt, "status", e.at))
                 }
                 _ => None,
             }
         }
-        let held: BTreeSet<Mark> = self
+        // A feed event's ID is `firstmate:<home>#<key>`.
+        fn feed_key(e: &LifecycleEvent) -> Option<&str> {
+            let home = e.source.home.as_deref()?;
+            let key =
+                e.id.strip_prefix("firstmate:")?
+                    .strip_prefix(home)?
+                    .strip_prefix('#')?;
+            (!key.is_empty()).then_some(key)
+        }
+        let mut held = BTreeSet::new();
+        for e in self
             .events
             .values()
             .filter(|e| e.source.kind == SourceKind::Firstmate)
-            .filter_map(mark)
-            .collect();
+        {
+            held.extend(mark(e));
+            if matches!(e.change, Change::Status { .. }) {
+                held.extend(feed_key(e).map(Mark::Line));
+            }
+        }
         self.events
             .values()
             .filter(|e| e.source.kind == SourceKind::Bridge)
-            .filter(|e| mark(e).is_some_and(|m| held.contains(&m)))
+            .filter(|e| {
+                let line = match &e.change {
+                    Change::Status { status } => status.lifecycle_key.as_deref(),
+                    _ => None,
+                };
+                line.map(Mark::Line)
+                    .or_else(|| mark(e))
+                    .is_some_and(|m| held.contains(&m))
+            })
             .map(|e| e.id.as_str())
             .collect()
     }
@@ -768,6 +807,7 @@ mod tests {
                 key: None,
                 note: None,
                 digest: None,
+                lifecycle_key: None,
             },
         }
     }
@@ -1233,6 +1273,59 @@ mod tests {
             .status
             .clone();
         assert_eq!(status.unwrap().at, at("08:06:00"));
+    }
+
+    #[test]
+    fn a_keyed_status_gives_way_only_to_the_feed_event_of_its_key() {
+        let keyed = |mut e: LifecycleEvent, key: &str| {
+            if let Change::Status { status } = &mut e.change {
+                status.lifecycle_key = Some(format!("status/impl/g/@{key}"));
+            }
+            e
+        };
+        let noticed = |mut e: LifecycleEvent| {
+            e.at_quality = AtQuality::Observed;
+            e
+        };
+        let mut store = Lifecycle::default();
+        store.insert([
+            noticed(feed(
+                event("status/impl/g/@0", "08:01:05", "impl", status("working")),
+                1,
+            )),
+            feed(
+                event("status/impl/g/@40", "08:05:00", "impl", status("done")),
+                2,
+            ),
+        ]);
+        store.insert([
+            // The feed's @0, noticed without a stamp: its key is enough.
+            keyed(
+                noticed(event("same", "08:01:00", "impl", status("working"))),
+                "0",
+            ),
+            // Stamped at the feed's @40 moment but another line: the key wins.
+            keyed(event("other", "08:05:00", "impl", status("done")), "80"),
+            // The same words again at a later offset, which the feed lost.
+            keyed(
+                noticed(event("again", "08:06:00", "impl", status("working"))),
+                "120",
+            ),
+            // Without a key, as before it existed: a stamp still matches,
+            // and a line with neither always places.
+            event("stamped", "08:05:00", "impl", status("done")),
+            noticed(event("bare", "08:07:00", "impl", status("working"))),
+        ]);
+        assert_eq!(
+            ids(&store),
+            [
+                "firstmate:fmh#status/impl/g/@0",
+                "other",
+                "firstmate:fmh#status/impl/g/@40",
+                "again",
+                "bare"
+            ]
+        );
     }
 
     #[test]
