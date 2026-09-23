@@ -3,6 +3,7 @@
 
 pub mod actions;
 pub mod journal;
+pub mod pipeline;
 pub mod timeline;
 mod validation;
 
@@ -265,6 +266,13 @@ pub struct Fleet {
     pub collector: bool,
     /// The request to hand the collector on exit.
     pub request: Option<Request>,
+    /// A validation run's pipeline agents, listed on demand (see [`pipeline`]).
+    pub picker: Option<pipeline::Picker>,
+    /// A pipeline agent's transcript, open read-only: never a member.
+    pub inspection: Option<pipeline::Inspection>,
+    /// Where pipeline transcripts are looked for, a directory of Claude
+    /// project directories; `None`: Claude's own.
+    pub pipeline_root: Option<PathBuf>,
 }
 
 /// The adapter's runtime for a task that left the Firstmate snapshot.
@@ -406,6 +414,9 @@ impl Fleet {
             prompt: None,
             collector: false,
             request: None,
+            picker: None,
+            inspection: None,
+            pipeline_root: None,
         };
         fleet.update(manifest)?;
         Ok(fleet)
@@ -979,7 +990,9 @@ impl Fleet {
     }
 
     pub fn active(&mut self) -> &mut App {
-        if let Some(key) = &self.focused {
+        if let Some(open) = &mut self.inspection {
+            &mut open.app
+        } else if let Some(key) = &self.focused {
             &mut self.members.get_mut(key).unwrap().app
         } else {
             &mut self.overview

@@ -9,7 +9,7 @@ use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
 use futures::StreamExt;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 use tokio::sync::mpsc;
@@ -296,6 +296,51 @@ fn reconcile_watchers(
     }
 }
 
+/// Watch the open pipeline agent's transcript while it is open, and only
+/// then. It shares the members' channel but never their registry.
+fn reconcile_inspection(
+    fleet: &Fleet,
+    inspecting: &mut Option<Watcher>,
+    next: &mut u64,
+    tx: &mpsc::Sender<Message>,
+) {
+    match (&fleet.inspection, inspecting.as_ref()) {
+        (Some(open), Some(job)) if job.spec == open.spec => {}
+        (Some(open), _) => {
+            *next += 1;
+            let task = tokio::spawn(watch(open.spec.clone(), *next, tx.clone()));
+            *inspecting = Some(Watcher {
+                spec: open.spec.clone(),
+                generation: *next,
+                _task: AbortTask(task),
+            });
+        }
+        (None, _) => *inspecting = None,
+    }
+}
+
+/// Hand a watcher's message to its member, or to the open inspection; a
+/// message from a watcher since replaced is dropped. Whether it changed anything.
+fn deliver(
+    fleet: &mut Fleet,
+    jobs: &BTreeMap<SessionKey, Watcher>,
+    inspecting: Option<&Watcher>,
+    message: Message,
+) -> bool {
+    if jobs
+        .get(&message.key)
+        .is_some_and(|j| j.generation == message.generation)
+    {
+        fleet.event(&message.key, message.event);
+        true
+    } else if inspecting.is_some_and(|j| j.generation == message.generation) {
+        fleet.inspection_event(message.event);
+        true
+    } else {
+        false
+    }
+}
+
 fn route(fleet: &mut Fleet, event: &Event) -> bool {
     if let Event::Key(key) = event {
         if key.kind == KeyEventKind::Release {
@@ -314,11 +359,42 @@ fn route(fleet: &mut Fleet, event: &Event) -> bool {
                 return exit;
             }
         }
+        if fleet.inspection.is_some() && key.code == KeyCode::Esc {
+            fleet.close_inspection();
+            return false;
+        }
         if fleet.focused.is_some() && key.code == KeyCode::Esc {
             fleet.back();
             return false;
         }
-        if fleet.focused.is_none() {
+        // The pipeline agents' list takes the keys until it closes; quitting
+        // still quits.
+        if fleet.picker.is_some() && !fleet.in_session() {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => fleet.pick_move(false),
+                KeyCode::Down | KeyCode::Char('j') => fleet.pick_move(true),
+                KeyCode::Enter => fleet.pick_open(),
+                KeyCode::Esc | KeyCode::Char('p') => fleet.picker = None,
+                KeyCode::Char('q') => return true,
+                KeyCode::Char('c') if ctrl => return true,
+                _ => {}
+            }
+            return false;
+        }
+        if !fleet.in_session() {
+            if key.code == KeyCode::Char('p') {
+                let root = fleet.pipeline_root.clone();
+                fleet.list_agents(|run, life| {
+                    super::pipeline::join(
+                        run,
+                        life,
+                        super::pipeline::roots(root.as_deref()),
+                        super::pipeline::read,
+                    )
+                });
+                return false;
+            }
             if key.code == KeyCode::Enter {
                 fleet.inspect_selected();
                 return false;
@@ -377,6 +453,8 @@ pub async fn run(path: PathBuf) -> Result<Exit> {
     let mut jobs = BTreeMap::new();
     let mut generation = 0;
     reconcile_watchers(&fleet, &mut jobs, &mut generation, &tx);
+    // The open pipeline agent's watcher, if any: never one of `jobs`.
+    let mut inspecting: Option<Watcher> = None;
     let (input_tx, mut input_rx) = mpsc::unbounded_channel();
     let mut terminal = ratatui::init();
     if let Err(error) = crossterm::execute!(std::io::stdout(), EnableMouseCapture) {
@@ -402,7 +480,8 @@ pub async fn run(path: PathBuf) -> Result<Exit> {
         let now = tokio::time::Instant::now();
         let elapsed = now - last;
         last = now;
-        let focused = fleet.focused.is_some();
+        reconcile_inspection(&fleet, &mut inspecting, &mut generation, &tx);
+        let focused = fleet.in_session();
         if !focused {
             // The fleet playhead moves (and drives the members) before the
             // projection is rebuilt from them.
@@ -431,14 +510,13 @@ pub async fn run(path: PathBuf) -> Result<Exit> {
         tokio::select! {
             _ = tick.tick() => {},
             Some(message) = rx.recv() => {
-                if jobs.get(&message.key).is_some_and(|j| j.generation == message.generation) {
-                    fleet.event(&message.key, message.event); dirty = true;
-                }
+                dirty |= deliver(&mut fleet, &jobs, inspecting.as_ref(), message);
             },
             Some(event) = input_rx.recv() => { if route(&mut fleet, &event) { break Ok(()); } },
             _ = status.tick() => {
                 telemetry.refresh(&mut fleet);
                 for member in fleet.members.values_mut() { member.app.status_tick(); }
+                if let Some(open) = &mut fleet.inspection { open.app.status_tick(); }
                 dirty = true;
             },
             _ = refresh.tick() => {
@@ -477,13 +555,7 @@ pub async fn run(path: PathBuf) -> Result<Exit> {
         // Bounded drain keeps both high-volume fleets and pointer input responsive.
         for _ in 0..64 {
             let Ok(message) = rx.try_recv() else { break };
-            if jobs
-                .get(&message.key)
-                .is_some_and(|j| j.generation == message.generation)
-            {
-                fleet.event(&message.key, message.event);
-                dirty = true;
-            }
+            dirty |= deliver(&mut fleet, &jobs, inspecting.as_ref(), message);
         }
     };
     let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
@@ -513,8 +585,12 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
     // upstream scrubber for the whole crew; lifecycle marks and coverage gaps
     // go over it.
     crate::ui::draw_in(frame, fleet.active(), body);
-    if fleet.focused.is_none() {
+    let overview = !fleet.in_session();
+    if overview {
         super::timeline::draw_overlay(frame, fleet);
+        if let Some(picker) = &fleet.picker {
+            draw_picker(frame, picker, body);
+        }
     }
     frame.render_widget(
         Paragraph::new(limits.join("\n")).style(Style::default().fg(Color::Gray).bg(Color::Black)),
@@ -533,9 +609,27 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
         (n, false) => format!(" · {n} finished hidden"),
         (n, true) => format!(" · {n} finished shown"),
     };
-    let text = if let Some(prompt) = fleet.prompt.as_ref().filter(|_| fleet.focused.is_none()) {
+    let text = if let Some(prompt) = fleet.prompt.as_ref().filter(|_| overview) {
         let (what, keys) = prompt.lines();
         format!(" {what}\n {keys}")
+    } else if let Some(open) = &fleet.inspection {
+        let state = match &open.error {
+            Some(error) => format!(" · UNAVAILABLE: {error}"),
+            None if !open.loaded => " · reading transcript".into(),
+            None => String::new(),
+        };
+        format!(
+            " {} · {} of run {}{state}\n Read-only · not a fleet member · joined to the run by inference, not by no-mistakes · Esc: agents · q: quit",
+            fleet.manifest.label, open.spec.label, open.run
+        )
+    } else if let Some(picker) = fleet.picker.as_ref().filter(|_| overview) {
+        let openable = picker.agents.agents.iter().filter(|a| a.openable()).count();
+        format!(
+            " {} · pipeline agents of run {} · {} found, {openable} openable\n ↑↓: choose · Enter: open read-only · Esc: close · q: quit",
+            fleet.manifest.label,
+            picker.agents.run,
+            picker.agents.agents.len()
+        )
     } else if let Some(key) = &fleet.focused {
         format!(
             " {} · {}\n Session timeline · Esc: fleet · q: quit",
@@ -562,18 +656,18 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
             unavailable,
             age,
             note.unwrap_or(
-                "FLEET · space: play/pause · drag, [ ]: seek · g: live · Enter: session · x: children · v: finished · A/D: archive/delete worker · C: clear · q: quit"
+                "FLEET · space: play/pause · drag, [ ]: seek · g: live · Enter: session · p: pipeline agents · x: children · v: finished · A/D: archive/delete worker · C: clear · q: quit"
             )
         )
     };
     // A prompt stands out from the status it replaces.
-    let style = if fleet.prompt.is_some() && fleet.focused.is_none() {
+    let style = if fleet.prompt.is_some() && overview {
         Style::default().fg(Color::Black).bg(Color::Indexed(178))
     } else {
         Style::default().fg(Color::Indexed(178)).bg(Color::Black)
     };
     frame.render_widget(Paragraph::new(text).style(style), header);
-    if fleet.focused.is_none() && frame.area().height > 0 {
+    if overview && frame.area().height > 0 {
         let footer =
             ratatui::layout::Rect::new(body.x, body.bottom().saturating_sub(1), body.width, 1);
         // Clear the underlying session status, including its right-aligned
@@ -618,6 +712,68 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
             footer,
         );
     }
+}
+
+/// The pipeline agents' list, over the canvas: what the join is, a row per
+/// transcript (the chosen one marked), and why the last Enter opened nothing.
+fn draw_picker(frame: &mut ratatui::Frame, picker: &super::pipeline::Picker, body: Rect) {
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Block, Borders, Clear, Wrap};
+    let width = body.width.saturating_sub(4).min(110);
+    let inner = width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = picker
+        .agents
+        .heading()
+        .into_iter()
+        .map(|l| Line::styled(l, Style::default().fg(Color::Gray)))
+        .collect();
+    lines.push(Line::raw(""));
+    for (i, agent) in picker.agents.agents.iter().enumerate() {
+        let chosen = i == picker.selected;
+        let mut style = if agent.openable() {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        if chosen {
+            style = style.bg(Color::Indexed(236));
+        }
+        let mark = if chosen { "▸ " } else { "  " };
+        // Wrapped, never cut: why a row cannot be opened comes last.
+        lines.push(Line::from(Span::styled(
+            format!("{mark}{}", agent.line()),
+            style,
+        )));
+    }
+    if let Some(note) = &picker.note {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            note.clone(),
+            Style::default().fg(Color::Indexed(178)),
+        ));
+    }
+    // Wrapped heading and note lines take more rows than they count.
+    let rows: usize = lines
+        .iter()
+        .map(|l| l.width().max(1).div_ceil(inner.max(1)))
+        .sum();
+    let height = (rows as u16 + 2).min(body.height.saturating_sub(2));
+    let area = Rect::new(
+        body.x + (body.width.saturating_sub(width)) / 2,
+        body.y + 1,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Pipeline agents · p ")
+                .style(Style::default().fg(Color::Indexed(178)).bg(Color::Black)),
+        ),
+        area,
+    );
 }
 
 #[derive(Default)]
@@ -1371,6 +1527,94 @@ mod tests {
         assert!(text.contains("▸ test     running"), "{text}");
         assert!(text.contains("… 5 more"), "{text}");
         assert!(text.contains("shell"), "{text}");
+    }
+
+    #[test]
+    fn p_lists_a_runs_pipeline_agents_and_opens_one_read_only() {
+        let (_fixture, mut fleet) = validating();
+        fleet.pipeline_root =
+            Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fleet/pipeline/projects"));
+        fleet.toggle_finished();
+        seek(&mut fleet, "08:10:00");
+        let sessions = fleet.manifest.sessions.clone();
+        let members: Vec<_> = fleet.members.keys().cloned().collect();
+        let nodes = ids(&fleet);
+        // A card without a run lists nothing, and says why.
+        fleet.overview.flow.select_node(&root("captain"));
+        assert!(!route(&mut fleet, &key(KeyCode::Char('p'))));
+        assert!(fleet.picker.is_none());
+        assert!(screen(&mut fleet).contains("No validation run on the selected card"));
+        route(&mut fleet, &key(KeyCode::Esc));
+
+        // impl's run: its transcripts, the join labelled as inference.
+        fleet.overview.flow.select_node(&root("impl"));
+        assert!(!route(&mut fleet, &key(KeyCode::Char('p'))));
+        let picker = fleet.picker.as_ref().expect("the list opens");
+        assert_eq!(picker.agents.run, "01M342G5B2S1MP13RVNVA11DAT");
+        assert_eq!(picker.agents.agents.len(), 6);
+        let text = screen(&mut fleet);
+        assert!(
+            text.contains(
+                "pipeline agents of run 01M342G5B2S1MP13RVNVA11DAT · 6 found, 2 openable"
+            )
+        );
+        assert!(text.contains("Inferred, not published by no-mistakes"));
+        assert!(text.contains("a3333333 · ambiguous: also filed under run"));
+        let rows: Vec<_> = fleet
+            .picker
+            .as_ref()
+            .unwrap()
+            .agents
+            .agents
+            .iter()
+            .map(|a| a.line())
+            .collect();
+        assert!(rows[3].ends_with("ambiguous: also filed under run 01M342X98JT3STSRVNVA11DAT1"));
+        // The first began before the run: not opened, and why.
+        assert!(!route(&mut fleet, &key(KeyCode::Enter)));
+        assert!(fleet.inspection.is_none());
+        assert!(screen(&mut fleet).contains("Not opened, the join does not hold"));
+
+        // The next is the run's: open read-only, never a member.
+        route(&mut fleet, &key(KeyCode::Down));
+        assert!(!route(&mut fleet, &key(KeyCode::Enter)));
+        let spec = fleet.inspection.as_ref().expect("opened").spec.clone();
+        assert_eq!(spec.key.session_id, "a1111111-0000-4000-8000-000000000001");
+        assert!(fleet.in_session());
+        assert_eq!(fleet.manifest.sessions, sessions);
+        assert_eq!(fleet.members.keys().cloned().collect::<Vec<_>>(), members);
+        assert!(!fleet.members.contains_key(&spec.key));
+        // What its watcher delivers: the exact file, checked by identity.
+        let session = resolve(&spec).unwrap();
+        let (items, info, _) = crate::tailer::replay::build_replay(&session);
+        fleet.inspection_event(UiEvent::SessionReset {
+            session_id: spec.key.session_id.clone(),
+        });
+        fleet.inspection_event(UiEvent::ReplayLoaded {
+            session_id: session.id,
+            items,
+            info,
+            speed: 1.0,
+        });
+        // At the fleet's moment, like Enter on a member.
+        assert_eq!(fleet.active().session.tool_count(), 2);
+        let text = screen(&mut fleet);
+        assert!(text.contains("pipeline agent a1111111 of run 01M342G5B2S1MP13RVNVA11DAT"));
+        assert!(text.contains("Read-only · not a fleet member"));
+        // Another session's events are refused, not shown.
+        fleet.inspection_event(UiEvent::SessionReset {
+            session_id: "b1111111-0000-4000-8000-000000000011".into(),
+        });
+        assert!(screen(&mut fleet).contains("UNAVAILABLE: transcript identity changed"));
+
+        // Esc: back to the list, the crew as it was; Esc again: the fleet.
+        route(&mut fleet, &key(KeyCode::Esc));
+        assert!(fleet.inspection.is_none() && fleet.picker.is_some());
+        route(&mut fleet, &key(KeyCode::Esc));
+        assert!(fleet.picker.is_none() && !fleet.in_session());
+        assert_eq!(ids(&fleet), nodes);
+        assert_eq!(fleet.manifest.sessions, sessions);
+        assert!(screen(&mut fleet).contains(&format!("{} sessions", members.len())));
     }
 
     fn key(code: KeyCode) -> Event {
