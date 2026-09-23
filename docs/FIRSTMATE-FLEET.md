@@ -35,6 +35,7 @@ Preserve the provider boundary and the time/identity invariants documented in
 
 ```text
 Firstmate canonical snapshot ---- task ownership and observed state ---+
+Firstmate lifecycle feed(s) ----- timestamped transitions (tailed) ----+
                                                                     |
 Herdr exact session registration -- endpoint/session join ------------+-> adapter
                                                                          |
@@ -134,7 +135,8 @@ derived from the fact (never from arrival), a `source` (`bridge` or `firstmate`)
 `at` and `at_quality`, the `attempt` (`task`, `spawn_gen`), an optional native
 `session`, and a `type` with its payload under a key of the same name:
 `spawned`, `bound`, `status`, `decision`, `steered`, `steer_acked`,
-`reclassified`, `torn_down`, `busy` or `coverage` (`{from, to, max_gap}`, bridge only; `max_gap` in seconds is optional).
+`reclassified`, `torn_down`, `busy` or `coverage` (`{from, to, max_gap}`, an
+interval someone was observing; `max_gap` in seconds is optional).
 Types and validation are in `src/fleet/journal.rs`. The viewer tails complete
 lines from a byte offset, skips lines that do not validate, deduplicates by `id`,
 and orders by time, then same-second rank (spawned and bound before transcript
@@ -145,8 +147,62 @@ items, torn_down after), then source order.
 `observed` (when an observer noticed), `backfill`, or `unknown` (no `at`; never
 placed on the timeline).
 
-Until Firstmate writes a lifecycle feed of its own, the adapter bridges it from
-successive `fm-fleet-snapshot.v1` polls (`Bridge` in `scripts/firstmate-fleet.py`):
+### Firstmate's lifecycle feed
+
+Firstmate appends an `fm-lifecycle.v1` feed per home, whether or not the adapter
+runs; its `docs/configuration.md` owns that contract. The adapter translates it
+(`Feeds` and `translate` in `scripts/firstmate-fleet.py`):
+
+- Discovery is the snapshot's additive `lifecycle` pointer: this home's feed and
+  each local secondmate home's. A remote secondmate's feed (not mirrored locally)
+  and a feed that cannot be read are skipped with a manifest diagnostic; neither
+  fails a collection. No pointer means the feed is off: the bridge speaks alone.
+- Each feed is tailed from a cursor in `<manifest>.feeds.json`: the file identity
+  and byte offset read up to, and the last `seq`. Reading follows rotation to
+  `events.v1.<first-seq>.jsonl` by file identity, falls back to `seq` when that
+  file is gone, and leaves a final line without its newline for the next read.
+  A skipped `seq` is an event Firstmate could not write: it is counted and stays
+  in the manifest diagnostics, and this home's coverage breaks from the last
+  record before it (or the coverage already written) to the first after it.
+  Archive and delete leave the cursor, so removed history does not come back.
+- `task.spawned`, `task.status`, `task.decision`, `task.steered`,
+  `task.steer_acked`, `task.reclassified`, `task.torn_down` and `task.busy`
+  become the journal type of the same name. `feed.*` bookkeeping and a status
+  line without a verb (continuation prose) are not events. A task without a `spawn_gen` is the manifest's `unresolved` attempt.
+- The event `id` is `firstmate:<home id>#<feed key>` and the `source` is
+  `{kind: firstmate, home, seq}`. `at_source` maps to `at_quality`: `stamp`
+  stays, `firstmate` and `inbox` (Firstmate's own clock) are `firstmate`, a
+  backfilled `firstmate` time (a `spawn_gen` epoch) is `backfill`, `observed`
+  stays, and a null `at` is `unknown`.
+- This home's feed covers from its `feed.started` to the adapter's latest read,
+  across adapter downtime: one `coverage` segment per read that brought
+  anything, at least once a minute, and on stop. Secondmate feeds add none,
+  since coverage is fleet-wide.
+
+Feed events replace the bridge events that say the same thing
+(`Lifecycle::superseded` in `src/fleet/journal.rs`; the adapter's `Reach` keeps
+it from writing them in the first place). A bridged spawn, teardown or status
+gives way only to the feed's own record of it: the attempt's spawn, its
+teardown, or a status stamped at the same moment. So a status the feed lost to
+a skipped `seq` still places from the bridge, and a session join (`bound`),
+which no feed knows, always stays. Bridge events stay in the journal for
+removal to count; they no longer place on the timeline.
+
+A bridged status line without a stamp always places, even beside the feed's
+record of the same line, so it can show twice. Nothing both sides share
+identifies such a line: the bridge sees only its text and when it noticed it,
+and no rule guessed from verb, key or time can tell a repeat the feed lost from
+one it holds. Exact matching waits on Firstmate publishing a per-line identity.
+Until then a duplicate is accepted where a missing status is not. A line goes
+unstamped only when the worker's clock was unreadable, its stamp lay in the
+future (written while the snapshot ran, so its age was unknown), or it predates
+stamping.
+
+### The snapshot bridge
+
+Where no feed speaks (Firstmate without the feed, or history before it began),
+the adapter bridges lifecycle from successive `fm-fleet-snapshot.v1` polls
+(`Bridge` in `scripts/firstmate-fleet.py`):
 
 - `status` from `paths.status_log.last_event`, at `generated - age_seconds`
   (`stamp`); observed time when the age is unknown. A repeated last line is not
@@ -161,7 +217,8 @@ successive `fm-fleet-snapshot.v1` polls (`Bridge` in `scripts/firstmate-fleet.py
 
 Only the last status line is visible per poll, so lines that land between polls,
 and anything while no bridge runs, are lost. Coverage is how the viewer knows.
-Remote homes and tasks without a `spawn_gen` are left out.
+Remote homes and tasks without a `spawn_gen` are left out. The bridge still
+joins sessions for attempts a feed reports on.
 
 ## Fleet timeline
 
@@ -181,7 +238,7 @@ own live edges. Dead air is compressed only while every session is quiet.
   open decision) are highlighted in amber on the card and the scrubber strip.
 - Outside every coverage window, the scrubber is hatched, the header says so,
   and badges read `?`: the last record, unverified. At the live edge the same
-  holds once the bridge's newest window is older than twice the `max_gap` its
+  holds once the newest window is older than twice the `max_gap` its
   segments carry (two minutes when absent): the adapter has stopped, so
   today's state is not observed.
 - Space, `[` / `]` (member prompts and lifecycle transitions), `g`/End and the
@@ -202,10 +259,10 @@ own live edges. Dead air is compressed only while every session is quiet.
    future work. Capture explicit handoffs and new-session
    continuations, preserve completed attempts, and exercise Claude fixtures without
    launching Claude. A provider switch must not reassign old workers retroactively.
-4. **Partial: combined history.** Implemented: the lifecycle journal, the snapshot
-   bridge that feeds it, and the fleet timeline over the live fleet, with coverage
-   gaps. Future: a Firstmate-written lifecycle feed replacing the bridge, and
-   opening a finished crew as a replay.
+4. **Partial: combined history.** Implemented: the lifecycle journal, Firstmate's
+   lifecycle feed as its source with the snapshot bridge where no feed speaks,
+   and the fleet timeline over the live fleet, with coverage gaps. Future:
+   mirrored remote secondmate feeds, and opening a finished crew as a replay.
 
 Build a separate `zoe-fleet` development executable before changing any installed
 plugin or shortcut. Keep the existing `zoe` and its single-session behavior intact.

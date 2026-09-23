@@ -168,7 +168,7 @@ impl Fleet {
     }
 
     /// Whether lifecycle was observed at the moment shown: parked, whether a
-    /// coverage window holds it; at the live edge, whether the bridge still is.
+    /// coverage window holds it; at the live edge, whether the adapter still is.
     pub fn covered(&self) -> bool {
         match self.at() {
             Some(t) => self.lifecycle.covered(t),
@@ -402,7 +402,7 @@ pub fn draw_overlay(frame: &mut Frame, fleet: &Fleet) {
     let buf = frame.buffer_mut();
     if fleet.lifecycle.has_gaps() {
         // A column is a gap when its moment lies outside every window the
-        // bridge was observing: lifecycle there is unknown, not steady.
+        // bridge or a feed was observing: lifecycle there is unknown, not steady.
         let floor = timeline.floor();
         let reach = len.saturating_sub(floor);
         for c in (0..width).filter(|&c| c != head) {

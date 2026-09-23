@@ -229,7 +229,7 @@ pub struct Fleet {
     /// Where each node last stood, so one that leaves on a scrub back returns
     /// to the same place instead of a fresh grid slot.
     positions: BTreeMap<String, (f64, f64)>,
-    /// Draw finished members and attempt cards (see [`finished`]); hidden by
+    /// Draw finished members and attempt cards (see `finished`); hidden by
     /// default, so the graph fits the crew still at work.
     pub show_finished: bool,
     /// How many finished members and cards the last sync found at its moment,
