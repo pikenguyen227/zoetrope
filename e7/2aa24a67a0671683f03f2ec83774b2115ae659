@@ -1,0 +1,19 @@
+docs/FIRSTMATE-FLEET.md
+  s_8beafce630c43b::t_101b3822b4bcf0 99-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e72aa24a67a0671683f03f2ec83774b2115ae659",
+  "prompts": {},
+  "sessions": {
+    "s_8beafce630c43b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee75a7e7-97f8-43d6-826c-247e95eea50b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
