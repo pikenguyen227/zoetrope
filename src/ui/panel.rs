@@ -1,9 +1,10 @@
 //! Detail panel for the selected agent.
 //!
-//! When an agent node is selected, the main area splits 30/70 and this panel
-//! renders the selected agent's description, model, status, timing, and a
+//! When an agent node is selected, this panel takes the right of the canvas and
+//! renders the selected agent's description, model, status, timing, usage, and a
 //! scrollable list of recent tool calls (name + summary + ✓/✗/⏳). All data
-//! comes from the `SessionModel`, keyed by the selected node id.
+//! comes from the `SessionModel`, keyed by the selected node id. A short panel
+//! gives its rows to the tool list first (see [`fit_layout`]).
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -87,32 +88,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, agent_id: &str) {
                 .right_aligned()
                 .style(bg.fg(palette.subtle)),
         );
-    // Scroll indicator once the list is plausibly taller than the panel.
-    if let Some(a) = session.agent(agent_id) {
-        let n = era_flags(era_cache, agent_id, a, session).total;
-        if n > 8 {
-            // "tail" while auto-following the newest call; the line offset once
-            // the user has scrolled up (detached).
-            let label = if *detail_follow {
-                " j/k ↕ tail ".to_string()
-            } else {
-                format!(" j/k ↕ {}/{} ", detail_scroll, n)
-            };
-            block = block.title_bottom(
-                Line::from(label)
-                    .right_aligned()
-                    .style(bg.fg(palette.subtle)),
-            );
-        }
-    }
     let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
 
     let Some(agent) = session.agent(agent_id) else {
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
         // Selected node has no model entry (stale selection) — show a hint.
         let para = Paragraph::new(Line::from(Span::styled(
             "no detail for this agent",
@@ -123,42 +105,75 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, agent_id: &str) {
         return;
     };
 
-    // Split: header (fixed), provenance when known (sized to its lines),
-    // tools (fill). The prompt is DERIVED from the spawn timestamp's era —
-    // same order-independent attribution as the tool-list headers.
+    // Split: header, provenance when known, tools (fill). The prompt is
+    // DERIVED from the spawn timestamp's era — same order-independent
+    // attribution as the tool-list headers.
     let provenance = session.provenance(agent).and_then(|c| {
         let prompt = session.provenance_prompt(c).map(str::to_string);
         let reasoning = c.reasoning.clone();
         (prompt.is_some() || reasoning.is_some()).then_some((prompt, reasoning))
     });
+    let prov_prompt = provenance.as_ref().and_then(|(p, _)| p.as_deref());
+    let prov_thought = provenance.as_ref().and_then(|(_, r)| r.as_deref());
     // Prompts are wrapped (not cut) — they're the panel's highest-signal text.
     // Wrap up front so the layout can size the provenance block to fit.
     let prov_text_w = (inner.width as usize).saturating_sub(10);
-    let prov_prompt: Vec<String> = provenance
-        .as_ref()
-        .and_then(|(p, _)| p.as_deref())
-        .map(|p| wrap(p, prov_text_w, PROMPT_MAX_LINES))
-        .unwrap_or_default();
-    let prov_thought: Vec<String> = provenance
-        .as_ref()
-        .and_then(|(_, r)| r.as_deref())
-        .map(|r| wrap(r, prov_text_w, PROMPT_MAX_LINES))
-        .unwrap_or_default();
-    let prov_rows = if provenance.is_some() {
+    let wrap_prov = |text: Option<&str>, cap: usize| {
+        text.map(|t| wrap(t, prov_text_w, cap)).unwrap_or_default()
+    };
+
+    let list = tool_list(era_cache, agent_id, agent, session, inner.width as usize);
+    let layout = fit_layout(
+        inner.height,
+        list.total,
+        agent.tool_calls.is_empty(),
+        |compact| {
+            let lines = header_lines(agent, inner.width as usize, compact, &palette);
+            header_height(agent, lines.len(), inner.height, compact)
+        },
+        provenance.is_some(),
+        wrap_prov(prov_prompt, PROMPT_MAX_LINES).len(),
+        wrap_prov(prov_thought, PROMPT_MAX_LINES).len(),
+    );
+    let header = header_lines(agent, inner.width as usize, layout.compact, &palette);
+    let prov_prompt = wrap_prov(prov_prompt, layout.prompt_lines);
+    let prov_thought = wrap_prov(prov_thought, layout.thought_lines);
+    let prov_rows = if layout.provenance {
         (1 + prov_prompt.len() + prov_thought.len()) as u16
     } else {
         0
     };
-    let header = header_lines(agent, inner.width as usize, &palette);
     let [header_area, prov_area, tools_area] = Layout::vertical([
-        Constraint::Length(header_height(agent, header.len(), inner.height)),
+        Constraint::Length(layout.header),
         Constraint::Length(prov_rows),
         Constraint::Fill(1),
     ])
     .areas(inner);
 
+    // Scroll indicator whenever the list has rows out of view (the tool
+    // block's top border takes one of its rows).
+    if list.total > usize::from(tools_area.height.saturating_sub(1)) {
+        let n = era_flags(era_cache, agent_id, agent, session).total;
+        // "tail" while auto-following the newest call; the line offset once
+        // the user has scrolled up (detached).
+        let label = if *detail_follow {
+            " j/k ↕ tail ".to_string()
+        } else {
+            format!(" j/k ↕ {}/{} ", detail_scroll, n)
+        };
+        block = block.title_bottom(
+            Line::from(label)
+                .right_aligned()
+                .style(bg.fg(palette.subtle)),
+        );
+    }
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
     render_header(frame, header_area, header, &palette);
-    if provenance.is_some() {
+    if layout.provenance {
         render_provenance(frame, prov_area, &prov_prompt, &prov_thought, &palette);
     }
     // The panel auto-tails the newest call by default; scrolling up detaches it
@@ -167,20 +182,88 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, agent_id: &str) {
     render_tools(
         frame,
         tools_area,
-        agent_id,
         agent,
-        session,
-        era_cache,
+        &list,
         detail_scroll,
         detail_follow,
         &palette,
     );
 }
 
+/// Tool rows the list keeps before the header and provenance get theirs: the
+/// list is what the panel is for, so a short panel trims the context above it
+/// rather than hiding calls.
+const TOOLS_MIN_ROWS: u16 = 8;
+
+/// How the panel's rows are shared out.
+#[derive(Debug, PartialEq)]
+struct PanelLayout {
+    /// Header height.
+    header: u16,
+    /// The header folds the usage rows into one line.
+    compact: bool,
+    /// Whether the provenance block is drawn at all.
+    provenance: bool,
+    /// Line caps for the provenance prompt and thought.
+    prompt_lines: usize,
+    thought_lines: usize,
+}
+
+/// Share `height` rows between header, provenance and the tool list. With room,
+/// everything is drawn in full. Otherwise the tool list keeps up to
+/// [`TOOLS_MIN_ROWS`] rows (plus its border) and the context above it gives way
+/// in order: the header folds its usage rows into one line, then the
+/// provenance prompt and thought lose lines (ellipsized), longest first, and
+/// finally the provenance block goes.
+fn fit_layout(
+    height: u16,
+    list_rows: usize,
+    no_calls: bool,
+    header_height: impl Fn(bool) -> u16,
+    provenance: bool,
+    prompt: usize,
+    thought: usize,
+) -> PanelLayout {
+    // "no tool calls" still takes a row.
+    let want = if no_calls { 1 } else { list_rows };
+    let tools = (want.min(usize::from(TOOLS_MIN_ROWS)) + 1) as u16;
+    let room = height.saturating_sub(tools);
+    let prov_rows = |p: usize, t: usize| if provenance { (1 + p + t) as u16 } else { 0 };
+
+    let full = header_height(false);
+    if full + prov_rows(prompt, thought) <= room {
+        return PanelLayout {
+            header: full,
+            compact: false,
+            provenance,
+            prompt_lines: PROMPT_MAX_LINES,
+            thought_lines: PROMPT_MAX_LINES,
+        };
+    }
+    let header = header_height(true);
+    let (mut p, mut t) = (prompt, thought);
+    let budget = room.saturating_sub(header);
+    while provenance && prov_rows(p, t) > budget && p + t > 0 {
+        if p > t { p -= 1 } else { t -= 1 }
+    }
+    let provenance = provenance && p + t > 0 && prov_rows(p, t) <= budget;
+    PanelLayout {
+        header,
+        compact: true,
+        provenance,
+        prompt_lines: p,
+        thought_lines: t,
+    }
+}
+
 /// Header rows: the usual height, grown to fit longer text (a fleet node's
 /// task detail) but never past a third of the panel, so the tools stay visible.
-fn header_height(agent: &AgentInfo, rows: usize, panel_height: u16) -> u16 {
-    let base = if agent.usage.summary.recorded { 8 } else { 6 };
+fn header_height(agent: &AgentInfo, rows: usize, panel_height: u16, compact: bool) -> u16 {
+    let base = if agent.usage.summary.recorded && !compact {
+        8
+    } else {
+        6
+    };
     let cap = base.max(panel_height / 3);
     (rows as u16).clamp(base, cap)
 }
@@ -194,10 +277,12 @@ fn render_header(frame: &mut Frame, area: Rect, lines: Vec<Line>, palette: &rata
 }
 
 /// The header's lines, text rows pre-wrapped to `width` so the count is the
-/// rendered height.
+/// rendered height. `compact` folds the usage rows into one `tools · tok ·
+/// cost` line for a panel too short to show them in full.
 fn header_lines(
     agent: &AgentInfo,
     width: usize,
+    compact: bool,
     palette: &rataflow::Palette,
 ) -> Vec<Line<'static>> {
     // Single-source vocabulary + presence colors (shared with cards/inspect).
@@ -233,7 +318,16 @@ fn header_lines(
 
     // Counts: tools + tokens. A `Span` drops control characters, so each row
     // of multi-line text needs its own `Line`.
-    let counts = if agent.usage.summary.recorded {
+    let counts = if agent.usage.summary.recorded && compact {
+        let u = &agent.usage.summary;
+        vec![format!(
+            "{} tools · {} tok{} · {}",
+            agent.tool_calls.len(),
+            u.total(),
+            if u.incomplete { "+" } else { "" },
+            u.cost_label()
+        )]
+    } else if agent.usage.summary.recorded {
         let u = &agent.usage.summary;
         vec![
             format!(
@@ -327,14 +421,56 @@ fn render_provenance(
     frame.render_widget(Paragraph::new(lines).style(bg), area);
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_tools(
-    frame: &mut Frame,
-    area: Rect,
+/// The tool list's era headers, wrapped, and its total virtual line count —
+/// computed once per frame, before layout, so the panel can size itself and
+/// its scroll indicator against what the list will really draw.
+struct ToolList {
+    headers: Vec<Option<Vec<String>>>,
+    total: usize,
+}
+
+fn tool_list(
+    era_cache: &mut Option<EraCache>,
     agent_id: &str,
     agent: &AgentInfo,
     model: &crate::state::session::SessionModel,
-    era_cache: &mut Option<EraCache>,
+    width: usize,
+) -> ToolList {
+    // Prompt-era group headers: a separator whenever consecutive calls fall
+    // under a different user prompt (timestamp-derived, cached — see
+    // [`EraCache`]). Skipped when the whole list shares one era — the
+    // provenance section already names it.
+    let header_before = &era_flags(era_cache, agent_id, agent, model).flags;
+
+    // Wrap the (few) era headers and total the virtual line count — WITHOUT
+    // building a styled Line per tool call. Only the viewport's worth of rows
+    // is materialized when drawing; formatting every call of a tool-heavy
+    // agent each frame dominated render time.
+    let mut headers: Vec<Option<Vec<String>>> = Vec::with_capacity(agent.tool_calls.len());
+    let mut total = 0usize;
+    for (tc, is_header) in agent.tool_calls.iter().zip(header_before) {
+        let wrapped = if *is_header
+            && let Some(e) = model.prompt_for_ts(tc.ts)
+            && let Some(p) = model.prompts.get(e)
+        {
+            // Era anchor: the user prompt that starts this group. NOT
+            // line-capped: it lives in the scrollable list, so a long prompt
+            // just takes more rows (the upstream ~240-char excerpt bounds it).
+            Some(wrap(&p.excerpt, width.saturating_sub(2), usize::MAX))
+        } else {
+            None
+        };
+        total += wrapped.as_ref().map_or(0, Vec::len) + 1;
+        headers.push(wrapped);
+    }
+    ToolList { headers, total }
+}
+
+fn render_tools(
+    frame: &mut Frame,
+    area: Rect,
+    agent: &AgentInfo,
+    list: &ToolList,
     detail_scroll: &mut u16,
     detail_follow: &mut bool,
     palette: &rataflow::Palette,
@@ -366,33 +502,7 @@ fn render_tools(
     }
 
     let width = inner.width as usize;
-    // Prompt-era group headers: a separator whenever consecutive calls fall
-    // under a different user prompt (timestamp-derived, cached — see
-    // [`EraCache`]). Skipped when the whole list shares one era — the
-    // provenance section already names it.
-    let header_before = &era_flags(era_cache, agent_id, agent, model).flags;
-
-    // Pass 1: wrap the (few) era headers and total the virtual line count —
-    // WITHOUT building a styled Line per tool call. Only the viewport's worth
-    // of rows is materialized below; formatting every call of a tool-heavy
-    // agent each frame dominated render time.
-    let mut headers: Vec<Option<Vec<String>>> = Vec::with_capacity(agent.tool_calls.len());
-    let mut total = 0usize;
-    for (tc, is_header) in agent.tool_calls.iter().zip(header_before) {
-        let wrapped = if *is_header
-            && let Some(e) = model.prompt_for_ts(tc.ts)
-            && let Some(p) = model.prompts.get(e)
-        {
-            // Era anchor: the user prompt that starts this group. NOT
-            // line-capped: it lives in the scrollable list, so a long prompt
-            // just takes more rows (the upstream ~240-char excerpt bounds it).
-            Some(wrap(&p.excerpt, width.saturating_sub(2), usize::MAX))
-        } else {
-            None
-        };
-        total += wrapped.as_ref().map_or(0, Vec::len) + 1;
-        headers.push(wrapped);
-    }
+    let (headers, total) = (&list.headers, list.total);
 
     // Resolve the scroll + tail state against the real line count, and write both
     // back so the scroll indicator and the next keypress match what's on screen.
@@ -412,7 +522,7 @@ fn render_tools(
     let mut lines: Vec<Line> = Vec::with_capacity(inner.height as usize + 4);
     let mut idx = 0usize;
     let mut first_built: Option<usize> = None;
-    for (tc, wrapped) in agent.tool_calls.iter().zip(&headers) {
+    for (tc, wrapped) in agent.tool_calls.iter().zip(headers) {
         let rows = wrapped.as_ref().map_or(0, Vec::len) + 1;
         if idx + rows > view_start && idx < view_end {
             if first_built.is_none() {
@@ -629,8 +739,8 @@ mod tests {
     fn header_rows(agent: &AgentInfo, width: u16, panel_height: u16) -> Vec<String> {
         use ratatui::{Terminal, backend::TestBackend};
         let palette = rataflow::Theme::default().palette();
-        let lines = header_lines(agent, width as usize, &palette);
-        let height = header_height(agent, lines.len(), panel_height);
+        let lines = header_lines(agent, width as usize, false, &palette);
+        let height = header_height(agent, lines.len(), panel_height, false);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| render_header(frame, frame.area(), lines, &palette))
@@ -713,6 +823,136 @@ mod tests {
         // The graph keeps the rest: never more than a third of the panel.
         let short = header_rows(&a, 66, 24);
         assert_eq!(short.len(), 8, "{short:#?}");
+    }
+
+    /// The Codex 0.153.4 capture under `assets/`, folded as a finished replay.
+    fn codex_capture() -> Option<App> {
+        use crate::provider::codex::{Stream, discovery};
+        let dir = crate::provider::harness::fixture_dir("codex")?.join("cli-0.153.4");
+        let root = discovery::all_rollouts(&dir)
+            .into_iter()
+            .find(|p| discovery::read_meta(p).is_some_and(|m| m.is_root()))?;
+        let mut app = App::new("cli-0.153.4".into(), crate::state::Mode::Live);
+        for (path, _) in discovery::session_rollouts(&root) {
+            let mut stream = Stream::new();
+            for line in std::fs::read_to_string(&path).unwrap().lines() {
+                for fact in stream.push(line).map(|s| s.facts).unwrap_or_default() {
+                    app.session.apply_fact(&fact);
+                }
+            }
+        }
+        app.session.recompute_group_status();
+        app.session.end_of_stream();
+        Some(app)
+    }
+
+    /// Draw the panel for `id` into a `width`×`height` area and return its
+    /// rows, trailing blanks trimmed.
+    fn panel_rows(app: &mut App, id: &str, width: u16, height: u16) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render(frame, frame.area(), app, id))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    fn tool_rows(rows: &[String]) -> usize {
+        rows.iter()
+            .filter(|r| r.starts_with("│ ✓ ") || r.starts_with("│ ✗ "))
+            .count()
+    }
+
+    const EXPLORE: &str = "01a07c0b-7aaf-7d43-bca3-9b01faca045d";
+    const IMPLEMENT: &str = "01a07c0b-8d0c-7022-a0df-f7d14290e076";
+
+    #[test]
+    fn a_120x36_terminal_shows_every_call_of_a_seven_call_subagent() {
+        // A 120×36 terminal gives the panel 40% of 120 columns and the canvas
+        // height, 36 minus the 8-row timeline and the status bar: 48×27.
+        let Some(mut app) = codex_capture() else {
+            return;
+        };
+        assert_eq!(app.session.agent(EXPLORE).unwrap().tool_calls.len(), 7);
+        let rows = panel_rows(&mut app, EXPLORE, 48, 27);
+        assert_eq!(tool_rows(&rows), 7, "{rows:#?}");
+        // Nothing hidden, so no scroll hint.
+        assert!(!rows.last().unwrap().contains("j/k"), "{rows:#?}");
+        // The usage still reads, folded into one line.
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("7 tools · 84281 tok · API est. $0.039")),
+            "{rows:#?}"
+        );
+        // The provenance still says what triggered the agent.
+        assert!(rows.iter().any(|r| r.contains("↳ prompt")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("↳ thought")), "{rows:#?}");
+    }
+
+    #[test]
+    fn hidden_calls_always_get_the_scroll_hint() {
+        let Some(mut app) = codex_capture() else {
+            return;
+        };
+        // 17 calls cannot fit a 48×27 panel: the list keeps its minimum rows
+        // and says more are out of view.
+        let rows = panel_rows(&mut app, IMPLEMENT, 48, 27);
+        assert_eq!(tool_rows(&rows), usize::from(TOOLS_MIN_ROWS), "{rows:#?}");
+        assert!(rows.last().unwrap().contains("j/k ↕ tail"), "{rows:#?}");
+        // Seven calls in a panel too short for them: the hint appears though
+        // the list is under the old nine-call threshold.
+        let rows = panel_rows(&mut app, EXPLORE, 48, 12);
+        assert!(tool_rows(&rows) < 7, "{rows:#?}");
+        assert!(rows.last().unwrap().contains("j/k ↕ tail"), "{rows:#?}");
+    }
+
+    #[test]
+    fn a_roomy_panel_keeps_the_full_usage_header() {
+        // 200×50: an 80×41 panel has room for everything as it was.
+        let Some(mut app) = codex_capture() else {
+            return;
+        };
+        let rows = panel_rows(&mut app, EXPLORE, 80, 41);
+        assert_eq!(tool_rows(&rows), 7, "{rows:#?}");
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("7 tools · 83471 in + 810 out = 84281 tok · API est. $0.039")),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("Cache: 76544 read / 0 written")),
+            "{rows:#?}"
+        );
+    }
+
+    #[test]
+    fn a_short_panel_trims_context_before_tools() {
+        let header = |compact: bool| if compact { 6 } else { 8 };
+        // Room for everything: nothing gives way.
+        let full = fit_layout(40, 7, false, header, true, 6, 6);
+        assert!(!full.compact && full.provenance);
+        assert_eq!((full.prompt_lines, full.thought_lines), (6, 6));
+        // 25 rows, 7 calls (8 with the border): the header folds, then the
+        // longer provenance part loses lines first.
+        let fit = fit_layout(25, 7, false, header, true, 6, 3);
+        assert!(fit.compact && fit.provenance);
+        assert_eq!(fit.header, 6);
+        assert_eq!((fit.prompt_lines, fit.thought_lines), (6, 3));
+        let fit = fit_layout(22, 7, false, header, true, 6, 6);
+        assert_eq!((fit.prompt_lines, fit.thought_lines), (4, 3));
+        // No room at all for provenance: it goes rather than squeezing tools.
+        let fit = fit_layout(15, 7, false, header, true, 6, 6);
+        assert!(!fit.provenance);
     }
 
     #[test]
