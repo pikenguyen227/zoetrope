@@ -1083,6 +1083,32 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(seqs - {None}, {r["seq"] for r in FEED_RECORDS if r["recorded_at"] <= B + 360
                                          and adapter.translate(r, FEED_HOME_ID)})
 
+    def test_a_failed_poll_keeps_the_coverage_the_bridge_watched(self):
+        output = self.root / "fleet.json"
+        polls = iter([B, B + 5, B + 10, B + 15, None, B + 100])
+
+        def collect(home, herdr, previous, captain):
+            try:
+                now = next(polls)
+            except StopIteration:
+                raise KeyboardInterrupt
+            if now is None:
+                raise RuntimeError("herdr hiccup")
+            snap = fm_snapshot(now, [])
+            return adapter.build_manifest(snap, snap, {}, previous, observed=adapter.iso(now)), snap
+
+        clock = itertools.count(step=10)
+        arguments = ["firstmate-fleet.py", "--home", str(self.root), "--output", str(output),
+                     "--watch", "--interval", "1"]
+        with mock.patch("sys.argv", arguments), mock.patch.dict(os.environ, {"HERDR_ENV": "1"}), \
+                mock.patch.object(adapter, "collect", collect), \
+                mock.patch.object(adapter.time, "monotonic", lambda: next(clock)), \
+                mock.patch("sys.stdout"), mock.patch("sys.stderr"):
+            self.assertEqual(adapter.main(), 0)
+        journal = [json.loads(line) for line in output.with_suffix(".events.jsonl").read_text().splitlines()]
+        windows = {(e["coverage"]["from"], e["coverage"]["to"]) for e in events(journal, "coverage")}
+        self.assertIn((adapter.iso(B), adapter.iso(B + 15)), windows)
+
     def test_feed_fixture_is_adapter_output(self):
         # Regenerate with ZOE_REGENERATE_CREW=1 after changing the scenario.
         records, writer = feed_journal(self.root)
