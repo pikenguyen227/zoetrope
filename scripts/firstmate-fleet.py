@@ -1199,6 +1199,7 @@ def main():
                 feeds.save()
                 previous = manifest
             except (OSError, RuntimeError, ValueError, KeyError) as error:
+                bridge = feeds = None
                 message = f"fleet refresh failed; retaining last snapshot: {error}"
                 if previous is None or not args.watch:
                     print(message, file=sys.stderr)

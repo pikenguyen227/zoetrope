@@ -1,5 +1,7 @@
 import copy
+import errno
 import importlib.util
+import itertools
 import json
 import os
 import sys
@@ -1041,6 +1043,45 @@ class FeedTests(unittest.TestCase):
         # Whatever the feed's time quality: a line stamped after the snapshot
         # reads as unstamped to the bridge.
         self.assertTrue(reach.holds(fact("bridge", "status", B + 110, **said("working"))))
+
+    def test_a_failed_poll_rereads_what_it_did_not_publish(self):
+        writer = FeedWriter(self.root / "lifecycle")
+        output = self.root / "fleet.json"
+        polls = iter([B + 300, B + 330, B + 360])
+
+        def collect(home, herdr, previous, captain):
+            try:
+                now = next(polls)
+            except StopIteration:
+                raise KeyboardInterrupt
+            writer.advance(now)
+            tasks, panes = feed_rows(now)
+            snap = fm_snapshot(now, tasks)
+            snap["lifecycle"] = writer.pointer()
+            return adapter.build_manifest(snap, snap, panes, previous, observed=adapter.iso(now)), snap
+
+        append, calls = adapter.append_journal, []
+
+        def failing(path, records):
+            calls.append(len(records))
+            if len(calls) == 2:
+                raise OSError(errno.ENOSPC, "no space left on device")
+            append(path, records)
+
+        clock = itertools.count(step=10)
+        arguments = ["firstmate-fleet.py", "--home", str(self.root), "--output", str(output),
+                     "--watch", "--interval", "1"]
+        with mock.patch("sys.argv", arguments), mock.patch.dict(os.environ, {"HERDR_ENV": "1"}), \
+                mock.patch.object(adapter, "collect", collect), \
+                mock.patch.object(adapter, "append_journal", failing), \
+                mock.patch.object(adapter.time, "monotonic", lambda: next(clock)), \
+                mock.patch("sys.stdout"):
+            self.assertEqual(adapter.main(), 0)
+        journal = [json.loads(line) for line in output.with_suffix(".events.jsonl").read_text().splitlines()]
+        seqs = {r["event"]["source"].get("seq") for r in journal if r["kind"] == "lifecycle"}
+        # Seqs 7 and 8 were read by the poll that could not write them.
+        self.assertEqual(seqs - {None}, {r["seq"] for r in FEED_RECORDS if r["recorded_at"] <= B + 360
+                                         and adapter.translate(r, FEED_HOME_ID)})
 
     def test_feed_fixture_is_adapter_output(self):
         # Regenerate with ZOE_REGENERATE_CREW=1 after changing the scenario.
