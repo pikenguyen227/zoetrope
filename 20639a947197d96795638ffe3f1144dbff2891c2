@@ -1,0 +1,29 @@
+assets/fleet/crew/fleet.events.jsonl
+  s_b3ecb6637c03bb::t_c6805472e66124 1-2,5,7-8,10,12,15,17,19,22,24,26,28,30,32
+src/fleet/journal.rs
+  s_b3ecb6637c03bb::t_c3b2752b376bbe 163-167,457-462,506-510,513-516,725,981-990
+scripts/firstmate-fleet.py
+  s_b3ecb6637c03bb::t_c3b2752b376bbe 398
+  s_b3ecb6637c03bb::t_9e28623dc9b3ec 17,399
+scripts/test_firstmate_fleet.py
+  s_b3ecb6637c03bb::t_9e28623dc9b3ec 332-343
+docs/FIRSTMATE-FLEET.md
+  s_b3ecb6637c03bb::t_9e28623dc9b3ec 179-181
+  s_b3ecb6637c03bb::t_c6805472e66124 133,154-155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "20639a947197d96795638ffe3f1144dbff2891c2",
+  "prompts": {},
+  "sessions": {
+    "s_b3ecb6637c03bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47339579-2edc-4708-ac40-25e60ceb9348",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
