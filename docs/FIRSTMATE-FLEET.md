@@ -183,20 +183,30 @@ Feed events replace the bridge events that say the same thing
 (`Lifecycle::superseded` in `src/fleet/journal.rs`; the adapter's `Reach` keeps
 it from writing them in the first place). A bridged spawn, teardown or status
 gives way only to the feed's own record of it: the attempt's spawn, its
-teardown, or a status stamped at the same moment. So a status the feed lost to
-a skipped `seq` still places from the bridge, and a session join (`bound`),
-which no feed knows, always stays. Bridge events stay in the journal for
-removal to count; they no longer place on the timeline.
+teardown, or, for a status, the feed event of that line. So a status the feed
+lost to a skipped `seq` still places from the bridge, and a session join
+(`bound`), which no feed knows, always stays. Bridge events stay in the journal
+for removal to count; they no longer place on the timeline.
 
-A bridged status line without a stamp always places, even beside the feed's
-record of the same line, so it can show twice. Nothing both sides share
-identifies such a line: the bridge sees only its text and when it noticed it,
-and no rule guessed from verb, key or time can tell a repeat the feed lost from
-one it holds. Exact matching waits on Firstmate publishing a per-line identity.
-Until then a duplicate is accepted where a missing status is not. A line goes
-unstamped only when the worker's clock was unreadable, its stamp lay in the
-future (written while the snapshot ran, so its age was unknown), or it predates
-stamping.
+A status line is identified by the feed key Firstmate publishes for it: the
+snapshot's `paths.status_log.last_event` carries `offset`, `stream` and
+`lifecycle_key`, and `lifecycle_key` is exactly the key of that line's
+`task.status` event. The bridge copies it to its status as `lifecycle_key`, and
+that status gives way only to the feed event with that key (the part of its
+`id` after `#`), stamped or not, provided that event has an `at`: an undated
+one never places, so the bridged copy stays. A status stamped at the same
+moment but keyed differently is another line and stays. The key also tells
+apart two identical lines at different offsets, which the bridge writes as two
+statuses.
+
+Firstmate leaves all three fields `null` when it could not establish the
+identity (an empty log, or one replaced while it was read), and an older
+Firstmate omits them. Such a line is matched as before the key existed: a
+stamped one by its stamp, and an unstamped one always places, even beside the
+feed's record of the same line, so it can show twice. Without the key nothing
+both sides share identifies an unstamped line, and no rule guessed from verb,
+key or time can tell a repeat the feed lost from one it holds, so a duplicate
+is accepted where a missing status is not.
 
 ### The snapshot bridge
 
@@ -205,8 +215,9 @@ the adapter bridges lifecycle from successive `fm-fleet-snapshot.v1` polls
 (`Bridge` in `scripts/firstmate-fleet.py`):
 
 - `status` from `paths.status_log.last_event`, at `generated - age_seconds`
-  (`stamp`); observed time when the age is unknown. A repeated last line is not
-  re-emitted.
+  (`stamp`); observed time when the age is unknown. It carries the line's
+  `lifecycle_key` when Firstmate publishes one. A repeated last line is not
+  re-emitted: the same key, or without one the same text and stamp.
 - `spawned` at the epoch in `spawn_gen` (`derived`); observed time otherwise.
 - `bound` when the Herdr join is first made, `torn_down` when an attempt leaves
   the snapshot (a relaunch tears down the previous generation), both observed.
