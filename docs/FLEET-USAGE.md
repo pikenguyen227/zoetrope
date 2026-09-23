@@ -157,9 +157,9 @@ discounts and subscription billing are not included.
 A model ID missing from the table never silently takes another model's rate.
 When its ID has the shape of a listed tier (`claude-opus-*`, `claude-sonnet-*`,
 `claude-haiku-*`, or `gpt-<version>-astra|sol|terra|luna`), it is priced at the
-nearest listed model of that tier (the newest version not above it) and shown as `API est. ~$1.234 (unlisted model)` on both the
-card and the reading panel; the `~` leads so a narrow card that clips the
-suffix still reads as approximate. One such request makes the whole total
+nearest listed model of that tier (the newest version not above it) and shown as
+`API est. ~$1.234 (unlisted model)` on both the card and the reading panel; the
+`~` leads so a narrow card that clips the suffix still reads as approximate. One such request makes the whole total
 approximate. That figure is a rough guide only: a new model can be priced
 differently from its predecessor, and long-context, fast-mode or other premium
 variants may bill differently again. An ID with no listed tier (another Claude
