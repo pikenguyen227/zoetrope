@@ -112,7 +112,8 @@ the live edge, once the adapter no longer registers it: its session is gone
 from the manifest, or every task joined to it has runtime `not observed`, as
 for history the journal never recorded. An idle or quiet worker has not
 finished, and neither has the standing Captain, which has no attempt to finish;
-an earlier Captain finishes once a later one takes its place. Attempt
+an earlier Captain finishes once a later one takes its place (the manifest
+reads that session's own runtime as `not observed`). Attempt
 cards without a session finish when torn down or, at the live edge, when their
 task is `not observed`. Scrubbed into the past, only the journal counts.
 
