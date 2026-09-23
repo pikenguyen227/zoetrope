@@ -122,6 +122,71 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             adapter.build_manifest(snapshot(), other, {})
 
+    def test_the_workspace_names_the_fleet(self):
+        snap = snapshot()
+        named = adapter.build_manifest(snap, snap, {}, observed=WHEN, workspace="Control Tower")
+        self.assertEqual(named["label"], "Control Tower")
+        self.assertEqual(self.build()["label"], "Firstmate · Control Tower")
+
+    def test_workspace_name_asks_herdr_for_the_captains_workspace(self):
+        answer = {"result": {"workspace": {"workspace_id": "wA", "label": " Control Tower "}}}
+        with mock.patch.object(adapter, "run_json", return_value=answer) as run, \
+                mock.patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "wB"}):
+            self.assertEqual(adapter.workspace_name("herdr", {"workspace_id": "wA"}), "Control Tower")
+            self.assertEqual(run.call_args.args[0], ["herdr", "workspace", "get", "wA"])
+            # Without a Captain pane, the adapter's own workspace.
+            adapter.workspace_name("herdr", None)
+            self.assertEqual(run.call_args.args[0], ["herdr", "workspace", "get", "wB"])
+        # Unknown, unreachable or unnamed: None, so the fleet keeps its default name.
+        with mock.patch.dict(os.environ, clear=True):
+            self.assertIsNone(adapter.workspace_name("herdr", None))
+        for failure in (RuntimeError("no socket"), {"result": {}}, {"result": {"workspace": {"label": ""}}}):
+            effect = {"side_effect": failure} if isinstance(failure, Exception) else {"return_value": failure}
+            with mock.patch.object(adapter, "run_json", **effect):
+                self.assertIsNone(adapter.workspace_name("herdr", {"workspace_id": "wA"}))
+
+    def test_only_the_registered_captain_stands(self):
+        def captain(session=None):
+            record = {"pane_id": "w1:p1", "workspace_id": "w1"}
+            if session:
+                record["agent_session"] = {"agent": "claude", "kind": "id", "value": session}
+            return record
+
+        def build(previous, record):
+            snap = snapshot()
+            return adapter.build_manifest(snap, snap, {"main:w1:p2": pane()}, previous, record, WHEN)
+
+        runtime = lambda m, sid: next(s for s in m["sessions"]
+                                      if s["key"]["session_id"] == sid).get("runtime")
+        first = build(None, captain("captain-one"))
+        self.assertIsNone(runtime(first, "captain-one"))
+        # A later Captain registers: the earlier one stays, no longer registered.
+        second = build(first, captain("captain-two"))
+        self.assertEqual([s["key"]["session_id"] for s in second["sessions"]],
+                         ["captain-one", "native-one", "captain-two"])
+        self.assertEqual(runtime(second, "captain-one")["value"], "not observed")
+        self.assertIsNone(runtime(second, "captain-two"))
+        self.assertIsNone(runtime(second, "native-one"))  # a worker is judged by its task
+        # The pane goes quiet (or is a Shell): the last Captain registered stands,
+        # and the diagnostic says so rather than waiting for one.
+        quiet = build(second, captain())
+        self.assertEqual(runtime(quiet, "captain-one")["value"], "not observed")
+        self.assertIsNone(runtime(quiet, "captain-two"))
+        self.assertIn("Captain pane w1:p1 has no supported registered session; "
+                      "showing the last Captain registered", quiet["diagnostics"])
+        self.assertIn("Captain pane has no supported registered session yet",
+                      build(None, captain())["diagnostics"])
+        # The earlier Captain registering again takes its place back.
+        back = build(quiet, captain("captain-one"))
+        self.assertIsNone(runtime(back, "captain-one"))
+        self.assertEqual(runtime(back, "captain-two")["value"], "not observed")
+        # Archiving the earlier Captain needs no confirmation; the standing one does.
+        with mock.patch.object(adapter, "recover", return_value=quiet), \
+                mock.patch.object(adapter, "journal_records", return_value=[]):
+            key = lambda sid: {"provider": "claude", "session_id": sid}
+            self.assertFalse(adapter.Worker(Path("fleet.json"), session=key("captain-one")).registered())
+            self.assertTrue(adapter.Worker(Path("fleet.json"), session=key("captain-two")).registered())
+
     def test_atomic_checkpoint_recovery_and_partial_tail(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "fleet.json"

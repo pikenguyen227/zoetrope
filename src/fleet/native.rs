@@ -1304,6 +1304,52 @@ mod tests {
     }
 
     #[test]
+    fn an_earlier_captain_is_finished_beside_the_registered_one() {
+        use super::super::{Observation, SessionSpec};
+        let (_fixture, mut fleet) = crew();
+        // The fixture's Captain ended and a later one registered: the adapter
+        // keeps the earlier one as membership, read as `not observed`.
+        let current = SessionKey {
+            provider: "codex".into(),
+            session_id: "c0c0c0c0-0000-4000-8000-000000000009".into(),
+        };
+        let mut next = fleet.manifest.clone();
+        next.sessions[0].runtime = Some(Observation {
+            value: "not observed".into(),
+            source: "herdr.pane.get".into(),
+            observed_at: at("08:20:00"),
+        });
+        next.sessions.push(SessionSpec {
+            key: current.clone(),
+            label: "Captain · codex".into(),
+            file: None,
+            runtime: None,
+        });
+        fleet.update(next).unwrap();
+        let earlier = root("captain");
+        let registered = current.node_id(crate::state::session::MAIN_ID);
+
+        // One Captain by default: the registered one.
+        assert!(!ids(&fleet).contains(&earlier));
+        assert!(ids(&fleet).contains(&registered));
+        assert!(fleet.worker(&registered).unwrap().registered);
+        assert_eq!(fleet.finished, 3, "impl, docs and the earlier Captain");
+
+        // `v` reveals the earlier one, dimmed and no longer registered.
+        fleet.toggle_finished();
+        assert!(ids(&fleet).contains(&earlier));
+        assert!(mark(&mut fleet, &earlier).unwrap().dimmed);
+        assert!(!mark(&mut fleet, &registered).is_some_and(|m| m.dimmed));
+        assert!(!fleet.worker(&earlier).unwrap().registered);
+        fleet.toggle_finished();
+
+        // Scrubbed back to when it was at work, it is there, hidden or not.
+        seek(&mut fleet, "08:03:00");
+        assert!(fleet.overview.session.agent(&earlier).is_some());
+        assert!(mark(&mut fleet, &earlier).is_none_or(|m| !m.dimmed));
+    }
+
+    #[test]
     fn hidden_workers_are_still_there_in_the_past() {
         let (_fixture, mut fleet) = crew();
         // 08:03 — impl was at work: hiding finished workers does not hide it.

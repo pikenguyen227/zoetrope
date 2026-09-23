@@ -188,6 +188,7 @@ fn resume_reuses_node_continuation_is_an_explicit_new_node() {
         key: key("worker-next"),
         label: "Worker attempt 2".into(),
         file: None,
+        runtime: None,
     });
     next.links.push(Link {
         id: "handoff".into(),
