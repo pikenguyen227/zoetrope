@@ -1,0 +1,19 @@
+docs/FLEET-USAGE.md
+  s_583f08c591a902::t_b8150e89128a94 160-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "eec367ea9374e7154febf083b8768acb71ddbaa7",
+  "prompts": {},
+  "sessions": {
+    "s_583f08c591a902": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "72ef9785-6fa7-444a-96c9-ae0551789763",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
