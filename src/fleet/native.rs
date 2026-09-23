@@ -433,6 +433,42 @@ fn route_queued(fleet: &mut Fleet, input: &mut mpsc::UnboundedReceiver<Event>) -
     false
 }
 
+/// The executable this viewer was started from, as it stood then. Installing
+/// a rebuild replaces the file, not the running process: without a word the
+/// viewer would go on running the old code, keys the new one binds included.
+struct Build {
+    path: PathBuf,
+    stamp: Option<(u64, std::time::SystemTime)>,
+}
+
+impl Build {
+    fn of(path: PathBuf) -> Self {
+        let stamp = Self::stamp(&path);
+        Self { path, stamp }
+    }
+
+    fn current() -> Option<Self> {
+        std::env::current_exe().ok().map(Self::of)
+    }
+
+    fn stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some((meta.len(), meta.modified().ok()?))
+    }
+
+    /// Why this process is no longer the installed build, once it is not.
+    fn replaced(&self) -> Option<String> {
+        let (_, at) = Self::stamp(&self.path).filter(|now| Some(*now) != self.stamp)?;
+        let at: chrono::DateTime<chrono::Local> = at.into();
+        let name = self.path.file_name().unwrap_or(self.path.as_os_str());
+        Some(format!(
+            "{} was rebuilt at {}; this viewer still runs the old build: reopen the tab to run the new one",
+            name.to_string_lossy(),
+            at.format("%H:%M:%S")
+        ))
+    }
+}
+
 /// Run the Fleet viewer. Under a collector (`ZOE_FLEET_REQUEST` names its
 /// request file) archive and delete are offered, and a confirmed one ends the
 /// viewer with [`Exit::Request`] for the collector to carry out; a note it
@@ -448,6 +484,7 @@ pub async fn run(path: PathBuf) -> Result<Exit> {
             fleet.prompt = Some(super::Prompt::Notice(note));
         }
     }
+    let build = Build::current();
     let mut journal = JournalTail::beside(&path);
     let (tx, mut rx) = mpsc::channel(64);
     let mut jobs = BTreeMap::new();
@@ -520,6 +557,10 @@ pub async fn run(path: PathBuf) -> Result<Exit> {
                 dirty = true;
             },
             _ = refresh.tick() => {
+                if fleet.stale_build.is_none() {
+                    fleet.stale_build = build.as_ref().and_then(Build::replaced);
+                    dirty |= fleet.stale_build.is_some();
+                }
                 match journal.poll() {
                     Ok(poll) => {
                         dirty |= fleet.absorb_lifecycle(poll.reset, poll.events, poll.rejected);
@@ -636,7 +677,8 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
             fleet.manifest.label, key.session_id
         )
     } else {
-        // A moment nobody observed, past or present, outranks today's diagnostics.
+        // A viewer older than its install outranks everything it shows; a
+        // moment nobody observed, past or present, outranks today's diagnostics.
         let gap = (!fleet.covered())
             .then(|| fleet.at().unwrap_or_else(chrono::Utc::now))
             .map(|t| {
@@ -645,8 +687,10 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
                     t.with_timezone(&chrono::Local).format("%H:%M:%S")
                 )
             });
-        let note = gap
+        let note = fleet
+            .stale_build
             .as_deref()
+            .or(gap.as_deref())
             .or(fleet.manifest_error.as_deref())
             .or_else(|| fleet.manifest.diagnostics.first().map(String::as_str));
         format!(
@@ -1543,7 +1587,7 @@ mod tests {
         fleet.overview.flow.select_node(&root("captain"));
         assert!(!route(&mut fleet, &key(KeyCode::Char('p'))));
         assert!(fleet.picker.is_none());
-        assert!(screen(&mut fleet).contains("No validation run on the selected card"));
+        assert!(screen(&mut fleet).contains("No validation run attributed to Captain · Codex"));
         route(&mut fleet, &key(KeyCode::Esc));
 
         // impl's run: its transcripts, the join labelled as inference.
@@ -1615,6 +1659,95 @@ mod tests {
         assert_eq!(ids(&fleet), nodes);
         assert_eq!(fleet.manifest.sessions, sessions);
         assert!(screen(&mut fleet).contains(&format!("{} sessions", members.len())));
+    }
+
+    fn notice(fleet: &Fleet) -> &str {
+        match &fleet.prompt {
+            Some(crate::fleet::Prompt::Notice(note)) => note,
+            _ => panic!("no notice"),
+        }
+    }
+
+    #[test]
+    fn p_says_why_when_there_is_nothing_to_list() {
+        // The Captain's case: a journal that never carried a validation run,
+        // since the collector could not run no-mistakes. p answered nothing.
+        let (_fixture, mut fleet) = crew();
+        fleet.toggle_finished();
+        seek(&mut fleet, "08:10:00");
+        fleet.overview.flow.clear_selection();
+        assert!(!route(&mut fleet, &key(KeyCode::Char('p'))));
+        assert!(fleet.picker.is_none());
+        assert!(screen(&mut fleet).contains("Select a worker's card first: p lists"));
+        route(&mut fleet, &key(KeyCode::Esc));
+
+        fleet.overview.flow.select_node(&root("impl"));
+        assert!(!route(&mut fleet, &key(KeyCode::Char('p'))));
+        assert!(fleet.picker.is_none());
+        let said = format!(
+            "No validation run attributed to impl at {}, so no pipeline agents to list",
+            super::super::clock(at("08:10:00"))
+        );
+        assert_eq!(notice(&fleet), said);
+        assert!(screen(&mut fleet).contains(&said));
+        route(&mut fleet, &key(KeyCode::Esc));
+
+        // The collector's own word on no-mistakes says why, and only that.
+        let missing = "no-mistakes is not on this collector's PATH; set ZOE_NO_MISTAKES_BIN to it";
+        fleet.manifest.diagnostics = vec![
+            "Captain pane w:p has no supported registered session".into(),
+            missing.into(),
+        ];
+        route(&mut fleet, &key(KeyCode::Char('p')));
+        assert_eq!(notice(&fleet), format!("{said} · collector: {missing}"));
+        route(&mut fleet, &key(KeyCode::Esc));
+
+        // A run with no transcript filed under it: the list says so.
+        let (fixture, mut fleet) = validating();
+        fleet.pipeline_root = Some(fixture.0.join("no-projects"));
+        fleet.toggle_finished();
+        seek(&mut fleet, "08:10:00");
+        fleet.overview.flow.select_node(&root("impl"));
+        route(&mut fleet, &key(KeyCode::Char('p')));
+        assert!(fleet.picker.as_ref().unwrap().agents.agents.is_empty());
+        let text = screen(&mut fleet);
+        assert!(text.contains("· 0 found, 0 openable"), "{text}");
+        assert!(text.contains("No transcript is filed under this run's worktree"));
+        route(&mut fleet, &key(KeyCode::Enter));
+        assert!(fleet.inspection.is_none());
+        assert!(screen(&mut fleet).contains("Nothing to open"));
+    }
+
+    #[test]
+    fn a_viewer_older_than_its_install_says_so() {
+        let dir = std::env::temp_dir().join(format!("zoe-build-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("zoe-fleet");
+        std::fs::write(&exe, b"the build running").unwrap();
+        let build = Build::of(exe.clone());
+        assert_eq!(build.replaced(), None);
+        // As scripts/install-fleet.sh installs: beside it, then over it.
+        std::fs::write(dir.join("zoe-fleet.new"), b"the build installed later").unwrap();
+        std::fs::rename(dir.join("zoe-fleet.new"), &exe).unwrap();
+        let why = build.replaced().expect("the install replaced it");
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(why.starts_with("zoe-fleet was rebuilt at "), "{why}");
+        assert!(
+            why.ends_with(
+                "this viewer still runs the old build: reopen the tab to run the new one"
+            )
+        );
+        // It outranks the collector's diagnostics in the header.
+        let (_fixture, mut fleet) = crew();
+        fleet.manifest.diagnostics =
+            vec!["Captain pane w:p has no supported registered session".into()];
+        fleet.stale_build = Some(why);
+        let text = screen(&mut fleet);
+        assert!(
+            text.contains("this viewer still runs the old build"),
+            "{text}"
+        );
+        assert!(!text.contains("Captain pane"));
     }
 
     fn key(code: KeyCode) -> Event {

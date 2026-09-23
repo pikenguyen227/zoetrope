@@ -31,6 +31,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -257,19 +258,45 @@ def pane_get(herdr, target):
     return pane
 
 
-def snapshot_env(home, herdr):
+def snapshot_env(home, herdr, no_mistakes=None):
     # Firstmate reads crew state by running `herdr` from PATH. A plugin pane may
     # only know Herdr through HERDR_BIN_PATH, so lend the snapshot that directory.
+    # It attributes a validation run only when `no-mistakes` is on PATH too, and
+    # a Herdr pane's PATH rarely holds it: lend its directory as well, last, so
+    # it shadows nothing the snapshot would otherwise find.
     env = dict(os.environ, FM_HOME=str(home))
     if os.sep in herdr:
         directory = os.path.dirname(os.path.abspath(herdr))
         env["PATH"] = os.pathsep.join(filter(None, (directory, env.get("PATH"))))
+    if no_mistakes:
+        directory = os.path.dirname(os.path.abspath(no_mistakes))
+        if directory not in (env.get("PATH") or "").split(os.pathsep):
+            env["PATH"] = os.pathsep.join(filter(None, (env.get("PATH"), directory)))
     return env
+
+
+def find_no_mistakes(environ=None):
+    """The no-mistakes CLI, as (absolute path, None), or (None, why not):
+    ZOE_NO_MISTAKES_BIN when set, else the first on PATH. Without it Firstmate
+    attributes no validation run, so the why is a manifest diagnostic."""
+    environ = os.environ if environ is None else environ
+    named = environ.get("ZOE_NO_MISTAKES_BIN")
+    if named:
+        if os.path.isfile(named) and os.access(named, os.X_OK):
+            return os.path.abspath(named), None
+        return None, (f"ZOE_NO_MISTAKES_BIN {named!r} is not an executable file, so no-mistakes "
+                      "is not run: no validation run is attributed or read, so no card shows one")
+    found = shutil.which("no-mistakes", path=environ.get("PATH", os.defpath))
+    if found:
+        return os.path.abspath(found), None
+    return None, ("no-mistakes is not on this collector's PATH; set ZOE_NO_MISTAKES_BIN to it: "
+                  "no validation run is attributed or read, so no card shows one")
 
 
 def collect(home, herdr, previous, captain_target):
     """One observation: the joined manifest and the snapshot it was built from."""
-    env = snapshot_env(home, herdr)
+    no_mistakes, missing = find_no_mistakes()
+    env = snapshot_env(home, herdr, no_mistakes)
     command = [str(home / "bin" / "fm-fleet-snapshot.sh"), "--json"]
     before = run_json(command, env)
     check_snapshot(before)
@@ -292,6 +319,8 @@ def collect(home, herdr, previous, captain_target):
     manifest = build_manifest(before, after, panes, previous, captain,
                               workspace=workspace_name(herdr, captain))
     manifest["diagnostics"].extend(errors)
+    if missing:
+        manifest["diagnostics"].append(missing)
     return manifest, after
 
 
@@ -1093,7 +1122,7 @@ class NoMistakes:
     run, touches the daemon, or opens no-mistakes' database."""
 
     def __init__(self, binary=None, timeout=NM_TIMEOUT):
-        self.binary = binary or "no-mistakes"
+        self.binary = binary or find_no_mistakes()[0] or "no-mistakes"
         self.timeout = timeout
 
     def call(self, *argv):

@@ -273,6 +273,9 @@ pub struct Fleet {
     /// Where pipeline transcripts are looked for, a directory of Claude
     /// project directories; `None`: Claude's own.
     pub pipeline_root: Option<PathBuf>,
+    /// Why this viewer is not the installed build: one installed over it
+    /// since it started, so it still runs the old code (see `native`).
+    pub stale_build: Option<String>,
 }
 
 /// The adapter's runtime for a task that left the Firstmate snapshot.
@@ -417,6 +420,7 @@ impl Fleet {
             picker: None,
             inspection: None,
             pipeline_root: None,
+            stale_build: None,
         };
         fleet.update(manifest)?;
         Ok(fleet)

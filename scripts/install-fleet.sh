@@ -22,3 +22,4 @@ mv -f "$destination/zoe-fleet.new" "$destination/zoe-fleet"
 } > "$destination/zoe-fleet-open"
 chmod 755 "$destination/zoe-fleet-demo" "$destination/zoe-fleet-open"
 printf 'Installed Fleet launchers in %s\n' "$destination"
+printf 'A Team tab already open still runs the previous build: reopen it to run this one\n'

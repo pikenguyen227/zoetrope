@@ -117,6 +117,49 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(adapter.snapshot_env(Path("/h"), "/opt/herdr/bin/herdr")["PATH"],
                              "/opt/herdr/bin")
 
+    def test_a_herdr_pane_path_still_attributes_validation_runs(self):
+        # Why `p` listed nothing in the Captain's Fleet tab: Herdr ran the
+        # collector with a PATH that lacked no-mistakes, and Firstmate
+        # attributes a run only when `command -v no-mistakes` finds it
+        # (fm-crew-state.sh), so every snapshot's validation_run was null.
+        run = {"id": "01M36TNCD1BJ2KWWBMKZXBNNEV", "branch": "fm/worker", "status": "running"}
+        with tempfile.TemporaryDirectory() as tmp:
+            home, tools = Path(tmp) / "firstmate", Path(tmp) / "tools"
+            (home / "bin").mkdir(parents=True)
+            tools.mkdir()
+            for name, found in (("without", None), ("with", run)):
+                snap = snapshot()
+                snap["tasks"][0].update(endpoint={}, validation_run=found)
+                (home / f"{name}.json").write_text(json.dumps(snap))
+            script = home / "bin" / "fm-fleet-snapshot.sh"
+            script.write_text(f"#!/bin/sh\nif command -v no-mistakes >/dev/null 2>&1; "
+                              f"then cat {home}/with.json; else cat {home}/without.json; fi\n")
+            (tools / "no-mistakes").write_text("#!/bin/sh\n")
+            for tool in (script, tools / "no-mistakes"):
+                tool.chmod(0o755)
+            pane = {"HERDR_ENV": "1", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+            with mock.patch.dict(os.environ, pane, clear=True):
+                manifest, snap = adapter.collect(home, "herdr", None, None)
+            self.assertIsNone(snap["tasks"][0]["validation_run"])
+            self.assertIn("no-mistakes is not on this collector's PATH", manifest["diagnostics"][-1])
+            named = dict(pane, ZOE_NO_MISTAKES_BIN=str(tools / "no-mistakes"))
+            with mock.patch.dict(os.environ, named, clear=True):
+                manifest, snap = adapter.collect(home, "herdr", None, None)
+                self.assertEqual(adapter.NoMistakes().binary, str(tools / "no-mistakes"))
+            self.assertEqual(snap["tasks"][0]["validation_run"], run)
+            self.assertFalse([d for d in manifest["diagnostics"] if "no-mistakes" in d])
+            with mock.patch.dict(os.environ, dict(pane, ZOE_NO_MISTAKES_BIN=str(tools)), clear=True):
+                manifest, _ = adapter.collect(home, "herdr", None, None)
+            self.assertIn("is not an executable file, so no-mistakes is not run",
+                          manifest["diagnostics"][-1])
+
+    def test_snapshot_path_lends_no_mistakes_last(self):
+        with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
+            env = adapter.snapshot_env(Path("/h"), "/opt/herdr/bin/herdr", "/tools/bin/no-mistakes")
+            self.assertEqual(env["PATH"], "/opt/herdr/bin:/usr/bin:/bin:/tools/bin")
+            self.assertEqual(adapter.snapshot_env(Path("/h"), "herdr", "/bin/no-mistakes")["PATH"],
+                             "/usr/bin:/bin")
+
     def test_home_mismatch_fails_before_merge(self):
         other = snapshot(); other["fm_home"] = "/another/home"
         with self.assertRaises(ValueError):

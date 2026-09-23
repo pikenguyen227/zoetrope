@@ -23,6 +23,12 @@ if [ ! -x "$binary" ]; then
   read -r -p "Press Enter to close " || true
   exit 1
 fi
+# Firstmate attributes validation runs only when no-mistakes is on PATH, and a
+# Herdr pane's PATH rarely holds the one installed beside the Fleet binary.
+if [ -z "${ZOE_NO_MISTAKES_BIN:-}" ] && ! command -v no-mistakes >/dev/null 2>&1 &&
+  [ -x "$agentic_root/.tools/bin/no-mistakes" ]; then
+  export ZOE_NO_MISTAKES_BIN="$agentic_root/.tools/bin/no-mistakes"
+fi
 captain=()
 context="${HERDR_PLUGIN_CONTEXT_JSON:-}"
 [ -n "$context" ] || context='{}'
