@@ -303,6 +303,22 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual([(e["at"], e["at_quality"], e["status"]["value"]) for e in events(lost, "status")],
                          [(adapter.iso(B + 90), "stamp", "needs-decision")])
 
+    def test_an_unstamped_status_the_feed_lost_is_bridged_when_noticed(self):
+        bridge = self.bridge()
+        bridge.reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "spawned",
+                          "at": adapter.iso(B), "at_quality": "firstmate",
+                          "attempt": {"task": "t", "spawn_gen": "one"}})
+        bridge.reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "status",
+                          "at": adapter.iso(B + 65), "at_quality": "observed",
+                          "attempt": {"task": "t", "spawn_gen": "one"},
+                          "status": {"value": "working"}})
+        statuses = [(B + 60, "working", "held"), (B + 90, "blocked", "lost", "ci")]
+        held, _ = observe(bridge, B + 70, [fm_task("t", "one", B + 70, statuses, stamped=False)])
+        self.assertEqual(events(held, "status"), [])
+        lost, _ = observe(bridge, B + 100, [fm_task("t", "one", B + 100, statuses, stamped=False)])
+        self.assertEqual([(e["at"], e["at_quality"], e["status"]["value"]) for e in events(lost, "status")],
+                         [(adapter.iso(B + 100), "observed", "blocked")])
+
     def test_teardown_and_relaunch_are_observed(self):
         bridge = self.bridge()
         observe(bridge, B, [fm_task("t", "one", B)])
@@ -996,33 +1012,28 @@ class FeedTests(unittest.TestCase):
         self.assertNotIn("torn_down", [k for k, _ in about("tests", "tests", "firstmate")])
         self.assertEqual([e for e in about("tests", "tests-2", "bridge") if e[0] != "status"],
                          [("bound", adapter.iso(B + 690))])
-        # Reach itself: whole life after a spawn; otherwise from the feed's start.
+        # Reach itself: a bridged fact gives way only to the feed's own record.
         reach = adapter.Reach()
-        reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "coverage",
-                   "at": adapter.iso(B + 60), "coverage": {"from": adapter.iso(B), "to": adapter.iso(B + 60)}})
-        reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "status",
-                   "at": adapter.iso(B + 30), "attempt": {"task": "old", "spawn_gen": "g"}})
-        self.assertFalse(reach.covers(("old", "g"), "status", B - 1))
-        self.assertTrue(reach.covers(("old", "g"), "status", B))
-        self.assertFalse(reach.covers(("old", "g"), "spawned", B + 10))
-        self.assertFalse(reach.covers(("old", "g"), "torn_down", B + 10))
-        self.assertFalse(reach.covers(("other", "g"), "status", B + 10))
-        # A hole between the home's windows is not the feed's, even for an
-        # attempt whose spawn it recorded.
-        reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "coverage",
-                   "at": adapter.iso(B + 200), "coverage": {"from": adapter.iso(B + 90),
-                                                            "to": adapter.iso(B + 200)}})
-        reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "spawned",
-                   "at": adapter.iso(B - 50), "attempt": {"task": "old", "spawn_gen": "g"}})
-        self.assertTrue(reach.covers(("old", "g"), "status", B - 1))
-        self.assertFalse(reach.covers(("old", "g"), "status", B + 75))
-        self.assertTrue(reach.covers(("old", "g"), "status", B + 90))
-        # A stamped status is the feed's only if the feed has it at that stamp.
-        reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "status",
-                   "at": adapter.iso(B + 120), "at_quality": "stamp",
-                   "attempt": {"task": "old", "spawn_gen": "g"}})
-        self.assertTrue(reach.covers(("old", "g"), "status", B + 120, stamped=True))
-        self.assertFalse(reach.covers(("old", "g"), "status", B + 130, stamped=True))
+        fact = lambda source, kind, at, quality="observed", task="old", **extra: dict(
+            {"source": {"kind": source, "home": "h"}, "type": kind, "at": adapter.iso(at),
+             "at_quality": quality, "attempt": {"task": task, "spawn_gen": "g"}}, **extra)
+        said = lambda value, key=None: {"status": dict({"value": value}, **({"key": key} if key else {}))}
+        reach.add(fact("firstmate", "coverage", B + 60, attempt=None,
+                       coverage={"from": adapter.iso(B), "to": adapter.iso(B + 60)}))
+        reach.add(fact("firstmate", "spawned", B - 50, "firstmate"))
+        reach.add(fact("firstmate", "status", B + 120, "stamp", **said("working")))
+        reach.add(fact("firstmate", "status", B + 30, **said("blocked", "ci")))
+        reach.add(fact("bridge", "torn_down", B + 200))
+        self.assertTrue(reach.holds(fact("bridge", "spawned", B, "derived")))
+        self.assertFalse(reach.holds(fact("bridge", "torn_down", B + 200)))
+        # A stamped status, by its stamp.
+        self.assertTrue(reach.holds(fact("bridge", "status", B + 120, "stamp", **said("working"))))
+        self.assertFalse(reach.holds(fact("bridge", "status", B + 130, "stamp", **said("working"))))
+        # A status without a stamp, by verb and key, whenever it was noticed.
+        self.assertTrue(reach.holds(fact("bridge", "status", B + 40, **said("blocked", "ci"))))
+        self.assertFalse(reach.holds(fact("bridge", "status", B + 40, **said("blocked"))))
+        self.assertFalse(reach.holds(fact("bridge", "status", B + 40, **said("working"))))
+        self.assertFalse(reach.holds(fact("bridge", "status", B + 40, task="other", **said("blocked", "ci"))))
 
     def test_feed_fixture_is_adapter_output(self):
         # Regenerate with ZOE_REGENERATE_CREW=1 after changing the scenario.

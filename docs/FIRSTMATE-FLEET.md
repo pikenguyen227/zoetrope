@@ -179,18 +179,15 @@ runs; its `docs/configuration.md` owns that contract. The adapter translates it
   anything, at least once a minute, and on stop. Secondmate feeds add none,
   since coverage is fleet-wide.
 
-For an attempt the feed reports on, feed events replace bridge events
+Feed events replace the bridge events that say the same thing
 (`Lifecycle::superseded` in `src/fleet/journal.rs`; the adapter's `Reach` keeps
-it from writing them in the first place). A feed that recorded the attempt's
-spawn, live or by backfill, holds its whole life; otherwise it holds the attempt
-from the earlier of its coverage start and its first fact about the attempt.
-Neither holds in a hole between the home's coverage windows, where the feed lost
-events: there the bridge's status and other facts place. A bridged spawn,
-teardown or stamped status gives way only to the feed's own record of it (for a
-status, one stamped at the same moment, so a status the feed lost to a skipped
-`seq` still places from the bridge), and a session join (`bound`), which no
-feed knows, always stays. Bridge events stay in the journal for removal to
-count; they no longer place on the timeline.
+it from writing them in the first place). A bridged spawn, teardown or status
+gives way only to the feed's own record of it: the attempt's spawn, its
+teardown, a status stamped at the same moment or, for a status line without a
+stamp, one with the same verb and key. So a status the feed lost to a skipped
+`seq` still places from the bridge, and a session join (`bound`), which no feed
+knows, always stays. Bridge events stay in the journal for removal to count;
+they no longer place on the timeline.
 
 ### The snapshot bridge
 
@@ -212,7 +209,7 @@ the adapter bridges lifecycle from successive `fm-fleet-snapshot.v1` polls
 Only the last status line is visible per poll, so lines that land between polls,
 and anything while no bridge runs, are lost. Coverage is how the viewer knows.
 Remote homes and tasks without a `spawn_gen` are left out. The bridge still
-joins sessions for attempts a feed speaks for.
+joins sessions for attempts a feed reports on.
 
 ## Fleet timeline
 

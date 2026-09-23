@@ -297,7 +297,7 @@ class Bridge:
     events say when the bridge was watching, so the timeline shows those gaps
     instead of a steady state it never saw.
 
-    Where a Firstmate feed speaks for an attempt (Reach), the bridge keeps
+    Where a Firstmate feed has recorded a fact (Reach), the bridge keeps
     quiet about it: it still joins sessions, which no feed knows, but writes
     no spawned, status or torn_down the feed already holds.
     """
@@ -366,8 +366,9 @@ class Bridge:
                 epoch = spawn_epoch(gen)
                 at, quality = (epoch, "derived") if epoch is not None and epoch <= now else (now, "observed")
                 spawned = {k: task.get(k) for k in ("kind", "harness", "project") if task.get(k)}
-                if not self.reach.covers(key, "spawned", at):
-                    lines.append(self.line("spawned", ident, at, quality, key, spawned=spawned))
+                line = self.line("spawned", ident, at, quality, key, spawned=spawned)
+                if not self.reach.holds(line["event"]):
+                    lines.append(line)
             state = self.state(key)
             last = ((task.get("paths") or {}).get("status_log") or {}).get("last_event") or {}
             raw, verb = last.get("raw") or "", last.get("state") or ""
@@ -377,16 +378,16 @@ class Bridge:
                 at, quality = (now - age, "stamp") if stamped else (now, "observed")
                 digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
                 mark = (digest, iso(at) if stamped else None)
-                if state["status"] != mark and not self.reach.covers(key, "status", at, stamped):
-                    status = {"value": verb, "digest": digest}
-                    found = re.search(r"\[key=([^\]\s]+)\]", raw)
-                    if found:
-                        status["key"] = found.group(1)
-                    note = (last.get("note") or "").strip()
-                    if note:
-                        status["note"] = note[:200]
-                    lines.append(self.line("status", f"{ident}/{at}/{digest}", at, quality, key,
-                                           status=status))
+                status = {"value": verb, "digest": digest}
+                found = re.search(r"\[key=([^\]\s]+)\]", raw)
+                if found:
+                    status["key"] = found.group(1)
+                note = (last.get("note") or "").strip()
+                if note:
+                    status["note"] = note[:200]
+                line = self.line("status", f"{ident}/{at}/{digest}", at, quality, key, status=status)
+                if state["status"] != mark and not self.reach.holds(line["event"]):
+                    lines.append(line)
                     state["status"] = mark
         for task in manifest["tasks"]:
             key = (task["id"], task["spawn_gen"])
@@ -398,8 +399,9 @@ class Bridge:
                 state["session"] = session
         for key, state in self.attempts.items():
             if key not in present and not state["down"]:
-                if not self.reach.covers(key, "torn_down", now):
-                    lines.append(self.line("torn_down", f"{key[0]}/{key[1]}", now, "observed", key))
+                line = self.line("torn_down", f"{key[0]}/{key[1]}", now, "observed", key)
+                if not self.reach.holds(line["event"]):
+                    lines.append(line)
                 state["down"] = True
         return self.cover(now, bool(lines)) + lines
 
@@ -435,72 +437,44 @@ class Bridge:
         return lines
 
 
-def epoch_of(stamp):
-    return int(dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp())
-
-
 class Reach:
-    """Where Firstmate's own feed speaks for an attempt, so its events replace
-    the bridge's there (Lifecycle::superseded in src/fleet/journal.rs applies
-    the same rule to what the journal already holds).
+    """What Firstmate's own feed has recorded, so its events replace the
+    bridge's (Lifecycle::superseded in src/fleet/journal.rs applies the same
+    rule to what the journal already holds).
 
-    A feed that recorded an attempt's spawn, live or by backfill (which also
-    replays its whole status log), holds its whole life. Otherwise it holds
-    the attempt from the earliest of when the feed's coverage of that home
-    began and the first fact it records about the attempt. Neither holds in a
-    hole between that home's coverage windows, where the feed lost events. A
-    stamped status, a spawn or a teardown is replaced only by the feed's own
-    record of it: a status stamped at the same moment, the spawn, the teardown.
-    So a stamped status the feed lost is bridged, and one the bridge sees
-    before Firstmate records it is written and gives way once the feed has it.
+    A bridged spawn, teardown or status gives way only to the feed's own
+    record of it: the attempt's spawn, its teardown, a status stamped at the
+    same moment or, for a status line without a stamp, one saying the same
+    verb and key. So a status the feed lost is bridged, and one the bridge
+    sees before Firstmate records it is written and gives way once the feed
+    has it.
     """
 
     def __init__(self):
-        self.homes = {}  # feed home -> its coverage windows, as (from, to) epochs
-        self.attempts = {}  # (task, spawn_gen) -> what the feed holds about it
+        self.marks = set()  # what the feed holds, as mark() of its events
 
-    def add(self, event):
-        source = event.get("source") or {}
-        if source.get("kind") != "firstmate":
-            return
-        try:
-            at = epoch_of(event["at"]) if event.get("at") else None
-            if event.get("type") == "coverage":
-                window = (epoch_of(event["coverage"]["from"]), epoch_of(event["coverage"]["to"]))
-                self.homes.setdefault(source.get("home"), []).append(window)
-                return
-        except (KeyError, TypeError, ValueError):
-            return
+    @staticmethod
+    def mark(event):
         attempt = event.get("attempt")
         if not isinstance(attempt, dict):
-            return
-        held = self.attempts.setdefault((attempt.get("task"), attempt.get("spawn_gen")),
-                                        {"home": source.get("home"), "types": set(), "first": None,
-                                         "stamps": set()})
-        held["types"].add(event.get("type"))
-        if event.get("type") == "status" and event.get("at_quality") == "stamp" and at is not None:
-            held["stamps"].add(at)
-        if at is not None:
-            held["first"] = at if held["first"] is None else min(held["first"], at)
+            return None
+        key = (attempt.get("task"), attempt.get("spawn_gen"), event.get("type"))
+        if event.get("type") in ("spawned", "torn_down"):
+            return key
+        if event.get("type") == "status":
+            if event.get("at_quality") == "stamp":
+                return key + (event.get("at"),)
+            status = event.get("status") or {}
+            return key + (None, status.get("value"), status.get("key"))
+        return None
 
-    def covers(self, attempt, kind, at, stamped=False):
-        held = self.attempts.get(attempt)
-        if held is None:
-            return False
-        if kind in ("spawned", "torn_down"):
-            return kind in held["types"]
-        if stamped:
-            return at in held["stamps"]
-        windows = sorted(self.homes.get(held["home"], []))
-        reach = None
-        for start, end in windows:
-            if reach is not None and reach < at < start:
-                return False
-            reach = end if reach is None else max(reach, end)
-        if "spawned" in held["types"]:
-            return True
-        starts = [t for t in (windows[0][0] if windows else None, held["first"]) if t is not None]
-        return bool(starts) and at >= min(starts)
+    def add(self, event):
+        mark = self.mark(event)
+        if (event.get("source") or {}).get("kind") == "firstmate" and mark is not None:
+            self.marks.add(mark)
+
+    def holds(self, event):
+        return self.mark(event) in self.marks
 
 
 # Firstmate's at_source as the journal's at_quality. An inbox time is the one
