@@ -377,7 +377,7 @@ class Bridge:
                 at, quality = (now - age, "stamp") if stamped else (now, "observed")
                 digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
                 mark = (digest, iso(at) if stamped else None)
-                if state["status"] != mark and not self.reach.covers(key, "status", at):
+                if state["status"] != mark and not self.reach.covers(key, "status", at, stamped):
                     status = {"value": verb, "digest": digest}
                     found = re.search(r"\[key=([^\]\s]+)\]", raw)
                     if found:
@@ -449,7 +449,10 @@ class Reach:
     the attempt from the earliest of when the feed's coverage of that home
     began and the first fact it records about the attempt. Neither holds in a
     hole between that home's coverage windows, where the feed lost events. A
-    spawn or teardown is replaced only by the feed's own record of it.
+    stamped status, a spawn or a teardown is replaced only by the feed's own
+    record of it: a status stamped at the same moment, the spawn, the teardown.
+    So a stamped status the feed lost is bridged, and one the bridge sees
+    before Firstmate records it is written and gives way once the feed has it.
     """
 
     def __init__(self):
@@ -472,17 +475,22 @@ class Reach:
         if not isinstance(attempt, dict):
             return
         held = self.attempts.setdefault((attempt.get("task"), attempt.get("spawn_gen")),
-                                        {"home": source.get("home"), "types": set(), "first": None})
+                                        {"home": source.get("home"), "types": set(), "first": None,
+                                         "stamps": set()})
         held["types"].add(event.get("type"))
+        if event.get("type") == "status" and event.get("at_quality") == "stamp" and at is not None:
+            held["stamps"].add(at)
         if at is not None:
             held["first"] = at if held["first"] is None else min(held["first"], at)
 
-    def covers(self, attempt, kind, at):
+    def covers(self, attempt, kind, at, stamped=False):
         held = self.attempts.get(attempt)
         if held is None:
             return False
         if kind in ("spawned", "torn_down"):
             return kind in held["types"]
+        if stamped:
+            return at in held["stamps"]
         windows = sorted(self.homes.get(held["home"], []))
         reach = None
         for start, end in windows:

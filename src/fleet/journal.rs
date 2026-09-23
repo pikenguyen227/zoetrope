@@ -493,9 +493,10 @@ impl Lifecycle {
     /// life. Otherwise the feed holds it from the earliest of when the feed's
     /// coverage of that home began and the first fact it records about the
     /// attempt. Neither holds in a hole between that home's coverage windows,
-    /// where the feed lost events. A bridged spawn or teardown gives way only
-    /// to the feed's own record of it, and a session join, which no feed
-    /// knows, never does.
+    /// where the feed lost events. A bridged stamped status, spawn or teardown
+    /// gives way only to the feed's own record of it (for a status, one
+    /// stamped at the same moment), and a session join, which no feed knows,
+    /// never does.
     /// `Reach` in `scripts/firstmate-fleet.py` keeps the adapter from writing
     /// what this would drop.
     fn superseded(&self) -> BTreeSet<&str> {
@@ -505,6 +506,7 @@ impl Lifecycle {
             spawned: bool,
             torn_down: bool,
             first: Option<DateTime<Utc>>,
+            stamps: BTreeSet<DateTime<Utc>>,
         }
         let feed = |e: &&LifecycleEvent| e.source.kind == SourceKind::Firstmate;
         let mut homes: BTreeMap<Option<&str>, Vec<Window>> = BTreeMap::new();
@@ -522,6 +524,11 @@ impl Lifecycle {
             entry.home = entry.home.or(home);
             entry.spawned |= matches!(event.change, Change::Spawned { .. });
             entry.torn_down |= matches!(event.change, Change::TornDown { .. });
+            if let (Change::Status { .. }, AtQuality::Stamp, Some(at)) =
+                (&event.change, event.at_quality, event.at)
+            {
+                entry.stamps.insert(at);
+            }
             entry.first = match (entry.first, event.at) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
@@ -555,6 +562,9 @@ impl Lifecycle {
                     Change::Bound | Change::Coverage { .. } => false,
                     Change::Spawned { .. } => held.spawned,
                     Change::TornDown { .. } => held.torn_down,
+                    Change::Status { .. } if e.at_quality == AtQuality::Stamp => {
+                        e.at.is_some_and(|at| held.stamps.contains(&at))
+                    }
                     _ if in_hole(windows, e.at) => false,
                     _ if held.spawned => true,
                     _ => {
@@ -1139,7 +1149,13 @@ mod tests {
             provider: "codex".into(),
             session_id: "native".into(),
         });
-        store.insert(sample());
+        // Statuses the bridge only noticed give way by time.
+        store.insert(sample().into_iter().map(|mut e| {
+            if matches!(e.change, Change::Status { .. }) {
+                e.at_quality = AtQuality::Observed;
+            }
+            e
+        }));
         store.insert([
             bound,
             event("other", "08:05:00", "other", status("working")),
@@ -1220,6 +1236,48 @@ mod tests {
     }
 
     #[test]
+    fn a_stamped_status_gives_way_only_to_the_feeds_own_record_of_it() {
+        let mut store = Lifecycle::default();
+        let mut since = feed(coverage("cov", "08:00:00", "08:10:00"), 0);
+        since.attempt = None;
+        let mut spawn = feed(
+            event(
+                "born",
+                "07:59:30",
+                "impl",
+                Change::Spawned {
+                    spawned: Spawned::default(),
+                },
+            ),
+            1,
+        );
+        spawn.at_quality = AtQuality::Firstmate;
+        // The feed holds impl's whole life, but lost the 08:06 status.
+        store.insert([
+            since,
+            spawn,
+            feed(event("s", "08:05:00", "impl", status("needs-decision")), 2),
+        ]);
+        store.insert([
+            event("held", "08:05:00", "impl", status("needs-decision")),
+            event("lost", "08:06:00", "impl", status("working")),
+        ]);
+        assert_eq!(
+            ids(&store),
+            [
+                "firstmate:fmh#born",
+                "firstmate:fmh#s",
+                "lost",
+                "firstmate:fmh#cov"
+            ]
+        );
+        let status = store.state_at(None)[&attempt("impl").unwrap()]
+            .status
+            .clone();
+        assert_eq!(status.unwrap().at, at("08:06:00"));
+    }
+
+    #[test]
     fn a_feed_with_coverage_has_gaps_outside_it() {
         let mut store = Lifecycle::default();
         let mut since = feed(coverage("cov", "08:00:00", "08:10:00"), 0);
@@ -1281,14 +1339,13 @@ mod tests {
             Some((at("08:11:00"), AtQuality::Observed))
         );
         assert_eq!(live[&tests].outcome, None);
-        // Seq 19 was lost: in the hole it leaves, the bridge's status places.
+        // Every status the bridge wrote ahead of the feed's record of it gives
+        // way to that record, at the same stamp.
         assert!(
             store
                 .ordered()
-                .any(|e| e.attempt.as_ref() == Some(&relaunched)
-                    && e.source.kind == SourceKind::Bridge
-                    && matches!(e.change, Change::Status { .. })
-                    && e.at == Some(at("08:11:40")))
+                .all(|e| e.source.kind == SourceKind::Firstmate
+                    || !matches!(e.change, Change::Status { .. }))
         );
         assert_eq!(
             live[&attempt("survey", "s1790064420.4103.3")]

@@ -185,10 +185,12 @@ it from writing them in the first place). A feed that recorded the attempt's
 spawn, live or by backfill, holds its whole life; otherwise it holds the attempt
 from the earlier of its coverage start and its first fact about the attempt.
 Neither holds in a hole between the home's coverage windows, where the feed lost
-events: there the bridge's status and other facts place. A bridged spawn or
-teardown gives way only to the feed's own record of it, and a session join
-(`bound`), which no feed knows, always stays. Bridge events stay in the journal
-for removal to count; they no longer place on the timeline.
+events: there the bridge's status and other facts place. A bridged spawn,
+teardown or stamped status gives way only to the feed's own record of it (for a
+status, one stamped at the same moment, so a status the feed lost to a skipped
+`seq` still places from the bridge), and a session join (`bound`), which no
+feed knows, always stays. Bridge events stay in the journal for removal to
+count; they no longer place on the timeline.
 
 ### The snapshot bridge
 

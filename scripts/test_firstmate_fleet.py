@@ -285,6 +285,24 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(spawned["spawned"], {"kind": "ship", "harness": "codex",
                                                   "project": "/synthetic/project"})
 
+    def test_a_status_the_feed_lost_is_bridged_at_its_stamp(self):
+        # The feed holds t's whole life and covers without a break, but lost
+        # the status stamped B+90 (its record was never written).
+        bridge = self.bridge()
+        feed = lambda kind, at, **extra: dict(
+            {"source": {"kind": "firstmate", "home": "h"}, "type": kind, "at": adapter.iso(at),
+             "attempt": {"task": "t", "spawn_gen": "one"}}, **extra)
+        bridge.reach.add(feed("coverage", B + 120, attempt=None,
+                              coverage={"from": adapter.iso(B), "to": adapter.iso(B + 120)}))
+        bridge.reach.add(feed("spawned", B))
+        bridge.reach.add(feed("status", B + 60, at_quality="stamp"))
+        statuses = [(B + 60, "working", "held"), (B + 90, "needs-decision", "lost", "design")]
+        held, _ = observe(bridge, B + 70, [fm_task("t", "one", B + 70, statuses)])
+        self.assertEqual(events(held, "status"), [])
+        lost, _ = observe(bridge, B + 100, [fm_task("t", "one", B + 100, statuses)])
+        self.assertEqual([(e["at"], e["at_quality"], e["status"]["value"]) for e in events(lost, "status")],
+                         [(adapter.iso(B + 90), "stamp", "needs-decision")])
+
     def test_teardown_and_relaunch_are_observed(self):
         bridge = self.bridge()
         observe(bridge, B, [fm_task("t", "one", B)])
@@ -960,10 +978,14 @@ class FeedTests(unittest.TestCase):
             (e["type"], e.get("at")) for e in events(records)
             if e.get("attempt") == {"task": task, "spawn_gen": GENS[gen]} and e["source"]["kind"] == source]
         # Before the feed began, the bridge saw impl; once the feed backfilled
-        # its spawn, the bridge only joins its session.
-        self.assertEqual(about("impl", "impl", "bridge"),
-                         [("spawned", adapter.iso(B + 100)), ("status", adapter.iso(B + 110)),
-                          ("bound", adapter.iso(B + 150))])
+        # its spawn, the bridge only joins its session, and writes a stamped
+        # status only when it sees it before Firstmate has recorded it. The
+        # feed then records it at that same stamp, which it replaces.
+        self.assertEqual([e for e in about("impl", "impl", "bridge") if e[0] != "status"],
+                         [("spawned", adapter.iso(B + 100)), ("bound", adapter.iso(B + 150))])
+        for task, gen in (("impl", "impl"), ("tests", "tests"), ("tests", "tests-2")):
+            self.assertLessEqual({e for e in about(task, gen, "bridge") if e[0] == "status"},
+                                 set(about(task, gen, "firstmate")))
         self.assertEqual([k for k, _ in about("impl", "impl", "firstmate")],
                          ["spawned", "status", "steered", "steer_acked", "status", "decision",
                           "status", "decision", "status", "torn_down"])
@@ -972,9 +994,8 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(about("tests", "tests", "bridge"),
                          [("bound", adapter.iso(B + 450)), ("torn_down", adapter.iso(B + 660))])
         self.assertNotIn("torn_down", [k for k, _ in about("tests", "tests", "firstmate")])
-        # Inside the hole seq 19 left, the bridge's status speaks.
-        self.assertEqual(about("tests", "tests-2", "bridge"),
-                         [("bound", adapter.iso(B + 690)), ("status", adapter.iso(B + 700))])
+        self.assertEqual([e for e in about("tests", "tests-2", "bridge") if e[0] != "status"],
+                         [("bound", adapter.iso(B + 690))])
         # Reach itself: whole life after a spawn; otherwise from the feed's start.
         reach = adapter.Reach()
         reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "coverage",
@@ -996,6 +1017,12 @@ class FeedTests(unittest.TestCase):
         self.assertTrue(reach.covers(("old", "g"), "status", B - 1))
         self.assertFalse(reach.covers(("old", "g"), "status", B + 75))
         self.assertTrue(reach.covers(("old", "g"), "status", B + 90))
+        # A stamped status is the feed's only if the feed has it at that stamp.
+        reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "status",
+                   "at": adapter.iso(B + 120), "at_quality": "stamp",
+                   "attempt": {"task": "old", "spawn_gen": "g"}})
+        self.assertTrue(reach.covers(("old", "g"), "status", B + 120, stamped=True))
+        self.assertFalse(reach.covers(("old", "g"), "status", B + 130, stamped=True))
 
     def test_feed_fixture_is_adapter_output(self):
         # Regenerate with ZOE_REGENERATE_CREW=1 after changing the scenario.
