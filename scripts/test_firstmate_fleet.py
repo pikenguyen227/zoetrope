@@ -358,6 +358,18 @@ class BridgeTests(unittest.TestCase):
                           for e in events(other, "status")],
                          [(adapter.iso(B + 60), "blocked", "status/t/one/@30")])
 
+    def test_an_undated_feed_status_does_not_hold_its_key(self):
+        # A feed record without an at never places, so the bridge still
+        # writes the line it names.
+        bridge = self.bridge()
+        undated = fed("status/t/one/@0", None, "working", "on it", at_source=None)
+        self.assertEqual((undated.get("at"), undated["at_quality"]), (None, "unknown"))
+        bridge.reach.add(undated)
+        row = identify(fm_task("t", "one", B + 70, [(B + 60, "working", "on it")]), 0)
+        lines, _ = observe(bridge, B + 70, [row])
+        self.assertEqual([e["status"]["lifecycle_key"] for e in events(lines, "status")],
+                         ["status/t/one/@0"])
+
     def test_a_status_without_identity_is_matched_as_before(self):
         # All three identity fields null (or absent, as test_an_unstamped_
         # status_is_always_bridged shows): a stamp still matches the feed's

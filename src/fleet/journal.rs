@@ -501,7 +501,8 @@ impl Lifecycle {
     ///
     /// A bridged spawn, teardown or status gives way only to the feed's own
     /// record of it: the attempt's spawn, its teardown, or, for a status, the
-    /// feed event whose key is the line's `lifecycle_key`. A status without
+    /// dated feed event whose key is the line's `lifecycle_key` (an undated
+    /// one never places, so it cannot stand in). A status without
     /// that key falls back to a feed status stamped at the same moment. So a
     /// status the feed lost still places from the bridge, and a session join,
     /// which no feed knows, always does. A status line with neither key nor
@@ -543,7 +544,7 @@ impl Lifecycle {
             .filter(|e| e.source.kind == SourceKind::Firstmate)
         {
             held.extend(mark(e));
-            if matches!(e.change, Change::Status { .. }) {
+            if matches!(e.change, Change::Status { .. }) && e.at.is_some() {
                 held.extend(feed_key(e).map(Mark::Line));
             }
         }
@@ -1326,6 +1327,24 @@ mod tests {
                 "bare"
             ]
         );
+    }
+
+    #[test]
+    fn an_undated_feed_status_does_not_hide_the_bridged_copy_of_its_key() {
+        let mut undated = feed(
+            event("status/impl/g/@40", "08:05:00", "impl", status("done")),
+            1,
+        );
+        undated.at = None;
+        undated.at_quality = AtQuality::Unknown;
+        let mut bridged = event("bridged", "08:05:00", "impl", status("done"));
+        if let Change::Status { status } = &mut bridged.change {
+            status.lifecycle_key = Some("status/impl/g/@40".into());
+        }
+        let mut store = Lifecycle::default();
+        store.insert([undated]);
+        store.insert([bridged]);
+        assert_eq!(ids(&store), ["bridged"]);
     }
 
     #[test]

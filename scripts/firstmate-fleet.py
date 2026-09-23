@@ -466,7 +466,8 @@ class Reach:
 
     A bridged spawn, teardown or status gives way only to the feed's own
     record of it: the attempt's spawn, its teardown, or, for a status, the
-    feed event whose key is the line's lifecycle_key. A status without that
+    dated feed event whose key is the line's lifecycle_key (an undated one
+    never places, so it cannot stand in). A status without that
     key falls back to a feed status stamped at the same moment. So a status
     the feed lost is bridged, and one the bridge sees before Firstmate records
     it is written and gives way once the feed has it. A status line with
@@ -504,7 +505,7 @@ class Reach:
         mark = self.mark(event)
         if mark is not None:
             self.marks.add(mark)
-        key = self.feed_key(event) if event.get("type") == "status" else None
+        key = self.feed_key(event) if event.get("type") == "status" and event.get("at") else None
         if key is not None:
             self.marks.add(("line", key))
 
