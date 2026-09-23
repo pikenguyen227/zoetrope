@@ -123,48 +123,36 @@ type Rate = (f64, f64, f64);
 /// https://platform.claude.com/docs/en/about-claude/pricing: Opus 5.5 is
 /// $4 in / $20 out with cache hits at 0.05x base; every other listed Claude
 /// model uses the standard 0.1x.
-fn listed(model: &str) -> Option<Rate> {
-    Some(match model {
-        "gpt-6-astra" => (10.0, 50.0, 0.1),
-        "gpt-5.6-sol" => (4.0, 20.0, 0.1),
-        "gpt-5.6-terra" => (2.0, 12.0, 0.1),
-        "gpt-5.6-luna" => (0.2, 1.2, 0.1),
-        "claude-opus-5-5" => (4.0, 20.0, 0.05),
-        "claude-opus-5"
-        | "claude-opus-4-8"
-        | "claude-opus-4-7"
-        | "claude-opus-4-6"
-        | "claude-opus-4-5"
-        | "claude-opus-4-5-20251101" => (5.0, 25.0, 0.1),
-        "claude-sonnet-5" => (2.0, 10.0, 0.1),
-        "claude-sonnet-4-6" | "claude-sonnet-4-5" | "claude-sonnet-4-5-20250929" => {
-            (3.0, 15.0, 0.1)
-        }
-        "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => (1.0, 5.0, 0.1),
-        _ => return None,
-    })
-}
-
-/// Every listed ID, the candidates `sibling` picks from.
-const LISTED: &[&str] = &[
-    "gpt-6-astra",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-    "claude-opus-5-5",
-    "claude-opus-5",
-    "claude-opus-4-8",
-    "claude-opus-4-7",
-    "claude-opus-4-6",
-    "claude-opus-4-5",
-    "claude-sonnet-5",
-    "claude-sonnet-4-6",
-    "claude-sonnet-4-5",
-    "claude-haiku-4-5",
+const RATES: &[(&str, Rate)] = &[
+    ("gpt-6-astra", (10.0, 50.0, 0.1)),
+    ("gpt-5.6-sol", (4.0, 20.0, 0.1)),
+    ("gpt-5.6-terra", (2.0, 12.0, 0.1)),
+    ("gpt-5.6-luna", (0.2, 1.2, 0.1)),
+    ("claude-opus-5-5", (4.0, 20.0, 0.05)),
+    ("claude-opus-5", (5.0, 25.0, 0.1)),
+    ("claude-opus-4-8", (5.0, 25.0, 0.1)),
+    ("claude-opus-4-7", (5.0, 25.0, 0.1)),
+    ("claude-opus-4-6", (5.0, 25.0, 0.1)),
+    ("claude-opus-4-5", (5.0, 25.0, 0.1)),
+    ("claude-opus-4-5-20251101", (5.0, 25.0, 0.1)),
+    ("claude-sonnet-5", (2.0, 10.0, 0.1)),
+    ("claude-sonnet-4-6", (3.0, 15.0, 0.1)),
+    ("claude-sonnet-4-5", (3.0, 15.0, 0.1)),
+    ("claude-sonnet-4-5-20250929", (3.0, 15.0, 0.1)),
+    ("claude-haiku-4-5", (1.0, 5.0, 0.1)),
+    ("claude-haiku-4-5-20251001", (1.0, 5.0, 0.1)),
 ];
 
+fn listed(model: &str) -> Option<Rate> {
+    RATES
+        .iter()
+        .find(|(id, _)| *id == model)
+        .map(|&(_, rate)| rate)
+}
+
 /// A model's family, tier and numeric version by ID shape:
-/// `claude-<tier>-<n>-<n>…` or `gpt-<n>.<n>-<tier>`. Anything else has no family.
+/// `claude-<tier>-<n>-<n>…[-<yyyymmdd>]` or `gpt-<n>.<n>-<tier>`; a snapshot
+/// date is not part of the version. Anything else has no family.
 fn shape(model: &str) -> Option<(&'static str, &str, Vec<u64>)> {
     let nums = |s: &str, sep| {
         s.split(sep)
@@ -173,6 +161,10 @@ fn shape(model: &str) -> Option<(&'static str, &str, Vec<u64>)> {
     };
     if let Some(rest) = model.strip_prefix("claude-") {
         let (tier, version) = rest.split_once('-')?;
+        let version = version
+            .rsplit_once('-')
+            .filter(|(_, d)| d.len() == 8 && d.bytes().all(|b| b.is_ascii_digit()))
+            .map_or(version, |(v, _)| v);
         return Some(("claude", tier, nums(version, '-').ok()?));
     }
     let (version, tier) = model.strip_prefix("gpt-")?.split_once('-')?;
@@ -183,14 +175,15 @@ fn shape(model: &str) -> Option<(&'static str, &str, Vec<u64>)> {
 /// newest version not above it, else the oldest above it. No family, no sibling.
 fn sibling(model: &str) -> Option<&'static str> {
     let (family, tier, version) = shape(model)?;
-    let mut same: Vec<(Vec<u64>, &'static str)> = LISTED
+    let mut same: Vec<(Vec<u64>, &'static str)> = RATES
         .iter()
-        .filter_map(|&id| {
+        .filter_map(|&(id, _)| {
             let (f, t, v) = shape(id)?;
             (f == family && t == tier).then_some((v, id))
         })
         .collect();
     same.sort();
+    same.dedup_by(|a, b| a.0 == b.0);
     same.iter()
         .rev()
         .find(|(v, _)| *v <= version)
@@ -335,7 +328,6 @@ mod tests {
             assert!(!s.approximate, "{model}");
             assert_eq!(s.cost_label(), format!("API est. ${usd:.3}"));
         }
-        assert!(LISTED.iter().all(|id| listed(id).is_some()));
     }
     #[test]
     fn opus_5_5_is_listed_with_its_own_cache_read_rate() {
@@ -349,6 +341,8 @@ mod tests {
         for (model, like) in [
             ("claude-opus-6", "claude-opus-5-5"),
             ("claude-opus-5-5-20260801", "claude-opus-5-5"),
+            ("claude-opus-5-20260301", "claude-opus-5"),
+            ("claude-opus-4-1-20250805", "claude-opus-4-5"),
             ("claude-sonnet-4", "claude-sonnet-4-5"),
             ("claude-haiku-5", "claude-haiku-4-5"),
             ("gpt-6-luna", "gpt-5.6-luna"),
