@@ -56,6 +56,29 @@ pub struct AgentNode {
     /// status badge, and whether the attempt is gone. `None` everywhere else.
     /// Presentation only, like `pulse`: the Fleet sets it after each sync.
     pub crew: Option<CrewMark>,
+    /// The attempt's no-mistakes validation run as of the playhead, on a
+    /// Fleet card: drawn in the description row's place. Presentation only,
+    /// like `crew`.
+    pub validation: Option<ValidationBand>,
+}
+
+/// A Fleet card's validation band, and the reading panel's step table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationBand {
+    /// The run's state in a glyph and a few words (`▸ test r1 · 2m`), first,
+    /// so a narrow card keeps it and drops the step glyphs.
+    pub glyph: char,
+    pub headline: String,
+    pub tone: CrewTone,
+    /// One glyph per step, in pipeline order.
+    pub steps: Vec<(char, CrewTone)>,
+    /// The reading panel's lines above the table: the run, how it was read.
+    pub heading: Vec<String>,
+    /// One row per step: glyph, tone, text.
+    pub rows: Vec<(char, CrewTone, String)>,
+    /// The row of the step the run is at (or ended on), which a panel too
+    /// short for the whole table keeps in view.
+    pub current: Option<usize>,
 }
 
 /// A Fleet card's lifecycle badge.
@@ -95,7 +118,7 @@ impl CrewTone {
         }
     }
 
-    fn color(self, palette: &rataflow::Palette) -> ratatui::style::Color {
+    pub(crate) fn color(self, palette: &rataflow::Palette) -> ratatui::style::Color {
         match self {
             Self::Attention => ATTENTION,
             Self::Failed => palette.error,
@@ -224,7 +247,11 @@ impl NodeContent for AgentNode {
             lines.push(Line::from(Span::styled(badge, style)));
         }
 
-        if let Some(desc) = self.description.as_ref().filter(|d| !d.is_empty()) {
+        // A validation run takes the description's row, keeping the card's
+        // six: its `provider · session` is the least a crew card says.
+        if let Some(band) = &self.validation {
+            lines.push(band_line(band, inner_w, bg_style, &palette, dimmed));
+        } else if let Some(desc) = self.description.as_ref().filter(|d| !d.is_empty()) {
             let desc = truncate(desc, inner_w);
             lines.push(Line::from(Span::styled(desc, bg_style.fg(palette.subtle))));
         }
@@ -284,6 +311,51 @@ impl NodeContent for AgentNode {
             Paragraph::new(line).style(bg_style).render(rect, buf);
         }
     }
+}
+
+/// The band's row: the headline, then the step glyphs as far as they fit.
+/// It reads left-first, so a narrow card keeps what matters: the glyphs go
+/// before the headline does, and a strip that cannot fit whole ends in `…`
+/// rather than passing for a shorter pipeline.
+fn band_line(
+    band: &ValidationBand,
+    width: usize,
+    bg: Style,
+    palette: &rataflow::Palette,
+    dimmed: bool,
+) -> Line<'static> {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let color = |tone: CrewTone| {
+        if dimmed {
+            palette.muted
+        } else {
+            tone.color(palette)
+        }
+    };
+    let mut style = bg.fg(color(band.tone));
+    if band.tone == CrewTone::Attention && !dimmed {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    let head = truncate(&format!("{} {}", band.glyph, band.headline), width);
+    let mut used = head.width();
+    let mut spans = vec![Span::styled(head, style)];
+    let strip: usize = band.steps.iter().map(|(g, _)| g.width().unwrap_or(1)).sum();
+    // A space, and at least one glyph beside the ellipsis.
+    if !band.steps.is_empty() && used + 3 <= width {
+        spans.push(Span::styled(" ", bg));
+        used += 1;
+        let whole = used + strip <= width;
+        for (glyph, tone) in &band.steps {
+            let w = glyph.width().unwrap_or(1);
+            if !whole && used + w + 1 > width {
+                spans.push(Span::styled("…", bg.fg(palette.muted)));
+                break;
+            }
+            spans.push(Span::styled(glyph.to_string(), bg.fg(color(*tone))));
+            used += w;
+        }
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -351,6 +423,7 @@ mod tests {
             interactive: false,
             pulse: false,
             crew: None,
+            validation: None,
         };
         let ctx = NodeRenderContext {
             id: "main",
@@ -364,6 +437,110 @@ mod tests {
         let mut buf = Buffer::empty(area);
         node.render(&ctx, &mut buf);
         buf
+    }
+
+    /// A card's inner rows, drawn at `width`.
+    fn card_rows(node: &AgentNode, width: u16) -> Vec<String> {
+        use rataflow::Theme;
+        use rataflow::types::Position;
+        let area = ratatui::layout::Rect::new(0, 0, width, 8);
+        let ctx = NodeRenderContext {
+            id: "main",
+            area,
+            selected: false,
+            dragging: false,
+            position_absolute: Position::new(0.0, 0.0),
+            theme: Theme::default(),
+            animation_phase: 0,
+        };
+        let mut buf = Buffer::empty(area);
+        node.render(&ctx, &mut buf);
+        (1..area.height - 1)
+            .map(|y| {
+                (1..area.width - 1)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    fn validating() -> AgentNode {
+        use CrewTone::*;
+        let steps = "✓✓✓▸·····".chars().enumerate();
+        AgentNode {
+            title: "impl".into(),
+            description: Some("codex · c0c0c0c0-0000-4000-8000-000000000002".into()),
+            status: AgentStatus::Idle,
+            tool_count: 7,
+            last_tool: Some("shell".into()),
+            output_tokens: 0,
+            usage: crate::usage::Summary {
+                input: 1000,
+                output: 200,
+                recorded: true,
+                usd: Some(0.01),
+                ..crate::usage::Summary::default()
+            },
+            interactive: true,
+            pulse: false,
+            crew: Some(CrewMark {
+                label: "done 08:07:40".into(),
+                tone: Settled,
+                dimmed: false,
+            }),
+            validation: Some(ValidationBand {
+                glyph: '▸',
+                headline: "test r1 · 2m".into(),
+                tone: Active,
+                steps: steps
+                    .map(|(i, g)| (g, if i < 3 { Settled } else { Active }))
+                    .collect(),
+                heading: Vec::new(),
+                rows: Vec::new(),
+                current: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_validation_band_takes_the_description_row_and_keeps_six() {
+        let rows = card_rows(&validating(), 32);
+        assert_eq!(rows.len(), 6, "{rows:#?}");
+        assert!(rows[0].ends_with("impl"), "{rows:#?}");
+        assert!(rows[1].starts_with("✓ done"), "{rows:#?}");
+        assert_eq!(rows[2], "▸ test r1 · 2m ✓✓✓▸·····");
+        assert!(rows[3].starts_with("⚒ 7"), "{rows:#?}");
+        assert!(rows.iter().all(|r| !r.contains("c0c0c0c0")), "{rows:#?}");
+        assert!(rows[5].contains("API est."), "{rows:#?}");
+        // Without a run, the description is back.
+        let mut plain = validating();
+        plain.validation = None;
+        assert!(card_rows(&plain, 32)[2].starts_with("codex · c0c0"));
+    }
+
+    #[test]
+    fn a_narrow_card_keeps_the_headline_and_drops_glyphs_first() {
+        let node = validating();
+        // Room for part of the strip: it ends in an ellipsis, never passing
+        // for a shorter pipeline.
+        assert_eq!(card_rows(&node, 24)[2], "▸ test r1 · 2m ✓✓✓▸…");
+        // No room for a glyph beside the ellipsis: the headline alone.
+        assert_eq!(card_rows(&node, 19)[2], "▸ test r1 · 2m");
+        // Narrower still (8 columns inside): the headline itself is cut,
+        // left-first.
+        assert_eq!(card_rows(&node, 12)[2], "▸ test …");
+        for width in 10..=40 {
+            let rows = card_rows(&node, width);
+            let inner = usize::from(width.saturating_sub(4));
+            for row in &rows {
+                assert!(
+                    unicode_width::UnicodeWidthStr::width(row.as_str()) <= inner,
+                    "{row:?} overflows a {width}-column card"
+                );
+            }
+        }
     }
 
     #[test]

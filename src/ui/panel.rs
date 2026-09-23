@@ -4,7 +4,8 @@
 //! renders the selected agent's description, model, status, timing, usage, and a
 //! scrollable list of recent tool calls (name + summary + ✓/✗/⏳). All data
 //! comes from the `SessionModel`, keyed by the selected node id. A short panel
-//! gives its rows to the tool list first (see [`fit_layout`]).
+//! gives its rows to the tool list first (see [`fit_layout`]). A Fleet card
+//! with a validation run adds its step table under the header.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -14,6 +15,7 @@ use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 
 use crate::state::App;
 use crate::state::session::{AgentInfo, ToolState};
+use crate::ui::nodes::ValidationBand;
 use crate::ui::{truncate, truncate_tail, wrap};
 
 /// Line cap for the prompt in the **provenance** header only — it sits in a
@@ -66,6 +68,10 @@ fn era_flags<'a>(
 /// `app.detail_scroll` for the tool-call list scroll offset.
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, agent_id: &str) {
     let palette = app.flow.theme.palette();
+    let band = app
+        .flow
+        .node(agent_id)
+        .and_then(|node| node.content.validation.clone());
     // Split the borrows up front: the era cache is written while the session is
     // read, which a whole-`app` borrow would forbid.
     let App {
@@ -123,6 +129,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, agent_id: &str) {
     };
 
     let list = tool_list(era_cache, agent_id, agent, session, inner.width as usize);
+    let wanted = band
+        .as_ref()
+        .map_or(0, |b| 1 + b.heading.len() + b.rows.len());
     let layout = fit_layout(
         inner.height,
         list.total,
@@ -131,6 +140,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, agent_id: &str) {
             let lines = header_lines(agent, inner.width as usize, compact, &palette);
             header_height(agent, lines.len(), inner.height, compact)
         },
+        wanted,
         provenance.is_some(),
         wrap_prov(prov_prompt, PROMPT_MAX_LINES).len(),
         wrap_prov(prov_thought, PROMPT_MAX_LINES).len(),
@@ -143,12 +153,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, agent_id: &str) {
     } else {
         0
     };
-    let [header_area, prov_area, tools_area] = Layout::vertical([
+    let [header_area, band_area, prov_area, tools_area] = Layout::vertical([
         Constraint::Length(layout.header),
+        Constraint::Length(layout.band),
         Constraint::Length(prov_rows),
         Constraint::Fill(1),
     ])
     .areas(inner);
+    let band = band.map_or_else(Vec::new, |b| {
+        band_lines(&b, inner.width as usize, usize::from(layout.band), &palette)
+    });
 
     // Scroll indicator whenever the list has rows out of view (the tool
     // block's top border takes one of its rows).
@@ -173,6 +187,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, agent_id: &str) {
     }
 
     render_header(frame, header_area, header, &palette);
+    if layout.band > 0 {
+        frame.render_widget(Paragraph::new(band).style(bg), band_area);
+    }
     if layout.provenance {
         render_provenance(frame, prov_area, &prov_prompt, &prov_thought, &palette);
     }
@@ -202,6 +219,8 @@ struct PanelLayout {
     header: u16,
     /// The header folds the usage rows into one line.
     compact: bool,
+    /// Rows for the validation section.
+    band: u16,
     /// Whether the provenance block is drawn at all.
     provenance: bool,
     /// Line caps for the provenance prompt and thought.
@@ -209,17 +228,20 @@ struct PanelLayout {
     thought_lines: usize,
 }
 
-/// Share `height` rows between header, provenance and the tool list. With room,
-/// everything is drawn in full. Otherwise the tool list keeps up to
-/// [`TOOLS_MIN_ROWS`] rows (plus its border) and the context above it gives way
-/// in order: the header folds its usage rows into one line, then the
-/// provenance prompt and thought lose lines (ellipsized), longest first, and
-/// finally the provenance block goes.
+/// Share `height` rows between header, validation section, provenance and
+/// the tool list. With room, everything is drawn in full. Otherwise the tool
+/// list keeps up to [`TOOLS_MIN_ROWS`] rows (plus its border) and the context
+/// above it gives way in order: the header folds its usage rows into one line,
+/// then the provenance prompt and thought lose lines (ellipsized), longest
+/// first, then the provenance block goes, and then the validation table loses
+/// its last rows (it goes rather than keep its rule alone).
+#[allow(clippy::too_many_arguments)]
 fn fit_layout(
     height: u16,
     list_rows: usize,
     no_calls: bool,
     header_height: impl Fn(bool) -> u16,
+    band: usize,
     provenance: bool,
     prompt: usize,
     thought: usize,
@@ -229,20 +251,26 @@ fn fit_layout(
     let tools = (want.min(usize::from(TOOLS_MIN_ROWS)) + 1) as u16;
     let room = height.saturating_sub(tools);
     let prov_rows = |p: usize, t: usize| if provenance { (1 + p + t) as u16 } else { 0 };
+    let band = u16::try_from(band).unwrap_or(u16::MAX);
 
     let full = header_height(false);
-    if full + prov_rows(prompt, thought) <= room {
+    if full + band + prov_rows(prompt, thought) <= room {
         return PanelLayout {
             header: full,
             compact: false,
+            band,
             provenance,
             prompt_lines: PROMPT_MAX_LINES,
             thought_lines: PROMPT_MAX_LINES,
         };
     }
     let header = header_height(true);
+    let band = match band.min(room.saturating_sub(header)) {
+        0 | 1 => 0,
+        rows => rows,
+    };
     let (mut p, mut t) = (prompt, thought);
-    let budget = room.saturating_sub(header);
+    let budget = room.saturating_sub(header + band);
     while provenance && prov_rows(p, t) > budget && p + t > 0 {
         if p > t { p -= 1 } else { t -= 1 }
     }
@@ -250,6 +278,7 @@ fn fit_layout(
     PanelLayout {
         header,
         compact: true,
+        band,
         provenance,
         prompt_lines: p,
         thought_lines: t,
@@ -266,6 +295,69 @@ fn header_height(agent: &AgentInfo, rows: usize, panel_height: u16, compact: boo
     };
     let cap = base.max(panel_height / 3);
     (rows as u16).clamp(base, cap)
+}
+
+/// A Fleet card's validation section in `height` rows: a rule, the run's
+/// heading, then one row per step. Rows are cut, not wrapped. A table too
+/// long for its rows keeps the step the run is at and those before it, and
+/// says how many it left out on either side.
+fn band_lines(
+    band: &ValidationBand,
+    width: usize,
+    height: usize,
+    palette: &rataflow::Palette,
+) -> Vec<Line<'static>> {
+    let bg = Style::default().bg(palette.surface);
+    let mut lines = vec![Line::from(Span::styled(
+        "─ validation ".to_string() + &"─".repeat(width.saturating_sub(13)),
+        bg.fg(palette.muted),
+    ))];
+    for text in &band.heading {
+        lines.push(Line::from(Span::styled(
+            truncate(text, width),
+            bg.fg(palette.subtle),
+        )));
+    }
+    let (start, end) = table_window(
+        band.rows.len(),
+        band.current,
+        height.saturating_sub(lines.len()),
+    );
+    let note = |text: String| Line::from(Span::styled(text, bg.fg(palette.muted)));
+    if start > 0 {
+        lines.push(note(format!("… {start} earlier")));
+    }
+    for (glyph, tone, text) in &band.rows[start..end] {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{glyph} "), bg.fg(tone.color(palette))),
+            Span::styled(truncate(text, width.saturating_sub(2)), bg.fg(palette.text)),
+        ]));
+    }
+    if end < band.rows.len() {
+        lines.push(note(format!("… {} more", band.rows.len() - end)));
+    }
+    lines.truncate(height);
+    lines
+}
+
+/// Which of `len` table rows fit in `room` lines, as `start..end`: all of
+/// them, or a window ending at `current` (else the first rows), with a line
+/// for each side it leaves rows out of.
+fn table_window(len: usize, current: Option<usize>, room: usize) -> (usize, usize) {
+    if len <= room {
+        return (0, len);
+    }
+    let through = current.map_or(0, |c| c.min(len - 1) + 1);
+    let mut shown = room;
+    loop {
+        let end = through.max(shown.min(len));
+        let start = end.saturating_sub(shown);
+        let notes = usize::from(start > 0) + usize::from(end < len);
+        if shown + notes <= room || shown == 0 {
+            return (start, end);
+        }
+        shown -= 1;
+    }
 }
 
 fn render_header(frame: &mut Frame, area: Rect, lines: Vec<Line>, palette: &rataflow::Palette) {
@@ -939,20 +1031,58 @@ mod tests {
     fn a_short_panel_trims_context_before_tools() {
         let header = |compact: bool| if compact { 6 } else { 8 };
         // Room for everything: nothing gives way.
-        let full = fit_layout(40, 7, false, header, true, 6, 6);
+        let full = fit_layout(40, 7, false, header, 0, true, 6, 6);
         assert!(!full.compact && full.provenance);
         assert_eq!((full.prompt_lines, full.thought_lines), (6, 6));
         // 25 rows, 7 calls (8 with the border): the header folds, then the
         // longer provenance part loses lines first.
-        let fit = fit_layout(25, 7, false, header, true, 6, 3);
+        let fit = fit_layout(25, 7, false, header, 0, true, 6, 3);
         assert!(fit.compact && fit.provenance);
         assert_eq!(fit.header, 6);
         assert_eq!((fit.prompt_lines, fit.thought_lines), (6, 3));
-        let fit = fit_layout(22, 7, false, header, true, 6, 6);
+        let fit = fit_layout(22, 7, false, header, 0, true, 6, 6);
         assert_eq!((fit.prompt_lines, fit.thought_lines), (4, 3));
         // No room at all for provenance: it goes rather than squeezing tools.
-        let fit = fit_layout(15, 7, false, header, true, 6, 6);
+        let fit = fit_layout(15, 7, false, header, 0, true, 6, 6);
         assert!(!fit.provenance);
+    }
+
+    #[test]
+    fn a_validation_table_gives_way_after_provenance_and_before_tools() {
+        let header = |compact: bool| if compact { 6 } else { 8 };
+        // Room for everything.
+        let full = fit_layout(50, 7, false, header, 12, true, 6, 6);
+        assert_eq!(
+            (full.band, full.compact, full.provenance),
+            (12, false, true)
+        );
+        // Short: the header folds and provenance gives way before the table.
+        let fit = fit_layout(28, 7, false, header, 12, true, 6, 6);
+        assert_eq!((fit.header, fit.band, fit.provenance), (6, 12, true));
+        assert_eq!(fit.prompt_lines + fit.thought_lines, 1);
+        let fit = fit_layout(27, 7, false, header, 12, true, 6, 6);
+        assert_eq!((fit.header, fit.band, fit.provenance), (6, 12, false));
+        // Shorter: the table loses rows; the tools keep theirs.
+        let fit = fit_layout(20, 7, false, header, 12, true, 6, 6);
+        assert_eq!((fit.band, fit.provenance), (6, false));
+        // A rule alone says nothing: the table goes.
+        let fit = fit_layout(15, 7, false, header, 12, true, 6, 6);
+        assert_eq!(fit.band, 0);
+        assert_eq!(fit_layout(40, 7, false, header, 0, true, 6, 6).band, 0);
+    }
+
+    #[test]
+    fn a_cut_table_keeps_the_current_step_and_the_ones_before_it() {
+        // Room for all nine: all nine.
+        assert_eq!(table_window(9, Some(3), 9), (0, 9));
+        // At test (row 3) with four lines: review and test, a note each side.
+        assert_eq!(table_window(9, Some(3), 4), (2, 4));
+        // Early in the run: from the top, and a note for the rest.
+        assert_eq!(table_window(9, Some(0), 4), (0, 3));
+        // Ended on the last step: the end of the table.
+        assert_eq!(table_window(9, Some(8), 4), (6, 9));
+        assert_eq!(table_window(9, None, 3), (0, 2));
+        assert_eq!(table_window(9, Some(3), 0), (4, 4));
     }
 
     #[test]

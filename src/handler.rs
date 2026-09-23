@@ -385,6 +385,7 @@ mod tests {
                         interactive: true,
                         pulse: false,
                         crew: None,
+                        validation: None,
                     },
                 ))
                 .unwrap();
@@ -467,6 +468,7 @@ mod tests {
                     interactive: false,
                     pulse: false,
                     crew: None,
+                    validation: None,
                 },
             )
         };
@@ -523,6 +525,7 @@ mod tests {
                 interactive: false,
                 pulse: false,
                 crew: None,
+                validation: None,
             },
         );
         app.flow.add_node(node).unwrap();
@@ -557,6 +560,7 @@ mod tests {
                 interactive: false,
                 pulse: false,
                 crew: None,
+                validation: None,
             },
         );
         app.flow.add_node(node).unwrap();

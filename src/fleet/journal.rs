@@ -17,6 +17,12 @@
 //! Coverage is what keeps the timeline honest: a moment outside every recorded
 //! [`Change::Coverage`] window is a gap, where the last record before it is
 //! shown as unverified, never as a reconstruction.
+//!
+//! The adapter also journals the no-mistakes validation run Firstmate
+//! attributes to an attempt ([`Change::Validation`]), read through the
+//! no-mistakes CLI, with its own coverage ([`Change::ValidationCoverage`]):
+//! lifecycle coverage says nothing about whether anyone was reading a run.
+//! A viewer that predates these types skips them as lines it does not know.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,6 +78,8 @@ pub enum SourceKind {
     Bridge,
     /// A lifecycle feed Firstmate writes itself.
     Firstmate,
+    /// The adapter's reads of a no-mistakes run through its CLI.
+    NoMistakes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -166,6 +174,152 @@ pub struct Busy {
     pub state: String,
 }
 
+/// What a [`Validation`] event records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    /// The run was created: `at` is recovered from its ID (`derived`).
+    Started,
+    /// A read found the run changed.
+    Seen,
+    /// A read found a gate newly waiting on a decision.
+    Parked,
+    /// A read found the run newly completed, failed or cancelled.
+    Ended,
+    /// The daemon behind the run's record was down: a record still saying
+    /// running is a dead instrument's, so the run is unverified.
+    DaemonDown,
+    /// The run's record could no longer be found.
+    Gone,
+}
+
+impl Phase {
+    /// Whether the event carries the state a read found.
+    pub fn is_read(self) -> bool {
+        matches!(self, Self::Seen | Self::Parked | Self::Ended)
+    }
+}
+
+/// One pipeline step as a read found it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Step {
+    pub step: String,
+    /// `pending`, `running`, `fixing`, `awaiting_approval`, `completed`,
+    /// `skipped` or `failed`, as no-mistakes words it.
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub findings: Option<u32>,
+    /// How long a settled step ran, time parked at a gate excluded: a
+    /// duration, never a place on the timeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// An active step's round: `round 1`, `fix 2`, `auto-fix 1/3`, ...
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<String>,
+    /// When that round began, derived from the age the read gave, to the
+    /// second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round_since: Option<DateTime<Utc>>,
+}
+
+/// A gate waiting on a decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gate {
+    pub step: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub findings: u32,
+    /// Findings only the operator may decide.
+    #[serde(default)]
+    pub ask_user: u32,
+}
+
+/// A no-mistakes run, as the adapter read it. `at` is when it read (or, for
+/// [`Phase::Started`], the run's creation); what changed, changed after
+/// `since`, the read before, and at or before `at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Validation {
+    pub run: String,
+    pub phase: Phase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<DateTime<Utc>>,
+    /// The run record's status word, on a read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<Step>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<Gate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl Validation {
+    fn validate(&self, at: Option<DateTime<Utc>>) -> Result<(), String> {
+        text(&self.run, "run", 64)?;
+        if self.phase.is_read() != self.status.is_some() {
+            return Err("a status is required exactly on a read".into());
+        }
+        if self
+            .since
+            .is_some_and(|since| at.is_none_or(|at| since > at))
+        {
+            return Err("since must precede the read".into());
+        }
+        if self.steps.len() > 64 {
+            return Err("too many steps".into());
+        }
+        for step in &self.steps {
+            text(&step.step, "step", 64)?;
+            text(&step.status, "step status", 64)?;
+            if let Some(round) = &step.round {
+                text(round, "round", 64)?;
+            }
+        }
+        if let Some(gate) = &self.gate {
+            text(&gate.step, "gate step", 64)?;
+        }
+        for value in [&self.status, &self.outcome].into_iter().flatten() {
+            text(value, "run status", 64)?;
+        }
+        for value in [&self.branch, &self.pr, &self.error].into_iter().flatten() {
+            text(value, "run field", MAX_TEXT)?;
+        }
+        Ok(())
+    }
+
+    /// The step the run is at: the first that is neither settled nor waiting
+    /// to start, else the first that failed.
+    pub fn current(&self) -> Option<&Step> {
+        self.steps
+            .iter()
+            .find(|s| {
+                !matches!(
+                    s.status.as_str(),
+                    "completed" | "skipped" | "pending" | "failed"
+                )
+            })
+            .or_else(|| self.steps.iter().find(|s| s.status == "failed"))
+    }
+}
+
+/// An interval in which the adapter was reading one run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunWindow {
+    pub run: String,
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_gap: Option<u32>,
+}
+
 /// A closed interval of wall-clock time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Window {
@@ -215,6 +369,15 @@ pub enum Change {
     Coverage {
         coverage: Window,
     },
+    /// The no-mistakes run Firstmate attributed to the attempt, as read.
+    Validation {
+        validation: Box<Validation>,
+    },
+    /// An interval in which the adapter was reading that run. Its own type,
+    /// so a viewer that predates it can never count it as lifecycle coverage.
+    ValidationCoverage {
+        validation_coverage: RunWindow,
+    },
 }
 
 impl Change {
@@ -240,7 +403,17 @@ impl Change {
             Self::TornDown { .. } => "torn_down",
             Self::Busy { .. } => "busy",
             Self::Coverage { .. } => "coverage",
+            Self::Validation { .. } => "validation",
+            Self::ValidationCoverage { .. } => "validation_coverage",
         }
+    }
+
+    /// Whether this says when someone was observing rather than what happened.
+    pub fn is_coverage(&self) -> bool {
+        matches!(
+            self,
+            Self::Coverage { .. } | Self::ValidationCoverage { .. }
+        )
     }
 }
 
@@ -307,6 +480,15 @@ impl LifecycleEvent {
                 text(&steer.msg, "steer message", MAX_TEXT)?
             }
             Change::Busy { busy } => text(&busy.state, "busy state", 64)?,
+            Change::Validation { validation } => validation.validate(self.at)?,
+            Change::ValidationCoverage {
+                validation_coverage: window,
+            } => {
+                text(&window.run, "run", 64)?;
+                if self.at.is_none() || window.from > window.to {
+                    return Err("coverage needs a time and from <= to".into());
+                }
+            }
             _ => {}
         }
         let attempt = self
@@ -404,6 +586,86 @@ impl AttemptState {
     }
 }
 
+/// What the journal says about one attempt's validation run, as of a moment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunView {
+    pub run: String,
+    /// When the run was created, and how that is known.
+    pub started: Option<(DateTime<Utc>, AtQuality)>,
+    /// The newest read: when, and what it found.
+    pub read: Option<(DateTime<Utc>, Validation)>,
+    /// When each step reached what the newest read shows it doing: the read
+    /// that first showed it, and the read before that (the change came after).
+    pub reached: BTreeMap<String, (DateTime<Utc>, Option<DateTime<Utc>>)>,
+    /// A record after the newest read that the reading lost its footing: the
+    /// daemon was down, or the record gone.
+    pub lost: Option<(Phase, DateTime<Utc>)>,
+    /// Its first record, for choosing an attempt's newest run.
+    first: DateTime<Utc>,
+}
+
+impl RunView {
+    /// Whether the newest read found the run ended: its state can no longer
+    /// change, read or not.
+    pub fn ended(&self) -> bool {
+        self.read
+            .as_ref()
+            .is_some_and(|(_, v)| v.phase == Phase::Ended)
+    }
+
+    /// When the run began, as far as the journal knows.
+    pub fn start(&self) -> DateTime<Utc> {
+        self.started
+            .map_or(self.first, |(at, _)| at.min(self.first))
+    }
+}
+
+/// Merge windows that touch or overlap, ascending.
+fn merge(mut windows: Vec<Window>) -> Vec<Window> {
+    windows.sort();
+    let mut merged: Vec<Window> = Vec::with_capacity(windows.len());
+    for window in windows {
+        match merged.last_mut() {
+            // Segments chain end to start; touching ones merge, and the
+            // feed's and the bridge's overlap.
+            Some(last) if window.from <= last.to => {
+                if window.to >= last.to {
+                    last.to = window.to;
+                    last.max_gap = window.max_gap;
+                }
+            }
+            _ => merged.push(window),
+        }
+    }
+    merged
+}
+
+fn within(windows: &[Window], t: DateTime<Utc>) -> bool {
+    let i = windows.partition_point(|w| w.from <= t);
+    i > 0 && t <= windows[i - 1].to
+}
+
+/// Whether the newest of `windows` still counts as observing at `now`: a
+/// running adapter's newest segment trails the present by up to a checkpoint
+/// (at most its `max_gap`) plus a poll (within `max_gap`), so twice its
+/// `max_gap` of lag still counts, or two minutes for a segment that does not
+/// say.
+fn fresh(windows: &[Window], now: DateTime<Utc>) -> bool {
+    windows.last().is_some_and(|w| {
+        let lag = chrono::Duration::seconds(w.max_gap.map_or(60, i64::from) * 2);
+        w.from <= now && now - w.to <= lag
+    })
+}
+
+/// A run's life on the timeline: from its first record until it ended or its
+/// record was gone, and the windows in which it was read.
+#[derive(Debug)]
+struct Reading {
+    from: DateTime<Utc>,
+    until: Option<DateTime<Utc>>,
+    windows: Vec<Window>,
+}
+
 /// The deduplicated set of lifecycle events, kept in timeline order.
 #[derive(Debug, Default)]
 pub struct Lifecycle {
@@ -412,6 +674,8 @@ pub struct Lifecycle {
     order: Vec<String>,
     /// Merged coverage windows, ascending and disjoint.
     coverage: Vec<Window>,
+    /// Each attempt's validation runs: when they lived and were read.
+    readings: BTreeMap<(Attempt, String), Reading>,
     /// Whether coverage applies: something wrote coverage, or the bridge,
     /// which only ever sees part of the time, wrote anything.
     gapped: bool,
@@ -464,29 +728,64 @@ impl Lifecycle {
             .collect();
         dated.sort_by(|a, b| a.order().cmp(&b.order()));
         self.order = dated.iter().map(|e| e.id.clone()).collect();
-        let mut windows: Vec<Window> = self
-            .events
-            .values()
-            .filter_map(|e| match e.change {
-                Change::Coverage { coverage } => Some(coverage),
-                _ => None,
-            })
-            .collect();
-        windows.sort();
-        self.coverage.clear();
-        for window in windows {
-            match self.coverage.last_mut() {
-                // Segments chain end to start; touching ones merge, and the
-                // feed's and the bridge's overlap.
-                Some(last) if window.from <= last.to => {
-                    if window.to >= last.to {
-                        last.to = window.to;
-                        last.max_gap = window.max_gap;
-                    }
-                }
-                _ => self.coverage.push(window),
+        self.coverage = merge(
+            self.events
+                .values()
+                .filter_map(|e| match e.change {
+                    Change::Coverage { coverage } => Some(coverage),
+                    _ => None,
+                })
+                .collect(),
+        );
+        let mut readings: BTreeMap<(Attempt, String), (Reading, Vec<Window>)> = BTreeMap::new();
+        for event in self.ordered() {
+            let (Some(attempt), Some(at)) = (&event.attempt, event.at) else {
+                continue;
+            };
+            let (run, window, end) = match &event.change {
+                Change::Validation { validation } => (
+                    &validation.run,
+                    None,
+                    matches!(validation.phase, Phase::Ended | Phase::Gone),
+                ),
+                Change::ValidationCoverage {
+                    validation_coverage: w,
+                } => (
+                    &w.run,
+                    Some(Window {
+                        from: w.from,
+                        to: w.to,
+                        max_gap: w.max_gap,
+                    }),
+                    false,
+                ),
+                _ => continue,
+            };
+            let (reading, windows) = readings
+                .entry((attempt.clone(), run.clone()))
+                .or_insert_with(|| {
+                    (
+                        Reading {
+                            from: at,
+                            until: None,
+                            windows: Vec::new(),
+                        },
+                        Vec::new(),
+                    )
+                });
+            reading.from = reading.from.min(window.map_or(at, |w| w.from));
+            windows.extend(window);
+            if end && reading.until.is_none() {
+                reading.until = Some(at);
             }
         }
+        self.readings = readings
+            .into_iter()
+            .map(|(key, (mut reading, windows))| {
+                reading.windows = merge(windows);
+                (key, reading)
+            })
+            .collect();
         self.gapped = !self.coverage.is_empty()
             || self
                 .events
@@ -590,24 +889,95 @@ impl Lifecycle {
 
     /// Whether `t` lies inside a window someone was observing.
     pub fn covered(&self, t: DateTime<Utc>) -> bool {
-        if !self.gapped {
-            return true;
-        }
-        let i = self.coverage.partition_point(|w| w.from <= t);
-        i > 0 && t <= self.coverage[i - 1].to
+        !self.gapped || within(&self.coverage, t)
     }
 
-    /// Whether the adapter is still observing at `now`. While it runs, its
-    /// newest segment (bridge or feed) trails the present by up to a
-    /// checkpoint (at most its `max_gap`) plus a poll (within `max_gap`), so
-    /// twice its `max_gap` of lag still counts, or two minutes for a segment
-    /// that does not say; past it, the adapter has stopped.
+    /// Whether the adapter is still observing at `now`: its newest segment
+    /// (bridge or feed) is fresh by the rule of [`fresh`]; past it, the
+    /// adapter has stopped.
     pub fn observing(&self, now: DateTime<Utc>) -> bool {
-        !self.gapped
-            || self.coverage.last().is_some_and(|w| {
-                let lag = chrono::Duration::seconds(w.max_gap.map_or(60, i64::from) * 2);
-                w.from <= now && now - w.to <= lag
+        !self.gapped || fresh(&self.coverage, now)
+    }
+
+    /// Whether `run`, attributed to `attempt`, was verified at the moment
+    /// shown (`None`: the live edge): parked, whether a window in which the
+    /// adapter read it holds `t`; at the live edge, whether it still reads it.
+    /// Lifecycle coverage says nothing about this.
+    pub fn run_verified(&self, attempt: &Attempt, run: &str, t: Option<DateTime<Utc>>) -> bool {
+        self.readings
+            .get(&(attempt.clone(), run.to_owned()))
+            .is_some_and(|r| match t {
+                Some(t) => within(&r.windows, t),
+                None => fresh(&r.windows, Utc::now()),
             })
+    }
+
+    /// Whether any validation run was alive but unread at `t`: begun, not yet
+    /// ended or gone, and outside every window in which it was read.
+    pub fn unread(&self, t: DateTime<Utc>) -> bool {
+        self.readings
+            .values()
+            .any(|r| r.from <= t && r.until.is_none_or(|until| t < until) && !within(&r.windows, t))
+    }
+
+    /// Whether the journal holds any validation run.
+    pub fn has_runs(&self) -> bool {
+        !self.readings.is_empty()
+    }
+
+    /// Each attempt's newest validation run, from the events at or before
+    /// `t`; all of them for `None` (the live edge). An older run of the same
+    /// attempt (one cancelled for a newer push, say) gives way to it.
+    pub fn validation_at(&self, t: Option<DateTime<Utc>>) -> BTreeMap<Attempt, RunView> {
+        let mut runs: BTreeMap<(Attempt, String), RunView> = BTreeMap::new();
+        for event in self.ordered() {
+            let at = event.at.expect("ordered events are dated");
+            if t.is_some_and(|t| at > t) {
+                break;
+            }
+            let (Some(attempt), Change::Validation { validation: v }) =
+                (&event.attempt, &event.change)
+            else {
+                continue;
+            };
+            let view = runs
+                .entry((attempt.clone(), v.run.clone()))
+                .or_insert_with(|| RunView {
+                    run: v.run.clone(),
+                    started: None,
+                    read: None,
+                    reached: BTreeMap::new(),
+                    lost: None,
+                    first: at,
+                });
+            match v.phase {
+                Phase::Started => view.started = Some((at, event.at_quality)),
+                Phase::DaemonDown | Phase::Gone => view.lost = Some((v.phase, at)),
+                Phase::Seen | Phase::Parked | Phase::Ended => {
+                    let before = view.read.as_ref().map(|(_, r)| &r.steps);
+                    for step in &v.steps {
+                        let same = before
+                            .and_then(|steps| steps.iter().find(|s| s.step == step.step))
+                            .is_some_and(|s| s.status == step.status && s.round == step.round);
+                        if !same {
+                            view.reached.insert(step.step.clone(), (at, v.since));
+                        }
+                    }
+                    view.read = Some((at, (**v).clone()));
+                    view.lost = None;
+                }
+            }
+        }
+        let mut newest: BTreeMap<Attempt, RunView> = BTreeMap::new();
+        for ((attempt, _), view) in runs {
+            if newest
+                .get(&attempt)
+                .is_none_or(|kept| view.start() >= kept.start())
+            {
+                newest.insert(attempt, view);
+            }
+        }
+        newest
     }
 
     /// Every attempt's state from the events at or before `t`; all of them for
@@ -622,6 +992,13 @@ impl Lifecycle {
             let Some(attempt) = &event.attempt else {
                 continue;
             };
+            if matches!(
+                event.change,
+                Change::Validation { .. } | Change::ValidationCoverage { .. }
+            ) {
+                // A run's reads are not the attempt's lifecycle (validation_at).
+                continue;
+            }
             let state = states.entry(attempt.clone()).or_default();
             match &event.change {
                 Change::Spawned { spawned } => {
@@ -681,7 +1058,7 @@ impl Lifecycle {
     /// The newest point event (not a coverage window) at or before `t`.
     pub fn latest_at(&self, t: Option<DateTime<Utc>>) -> Option<&LifecycleEvent> {
         self.ordered()
-            .filter(|e| !matches!(e.change, Change::Coverage { .. }))
+            .filter(|e| !e.change.is_coverage())
             .take_while(|e| t.is_none_or(|t| e.at.is_some_and(|at| at <= t)))
             .last()
     }
@@ -1429,6 +1806,213 @@ mod tests {
         assert!(store.covered(at("08:09:30")));
         assert!(store.covered(at("08:01:30")));
         assert!(!store.covered(at("08:00:30")));
+    }
+
+    fn fixture(name: &str) -> Vec<LifecycleEvent> {
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/fleet")
+                .join(name)
+                .join("fleet.events.jsonl"),
+        )
+        .unwrap();
+        let (consumed, events, rejected) = parse_chunk(&bytes);
+        assert_eq!((consumed, rejected), (bytes.len(), 0), "{name}");
+        events
+    }
+
+    fn crew_attempt(task: &str) -> Attempt {
+        Attempt {
+            task: task.into(),
+            spawn_gen: match task {
+                "impl" => "s1790064100.4101.1",
+                _ => "s1790064400.4102.2",
+            }
+            .into(),
+        }
+    }
+
+    const IMPL_RUN: &str = "01M342G5B2S1MP13RVNVA11DAT";
+    const TESTS_RUN: &str = "01M342X98JT3STSRVNVA11DAT1";
+
+    /// `assets/fleet/validation`: what the adapter journals while it reads the
+    /// runs attributed to the crew's impl and tests (`validation_journal` in
+    /// `scripts/test_firstmate_fleet.py`).
+    #[test]
+    fn validation_lines_round_trip_and_invalid_ones_are_rejected() {
+        let events = fixture("validation");
+        assert!(
+            events
+                .iter()
+                .all(|e| e.source.kind == SourceKind::NoMistakes)
+        );
+        for event in &events {
+            let again = parse_line(line(event).as_bytes()).unwrap().unwrap();
+            assert_eq!(&again, event);
+        }
+        let read = events
+            .iter()
+            .find(|e| matches!(&e.change, Change::Validation { validation } if validation.phase == Phase::Seen))
+            .unwrap()
+            .clone();
+        let mut cases = Vec::new();
+        let mut e = read.clone();
+        e.attempt = None;
+        cases.push(e); // a run of no attempt
+        let mut e = read.clone();
+        if let Change::Validation { validation } = &mut e.change {
+            validation.status = None; // a read that found nothing
+        }
+        cases.push(e);
+        let mut e = read.clone();
+        if let Change::Validation { validation } = &mut e.change {
+            validation.since = Some(at("23:59:59")); // bounded by a later read
+        }
+        cases.push(e);
+        let mut e = read.clone();
+        if let Change::Validation { validation } = &mut e.change {
+            validation.run.clear();
+        }
+        cases.push(e);
+        let mut e = coverage("c", "08:00:00", "08:01:00");
+        e.change = Change::ValidationCoverage {
+            validation_coverage: RunWindow {
+                run: IMPL_RUN.into(),
+                from: at("08:01:00"),
+                to: at("08:00:00"),
+                max_gap: None,
+            },
+        };
+        e.attempt = attempt("impl");
+        cases.push(e); // backwards
+        for case in cases {
+            assert!(case.validate().is_err(), "{case:?}");
+            assert!(parse_line(line(&case).as_bytes()).is_err());
+        }
+        // An unknown phase is a line this viewer does not understand.
+        let future = line(&read).replace("\"phase\":\"seen\"", "\"phase\":\"teleported\"");
+        assert!(parse_line(future.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn a_viewer_that_predates_validation_cannot_mistake_it_for_lifecycle() {
+        // An older viewer's types, and nothing else: coverage, as it read it.
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        #[allow(dead_code)]
+        enum Older {
+            Coverage { coverage: Window },
+            Status { status: Status },
+        }
+        #[derive(Debug, Deserialize)]
+        #[allow(dead_code)]
+        struct OlderEvent {
+            id: String,
+            #[serde(flatten)]
+            change: Older,
+        }
+        for event in fixture("validation") {
+            let value = serde_json::to_value(&event).unwrap();
+            assert!(
+                serde_json::from_value::<OlderEvent>(value).is_err(),
+                "{} would read as a type it knows",
+                event.id
+            );
+        }
+    }
+
+    #[test]
+    fn validation_is_neither_lifecycle_state_nor_lifecycle_coverage() {
+        let mut store = Lifecycle::default();
+        store.insert(fixture("validation"));
+        // No attempt appears from its runs alone, nor any lifecycle coverage.
+        assert!(store.state_at(None).is_empty());
+        assert!(!store.has_gaps() && store.coverage().is_empty());
+        assert!(store.covered(at("08:09:00")));
+        assert!(store.has_runs());
+        // The footer never narrates a coverage window.
+        assert!(!store.latest_at(None).unwrap().change.is_coverage());
+    }
+
+    #[test]
+    fn each_attempt_folds_its_run_as_of_a_moment() {
+        let mut store = Lifecycle::default();
+        store.insert(fixture("crew"));
+        store.insert(fixture("validation"));
+        let (impl_, tests) = (crew_attempt("impl"), crew_attempt("tests"));
+        assert!(store.validation_at(Some(at("08:07:44"))).is_empty());
+        // Created from its ID before anyone read it.
+        let run = &store.validation_at(Some(at("08:07:50")))[&impl_];
+        assert_eq!(run.run, IMPL_RUN);
+        assert_eq!(run.started, Some((at("08:07:45"), AtQuality::Derived)));
+        assert!(run.read.is_none());
+        assert!(!store.run_verified(&impl_, IMPL_RUN, Some(at("08:07:50"))));
+        // The first read: every step reached by then, no earlier bound.
+        let run = &store.validation_at(Some(at("08:08:00")))[&impl_];
+        let (read_at, read) = run.read.as_ref().unwrap();
+        assert_eq!(
+            (*read_at, read.current().unwrap().step.as_str()),
+            (at("08:08:00"), "review")
+        );
+        assert_eq!(run.reached["intent"], (at("08:08:00"), None));
+        assert!(store.run_verified(&impl_, IMPL_RUN, Some(at("08:08:00"))));
+        // The adapter stopped: the last read stands, unverified.
+        let run = &store.validation_at(Some(at("08:09:00")))[&impl_];
+        assert_eq!(run.read.as_ref().unwrap().0, at("08:08:00"));
+        assert!(!store.run_verified(&impl_, IMPL_RUN, Some(at("08:09:00"))));
+        assert!(store.unread(at("08:09:00")));
+        // The next read, across the gap: review ended somewhere in it.
+        let run = &store.validation_at(Some(at("08:10:00")))[&impl_];
+        assert_eq!(
+            run.reached["review"],
+            (at("08:10:00"), Some(at("08:08:00")))
+        );
+        assert_eq!(run.reached["intent"], (at("08:08:00"), None), "unchanged");
+        assert_eq!(run.read.as_ref().unwrap().1.current().unwrap().step, "test");
+        // Ended: it cannot change, read or not.
+        let live = store.validation_at(None);
+        assert!(live[&impl_].ended());
+        // An ended run is no gap; a live one between reads is.
+        assert!(!store.unread(at("08:14:30")));
+        assert!(store.unread(at("08:15:10")));
+        // tests: read, then the daemon went down, then its gate parked.
+        let run = &store.validation_at(Some(at("08:15:40")))[&tests];
+        assert_eq!(run.lost, Some((Phase::DaemonDown, at("08:15:30"))));
+        let run = &live[&tests];
+        assert_eq!(run.lost, None, "a read after it clears the doubt");
+        assert_eq!(
+            run.read.as_ref().unwrap().1.gate.as_ref().unwrap().ask_user,
+            1
+        );
+        assert!(store.run_verified(&tests, TESTS_RUN, Some(at("08:16:00"))));
+        assert!(!store.run_verified(&tests, TESTS_RUN, Some(at("08:15:30"))));
+        // At the live edge, long after the adapter stopped, it is not read.
+        assert!(!store.run_verified(&tests, TESTS_RUN, None));
+    }
+
+    #[test]
+    fn an_attempts_newer_run_replaces_its_older_one() {
+        let mut store = Lifecycle::default();
+        let events = fixture("validation");
+        // Attribute tests' run to impl too: impl now has two runs.
+        let moved: Vec<_> = events
+            .iter()
+            .filter(|e| e.attempt == Some(crew_attempt("tests")))
+            .map(|e| {
+                let mut e = e.clone();
+                e.id.push_str("#moved");
+                e.attempt = Some(crew_attempt("impl"));
+                e
+            })
+            .collect();
+        store.insert(events);
+        store.insert(moved);
+        let impl_ = crew_attempt("impl");
+        assert_eq!(
+            store.validation_at(Some(at("08:14:50")))[&impl_].run,
+            IMPL_RUN
+        );
+        assert_eq!(store.validation_at(None)[&impl_].run, TESTS_RUN);
     }
 
     #[cfg(feature = "native")]

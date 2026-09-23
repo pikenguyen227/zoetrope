@@ -1,0 +1,20 @@
+run:
+  id: "01M342G5B2S1MP13RVNVA11DAT"
+  branch: fm/impl
+  status: running
+  head: 5a1e2f00
+  head_sha: 5a1e2f0000000000000000000000000000000000
+  findings: 0
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,1
+    rebase,completed,0,2204
+    review,running,0,0
+    test,pending,0,0
+    document,pending,0,0
+    lint,pending,0,0
+    push,pending,0,0
+    pr,pending,0,0
+    ci,pending,0,0
+  active_steps[1]{step,status,active_for,round_active_for,last_activity,agent_pid,round}:
+    review,running,12s,12s,"3s ago: claude producing output","41001",round 1
+help[1]: Run `no-mistakes axi logs --run 01M342G5B2S1MP13RVNVA11DAT --step review` to read the step log

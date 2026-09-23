@@ -4,6 +4,7 @@
 pub mod actions;
 pub mod journal;
 pub mod timeline;
+mod validation;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::state::session::{AgentInfo, AgentKind, AgentStatus, MAIN_ID, SessionModel};
 use crate::state::{App, Camera, Mode, graph};
 use crate::tailer::UiEvent;
-use crate::ui::nodes::{CrewMark, CrewTone};
+use crate::ui::nodes::{CrewMark, CrewTone, ValidationBand};
 pub use actions::{Action, Prompt, Request, Target};
 use journal::{Attempt, AttemptState, Lifecycle};
 
@@ -518,6 +519,10 @@ impl Fleet {
         let covered = self.covered();
         let joins = self.joins();
         let mut marks: BTreeMap<String, CrewMark> = BTreeMap::new();
+        // Validation runs as of the moment, and each card's band.
+        let runs = self.lifecycle.validation_at(at);
+        let now = at.unwrap_or_else(Utc::now);
+        let mut bands: BTreeMap<String, ValidationBand> = BTreeMap::new();
         // The attempt that speaks for a session: the newest one standing.
         let attempt_for = |key: &SessionKey| {
             crew.iter()
@@ -626,6 +631,12 @@ impl Fleet {
                         // This is a display placeholder, not an Ended fact.
                         agent.status = AgentStatus::Idle;
                     }
+                    let joined = joins.iter().filter(|(_, k)| *k == key).map(|(a, _)| a);
+                    if let Some(band) =
+                        validation::band_for(&self.lifecycle, &runs, joined, at, now)
+                    {
+                        bands.insert(id.clone(), band);
+                    }
                     if let Some((_, state)) = attempt_for(key) {
                         marks.insert(id.clone(), crew_mark(state, covered));
                     } else if at.is_none() && member.unregistered() {
@@ -705,6 +716,11 @@ impl Fleet {
             agent.description = Some(detail);
             if let Some(state) = crew.get(&attempt) {
                 marks.insert(id.clone(), crew_mark(state, covered));
+            }
+            if let Some(band) =
+                validation::band_for(&self.lifecycle, &runs, [&attempt].into_iter(), at, now)
+            {
+                bands.insert(id.clone(), band);
             }
             projection.agents.insert(id.clone(), agent);
             projection.spawn_order.push_back(id);
@@ -868,6 +884,7 @@ impl Fleet {
         for id in &after {
             if let Some(content) = self.overview.flow.node_content_mut(id) {
                 content.crew = marks.remove(id);
+                content.validation = bands.remove(id);
             }
             if let Some(node) = self.overview.flow.node(id) {
                 self.positions

@@ -93,6 +93,7 @@ fn build_content(info: &AgentInfo) -> AgentNode {
         interactive: info.is_interactive(),
         pulse: false,
         crew: None,
+        validation: None,
     }
 }
 

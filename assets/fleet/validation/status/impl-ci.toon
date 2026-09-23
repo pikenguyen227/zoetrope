@@ -1,0 +1,22 @@
+run:
+  id: "01M342G5B2S1MP13RVNVA11DAT"
+  branch: fm/impl
+  status: running
+  head: 6b58ac32
+  head_sha: 6b58ac3200000000000000000000000000000000
+  pr: "https://github.com/example/synthetic/pull/12"
+  findings: 2 info
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,1
+    rebase,completed,0,2204
+    review,completed,1,103773
+    test,completed,1,282128
+    document,completed,0,36746
+    lint,completed,0,38
+    push,completed,0,5879
+    pr,completed,0,28937
+    ci,running,0,0
+  shared_work[1]{attributed_to,scope,duration_ms}:
+    document,document+lint housekeeping,36746
+  active_steps[1]{step,status,active_for,round_active_for,last_activity,agent_pid,round}:
+    ci,running,15s,15s,"9s ago: log: no CI checks reported yet","",round 1

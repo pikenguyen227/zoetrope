@@ -89,7 +89,8 @@ so the graph remains visible while inspecting an agent.
 
 The fleet overview has one timeline for the whole crew: the upstream scrubber
 over every session's activity plus Firstmate lifecycle marks (`+` spawned, `▲`
-needs-decision or blocked, `✓` done, `⊘` torn down). Scrubbing shows the crew as
+needs-decision or blocked, `✓` done, `⊘` torn down) and validation marks (see
+"Validation runs" below). Scrubbing shows the crew as
 it was then: sessions and attempts that did not exist yet are absent, torn-down
 ones are dimmed, and cards carry the task's status badge at that moment. Hatched
 stretches are times nothing observed Firstmate (before its lifecycle feed began,
@@ -102,6 +103,55 @@ Try it without Herdr on the synthetic crew (a finished run with a coverage gap):
 
 ```sh
 cargo run --locked -- fleet assets/fleet/crew/fleet.json
+```
+
+## Validation runs
+
+A worker validating through no-mistakes runs short-lived pipeline agents with
+no pane of their own. The adapter reads the run Firstmate attributes to each
+task (the snapshot's `validation_run`) with two read-only CLI calls, `axi
+status --run <id>` and `daemon status`, and never drives the run or its
+daemon; `FIRSTMATE-FLEET.md`, "Validation runs", has the rules. No new cards:
+the worker's card shows its run as of the playhead in the row that otherwise
+reads `provider · session`, headline first and then one glyph per step:
+
+```text
+▸ test r1 · 2m ✓✓✓▸·····     running: step, round, how long the round has run
+▲ review gate · 1 ask-user    parked on findings only the operator decides
+✓ passed · PR #12             ended (✗ failed at ci, ⊘ cancelled)
+? review r1 · daemon down     unverified: the last read, kept but not trusted
+```
+
+Step glyphs: `✓` completed, `-` skipped, `·` pending, `▸` running, `⚒`
+fixing, `▲` waiting at a gate, `✗` failed. A narrow card drops the glyphs
+before the headline, and ends a strip it cannot fit whole in `…`. The band
+reads `?` wherever nobody was reading the run (before the adapter first read
+it, while it was down, when a read failed or was not understood) and once the
+no-mistakes daemon is down, since its record may then be stale (a read that
+says the run ended is still taken). A run that
+had ended cannot change and never reads `?`; a gate with ask-user findings
+stays amber, since it stays open until someone answers it. Runs outlive their
+workers: press `v` to see a finished worker's card while its CI still runs.
+
+The reading panel adds the run under its header: which run, when it was read
+and created, the gate and PR, then a row per step with its findings, how long
+it ran and when it got there. Those times are the adapter's, since the CLI
+only gives ages: `08:10:00–08:10:30` means it changed between two reads, `by
+08:10:30` that no earlier read is known, and `since 08:09:20 (derived)` is an
+active round's start worked out from its age. A panel too short for the table
+keeps the step the run is at and says how many rows it left out.
+
+On the scrubber, `▷` marks a run's start, `▲` a gate parking on ask-user
+findings (`△` on others), and `✓` / `✗` its end, each a `[` / `]` chapter;
+the steps between are not. A stretch where a run was alive but unread is hatched.
+Read failures, format drift and a down daemon are manifest diagnostics in the
+header. Try it on the synthetic crew with the runs the adapter read beside it
+(`assets/fleet/validation`):
+
+```sh
+demo=$(mktemp -d) && cp -R assets/fleet/crew/. "$demo" &&
+  cat assets/fleet/validation/fleet.events.jsonl >> "$demo/fleet.events.jsonl" &&
+  cargo run --locked -- fleet "$demo/fleet.json"
 ```
 
 ## Finished workers, archive and delete

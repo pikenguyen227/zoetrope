@@ -15,7 +15,7 @@ cargo build                     # native (default features)
 cargo clippy                    # lint — must pass with no warnings
 cargo fmt                       # format
 cargo test                      # test
-python3 -m unittest discover -s scripts -p 'test_*.py'   # fleet adapter; ZOE_REGENERATE_CREW=1 rewrites the adapter-generated assets/fleet/{crew,feed} fixtures
+python3 -m unittest discover -s scripts -p 'test_*.py'   # fleet adapter; ZOE_REGENERATE_CREW=1 rewrites the adapter-generated assets/fleet/{crew,feed,validation} fixtures
 
 # the browser frontend (trunk → web/public/wasm/), lint it explicitly:
 bash web/scripts/build-wasm.sh

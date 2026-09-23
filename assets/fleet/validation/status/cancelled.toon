@@ -1,0 +1,19 @@
+run:
+  id: "01M342B46TCANC311EDRVN0000"
+  branch: fm/docs
+  status: cancelled
+  head: 26d0a945
+  head_sha: 26d0a94500000000000000000000000000000000
+  findings: "2 auto-fix, 1 info"
+  steps[9]{step,status,findings,duration_ms}:
+    intent,skipped,0,14634
+    rebase,completed,0,5815
+    review,completed,0,45430
+    test,failed,1,22616
+    document,pending,0,0
+    lint,pending,0,0
+    push,pending,0,0
+    pr,pending,0,0
+    ci,pending,0,0
+outcome: cancelled
+error: "cancelled: superseded by new push"
