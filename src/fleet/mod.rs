@@ -251,25 +251,57 @@ pub struct Fleet {
     pub request: Option<Request>,
 }
 
+/// The adapter's runtime for a task that left the Firstmate snapshot.
+const NOT_OBSERVED: &str = "not observed";
+
+/// Whether the adapter, when it last observed, no longer saw this task.
+fn left(task: &Task) -> bool {
+    task.runtime
+        .as_ref()
+        .is_some_and(|r| r.value == NOT_OBSERVED)
+}
+
 /// Whether a member has finished as of `at` (`None`: the live edge): every
 /// attempt the journal or manifest joins to it was torn down by then, or, at
-/// the live edge, the adapter no longer registers it at all. A member that is
-/// only idle or quiet has not finished, and neither has one with no attempt
-/// to its name, such as a Captain, while it is still registered.
+/// the live edge, the adapter no longer registers it: its session is gone
+/// from the manifest, or every task joined to it is `not observed`. A member
+/// that is only idle or quiet has not finished, and neither has one with no
+/// attempt to its name, such as a Captain, while it is still registered.
 fn finished(
     key: &SessionKey,
     retained: bool,
     at: Option<DateTime<Utc>>,
     crew: &BTreeMap<Attempt, AttemptState>,
     joins: &BTreeMap<Attempt, SessionKey>,
+    tasks: &[Task],
 ) -> bool {
     let mut attempts = crew
         .iter()
         .filter(|(attempt, _)| joins.get(*attempt) == Some(key))
         .peekable();
     let torn_down = attempts.peek().is_some() && attempts.all(|(_, s)| s.torn_down.is_some());
+    let mut joined = tasks
+        .iter()
+        .filter(|t| t.session.as_ref() == Some(key))
+        .peekable();
+    let unobserved = joined.peek().is_some() && joined.all(left);
     // Registration is today's fact; the past reads the journal alone.
-    torn_down || (at.is_none() && retained)
+    torn_down || (at.is_none() && (retained || unobserved))
+}
+
+/// Whether an attempt card has finished as of `at`: torn down by then, or, at
+/// the live edge, its task is `not observed`.
+fn card_finished(
+    attempt: &Attempt,
+    at: Option<DateTime<Utc>>,
+    crew: &BTreeMap<Attempt, AttemptState>,
+    tasks: &[Task],
+) -> bool {
+    crew.get(attempt).is_some_and(|s| s.torn_down.is_some())
+        || (at.is_none()
+            && tasks
+                .iter()
+                .any(|t| t.id == attempt.task && t.spawn_gen == attempt.spawn_gen && left(t)))
 }
 
 /// A clock time for badges and details, in the viewer's zone.
@@ -498,7 +530,14 @@ impl Fleet {
             if at.is_some() && !member.active() {
                 continue;
             }
-            if finished(key, member.retained, at, &crew, &joins) {
+            if finished(
+                key,
+                member.retained,
+                at,
+                &crew,
+                &joins,
+                &self.manifest.tasks,
+            ) {
                 done.insert(key.node_id(MAIN_ID));
                 if !self.show_finished {
                     continue;
@@ -625,7 +664,7 @@ impl Fleet {
         };
         for (attempt, label, detail) in unbound {
             let id = serde_json::to_string(&("task", &attempt.task, &attempt.spawn_gen)).unwrap();
-            if crew.get(&attempt).is_some_and(|s| s.torn_down.is_some()) {
+            if card_finished(&attempt, at, &crew, &self.manifest.tasks) {
                 done.insert(id.clone());
                 if !self.show_finished {
                     continue;

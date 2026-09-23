@@ -958,12 +958,19 @@ mod tests {
     /// The crew fixture, loaded the way `run` does: its journal, then every
     /// transcript, at the live edge.
     fn crew() -> (Fixture, Fleet) {
+        crew_with(true)
+    }
+
+    /// The crew, with or without the lifecycle journal beside its manifest.
+    fn crew_with(journal: bool) -> (Fixture, Fleet) {
         let fixture = Fixture::of("crew");
         let path = fixture.0.join("fleet.json");
         let manifest = load(&path).unwrap();
         let mut fleet = Fleet::new(manifest.clone()).unwrap();
-        let poll = JournalTail::beside(&path).poll().unwrap();
-        assert!(fleet.absorb_lifecycle(poll.reset, poll.events, poll.rejected));
+        if journal {
+            let poll = JournalTail::beside(&path).poll().unwrap();
+            assert!(fleet.absorb_lifecycle(poll.reset, poll.events, poll.rejected));
+        }
         for spec in &manifest.sessions {
             let session = resolve(spec).unwrap();
             let (items, info, _) = crate::tailer::replay::build_replay(&session);
@@ -1273,6 +1280,27 @@ mod tests {
             "re-arranged, not left for later"
         );
         assert_eq!(span(&fleet), narrow);
+    }
+
+    #[test]
+    fn workers_the_adapter_no_longer_observes_are_finished_without_a_journal() {
+        // No lifecycle history at all: impl and the docs card are only
+        // `not observed` in the manifest; tests is still working.
+        let (_fixture, mut fleet) = crew_with(false);
+        assert_eq!(fleet.finished, 2);
+        for id in [root("impl"), DOCS.to_string()] {
+            assert!(fleet.overview.session.agent(&id).is_none(), "{id} is drawn");
+            assert!(!fleet.worker(&id).is_some_and(|w| w.registered));
+        }
+        for live in [root("captain"), root("tests")] {
+            assert!(ids(&fleet).contains(&live));
+        }
+        assert!(fleet.worker(&root("tests")).unwrap().registered);
+        assert!(screen(&mut fleet).contains("2 finished hidden"));
+        fleet.toggle_finished();
+        for id in [root("impl"), DOCS.to_string()] {
+            assert!(!fleet.worker(&id).unwrap().registered, "{id} is registered");
+        }
     }
 
     #[test]

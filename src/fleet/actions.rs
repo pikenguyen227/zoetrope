@@ -160,12 +160,19 @@ impl Fleet {
                 .filter(|(_, joined)| *joined == key)
                 .map(|(attempt, _)| attempt.clone())
                 .collect();
-            let registered = !super::finished(key, member.retained, None, &crew, &joins);
+            let registered = !super::finished(
+                key,
+                member.retained,
+                None,
+                &crew,
+                &joins,
+                &self.manifest.tasks,
+            );
             let label = member.spec.label.clone();
             (Target::Session(key.clone()), label, attempts, registered)
         } else {
             let attempt = self.cards.get(id)?;
-            let registered = crew.get(attempt).is_none_or(|s| s.torn_down.is_none());
+            let registered = !super::card_finished(attempt, None, &crew, &self.manifest.tasks);
             let attempts = BTreeSet::from([attempt.clone()]);
             let label = attempt.task.clone();
             (

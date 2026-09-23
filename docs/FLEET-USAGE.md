@@ -99,9 +99,12 @@ cargo run --locked -- fleet assets/fleet/crew/fleet.json
 
 A worker is **finished** once every launch attempt joined to its session was
 torn down (the journal's `torn_down`: it left the Firstmate snapshot), or, at
-the live edge, once the adapter no longer registers its session at all. An
-idle or quiet worker has not finished, and neither has a Captain, which has
-no attempt to finish. Attempt cards without a session finish when torn down.
+the live edge, once the adapter no longer registers it: its session is gone
+from the manifest, or every task joined to it has runtime `not observed`, as
+for history the journal never recorded. An idle or quiet worker has not
+finished, and neither has a Captain, which has no attempt to finish. Attempt
+cards without a session finish when torn down or, at the live edge, when their
+task is `not observed`. Scrubbed into the past, only the journal counts.
 
 Finished workers are hidden when the fleet opens: they are left out of the
 graph, which re-arranges around the crew still at work, and the header counts
