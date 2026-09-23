@@ -1,8 +1,10 @@
 //! Recorded usage and account quota snapshots. No network or credential access.
 //!
 //! Input includes cached reads/writes; reasoning is already part of output.
-//! Prices are standard short-context API equivalents (2026-09-22), NOT a
-//! subscription bill. See docs/FLEET-USAGE.md for sources and estimate limitations.
+//! Prices are standard short-context API equivalents (2026-09-22; Opus 5.5
+//! 2026-09-23), NOT a subscription bill. An unlisted model in a listed tier is
+//! priced approximately and labeled so. See docs/FLEET-USAGE.md for sources and
+//! estimate limitations.
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -62,14 +64,19 @@ pub struct Summary {
     pub recorded: bool,
     pub incomplete: bool,
     pub usd: Option<f64>,
+    /// Part of `usd` was priced at a listed sibling's rate, not the model's own.
+    pub approximate: bool,
 }
 impl Summary {
     pub fn total(&self) -> u64 {
         self.input.saturating_add(self.output)
     }
     pub fn cost_label(&self) -> String {
-        self.usd
-            .map_or_else(|| "API est. —".into(), |v| format!("API est. ${v:.3}"))
+        match self.usd {
+            None => "API est. —".into(),
+            Some(v) if self.approximate => format!("API est. ~${v:.3} (unlisted model)"),
+            Some(v) => format!("API est. ${v:.3}"),
+        }
     }
 }
 
@@ -100,45 +107,122 @@ impl Book {
             s.cached = s.cached.saturating_add(u.tokens.cached);
             s.cache_write = s.cache_write.saturating_add(u.tokens.cache_write);
             s.incomplete |= !u.tokens.complete();
-            s.usd = s.usd.zip(estimate(u)).map(|(a, b)| a + b);
+            let est = estimate(u);
+            s.approximate |= est.is_some_and(|(_, exact)| !exact);
+            s.usd = s.usd.zip(est).map(|(a, (b, _))| a + b);
         }
         self.summary = s;
     }
 }
 
-fn estimate(u: &Usage) -> Option<f64> {
-    let t = &u.tokens;
-    let input = t.input?;
-    let output = t.output?;
-    // Exact supported model IDs: an unknown/new model never silently inherits
-    // another model's rate. Date aliases are normalized by the provider if known.
-    let (base, out) = match u.model.as_deref()? {
-        "gpt-6-astra" => (10.0, 50.0),
-        "gpt-5.6-sol" => (4.0, 20.0),
-        "gpt-5.6-terra" => (2.0, 12.0),
-        "gpt-5.6-luna" => (0.2, 1.2),
+/// Per-MTok USD: base input, output, and the cache-read multiplier of base.
+type Rate = (f64, f64, f64);
+
+/// Exact supported model IDs. Date aliases are normalized by the provider if known.
+/// Claude rates checked 2026-09-23 against
+/// https://platform.claude.com/docs/en/about-claude/pricing: Opus 5.5 is
+/// $4 in / $20 out with cache hits at 0.05x base; every other listed Claude
+/// model uses the standard 0.1x.
+fn listed(model: &str) -> Option<Rate> {
+    Some(match model {
+        "gpt-6-astra" => (10.0, 50.0, 0.1),
+        "gpt-5.6-sol" => (4.0, 20.0, 0.1),
+        "gpt-5.6-terra" => (2.0, 12.0, 0.1),
+        "gpt-5.6-luna" => (0.2, 1.2, 0.1),
+        "claude-opus-5-5" => (4.0, 20.0, 0.05),
         "claude-opus-5"
         | "claude-opus-4-8"
         | "claude-opus-4-7"
         | "claude-opus-4-6"
         | "claude-opus-4-5"
-        | "claude-opus-4-5-20251101" => (5.0, 25.0),
-        "claude-sonnet-5" => (2.0, 10.0),
-        "claude-sonnet-4-6" | "claude-sonnet-4-5" | "claude-sonnet-4-5-20250929" => (3.0, 15.0),
-        "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => (1.0, 5.0),
+        | "claude-opus-4-5-20251101" => (5.0, 25.0, 0.1),
+        "claude-sonnet-5" => (2.0, 10.0, 0.1),
+        "claude-sonnet-4-6" | "claude-sonnet-4-5" | "claude-sonnet-4-5-20250929" => {
+            (3.0, 15.0, 0.1)
+        }
+        "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => (1.0, 5.0, 0.1),
         _ => return None,
+    })
+}
+
+/// Every listed ID, the candidates `sibling` picks from.
+const LISTED: &[&str] = &[
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "claude-opus-5-5",
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-opus-4-5",
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+];
+
+/// A model's family, tier and numeric version by ID shape:
+/// `claude-<tier>-<n>-<n>…` or `gpt-<n>.<n>-<tier>`. Anything else has no family.
+fn shape(model: &str) -> Option<(&'static str, &str, Vec<u64>)> {
+    let nums = |s: &str, sep| {
+        s.split(sep)
+            .map(str::parse)
+            .collect::<Result<Vec<u64>, _>>()
+    };
+    if let Some(rest) = model.strip_prefix("claude-") {
+        let (tier, version) = rest.split_once('-')?;
+        return Some(("claude", tier, nums(version, '-').ok()?));
+    }
+    let (version, tier) = model.strip_prefix("gpt-")?.split_once('-')?;
+    Some(("gpt", tier, nums(version, '.').ok()?))
+}
+
+/// The listed model an unlisted one is priced like: same family and tier, the
+/// newest version not above it, else the oldest above it. No family, no sibling.
+fn sibling(model: &str) -> Option<&'static str> {
+    let (family, tier, version) = shape(model)?;
+    let mut same: Vec<(Vec<u64>, &'static str)> = LISTED
+        .iter()
+        .filter_map(|&id| {
+            let (f, t, v) = shape(id)?;
+            (f == family && t == tier).then_some((v, id))
+        })
+        .collect();
+    same.sort();
+    same.iter()
+        .rev()
+        .find(|(v, _)| *v <= version)
+        .or_else(|| same.first())
+        .map(|&(_, id)| id)
+}
+
+/// USD and whether the rate is the model's own. An unlisted model never
+/// silently inherits another model's rate: it borrows a same-tier sibling's
+/// rate only as an estimate the label marks approximate, and a model with no
+/// listed tier gets no estimate at all.
+fn estimate(u: &Usage) -> Option<(f64, bool)> {
+    let t = &u.tokens;
+    let input = t.input?;
+    let output = t.output?;
+    let model = u.model.as_deref()?;
+    let (exact, (base, out, read)) = match listed(model) {
+        Some(rate) => (true, rate),
+        None => (false, listed(sibling(model)?)?),
     };
     let cached = t.cached.min(input);
     let write = t.cache_write.min(input - cached);
     let write_1h = t.cache_write_1h.min(write);
-    Some(
+    Some((
         ((input - cached - write) as f64 * base
-            + cached as f64 * base * 0.1
+            + cached as f64 * base * read
             + (write - write_1h) as f64 * base * 1.25
             + write_1h as f64 * base * 2.0
             + output as f64 * out)
             / 1_000_000.0,
-    )
+        exact,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -230,6 +314,74 @@ mod tests {
         u.key = "b".into();
         a.apply(&u);
         assert!(a.summary.incomplete);
+    }
+    fn priced(model: &str) -> Summary {
+        let mut b = Book::default();
+        let mut u = usage("a", 1_000_000);
+        u.model = Some(model.into());
+        b.apply(&u);
+        b.summary
+    }
+    #[test]
+    fn listed_models_keep_their_exact_rate_and_label() {
+        for (model, usd) in [
+            ("claude-opus-5", 25.0025),
+            ("claude-opus-4-5-20251101", 25.0025),
+            ("claude-sonnet-4-6", 15.0015),
+            ("gpt-5.6-luna", 1.2001),
+        ] {
+            let s = priced(model);
+            assert!((s.usd.unwrap() - usd).abs() < 1e-9, "{model}: {s:?}");
+            assert!(!s.approximate, "{model}");
+            assert_eq!(s.cost_label(), format!("API est. ${usd:.3}"));
+        }
+        assert!(LISTED.iter().all(|id| listed(id).is_some()));
+    }
+    #[test]
+    fn opus_5_5_is_listed_with_its_own_cache_read_rate() {
+        // 300 uncached × $4 + 600 read × $0.20 + 80 × $5 + 20 × $8, + 1M out × $20.
+        let s = priced("claude-opus-5-5");
+        assert!((s.usd.unwrap() - 20.00188).abs() < 1e-9, "{s:?}");
+        assert!(!s.approximate);
+    }
+    #[test]
+    fn unlisted_model_in_a_listed_tier_is_approximate_and_says_so() {
+        for (model, like) in [
+            ("claude-opus-6", "claude-opus-5-5"),
+            ("claude-opus-5-5-20260801", "claude-opus-5-5"),
+            ("claude-sonnet-4", "claude-sonnet-4-5"),
+            ("claude-haiku-5", "claude-haiku-4-5"),
+            ("gpt-6-luna", "gpt-5.6-luna"),
+        ] {
+            assert_eq!(sibling(model), Some(like), "{model}");
+            let s = priced(model);
+            assert!(s.approximate, "{model}");
+            assert_eq!(s.usd, priced(like).usd, "{model}");
+            assert!(s.cost_label().starts_with("API est. ~$"), "{model}");
+            assert!(s.cost_label().ends_with(" (unlisted model)"), "{model}");
+        }
+        // One approximate request marks the whole total approximate.
+        let mut b = Book::default();
+        b.apply(&usage("a", 10));
+        let mut u = usage("b", 10);
+        u.model = Some("claude-opus-6".into());
+        b.apply(&u);
+        assert!(b.summary.approximate);
+    }
+    #[test]
+    fn unlisted_model_outside_every_listed_tier_has_no_estimate() {
+        for model in [
+            "new-model",
+            "claude-fable-5-1",
+            "claude-3-5-sonnet-20241022",
+            "gpt-5.6-cyber",
+            "gpt-5.6-sol-codex",
+            "gpt-oss-120b",
+        ] {
+            let s = priced(model);
+            assert_eq!(s.usd, None, "{model}");
+            assert_eq!(s.cost_label(), "API est. —");
+        }
     }
     #[test]
     fn quotas_use_window_duration_and_do_not_invent_a_reset() {
