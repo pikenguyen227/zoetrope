@@ -172,7 +172,7 @@ fn shape(model: &str) -> Option<(&'static str, &str, Vec<u64>)> {
 }
 
 /// The listed model an unlisted one is priced like: same family and tier, the
-/// newest version not above it, else the oldest above it. No family, no sibling.
+/// newest version not above it. No family or no older listed version, no sibling.
 fn sibling(model: &str) -> Option<&'static str> {
     let (family, tier, version) = shape(model)?;
     let mut same: Vec<(Vec<u64>, &'static str)> = RATES
@@ -187,14 +187,13 @@ fn sibling(model: &str) -> Option<&'static str> {
     same.iter()
         .rev()
         .find(|(v, _)| *v <= version)
-        .or_else(|| same.first())
         .map(|&(_, id)| id)
 }
 
 /// USD and whether the rate is the model's own. An unlisted model never
 /// silently inherits another model's rate: it borrows a same-tier sibling's
 /// rate only as an estimate the label marks approximate, and a model with no
-/// listed tier gets no estimate at all.
+/// listed tier, or older than every listed model of its tier, gets no estimate.
 fn estimate(u: &Usage) -> Option<(f64, bool)> {
     let t = &u.tokens;
     let input = t.input?;
@@ -342,8 +341,6 @@ mod tests {
             ("claude-opus-6", "claude-opus-5-5"),
             ("claude-opus-5-5-20260801", "claude-opus-5-5"),
             ("claude-opus-5-20260301", "claude-opus-5"),
-            ("claude-opus-4-1-20250805", "claude-opus-4-5"),
-            ("claude-sonnet-4", "claude-sonnet-4-5"),
             ("claude-haiku-5", "claude-haiku-4-5"),
             ("gpt-6-luna", "gpt-5.6-luna"),
         ] {
@@ -363,7 +360,7 @@ mod tests {
         assert!(b.summary.approximate);
     }
     #[test]
-    fn unlisted_model_outside_every_listed_tier_has_no_estimate() {
+    fn unlisted_model_outside_or_older_than_every_listed_tier_has_no_estimate() {
         for model in [
             "new-model",
             "claude-fable-5-1",
@@ -371,7 +368,11 @@ mod tests {
             "gpt-5.6-cyber",
             "gpt-5.6-sol-codex",
             "gpt-oss-120b",
+            "claude-opus-4-1-20250805",
+            "claude-opus-4-20250514",
+            "claude-sonnet-4",
         ] {
+            assert_eq!(sibling(model), None, "{model}");
             let s = priced(model);
             assert_eq!(s.usd, None, "{model}");
             assert_eq!(s.cost_label(), "API est. —");
