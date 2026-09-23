@@ -11,7 +11,7 @@
 //! transition at its real time, whether or not anyone watches. Where no feed
 //! speaks, the adapter bridges from successive snapshots, which only sees what
 //! it polls while it runs. Where the feed records the same fact, it replaces
-//! the bridge's ([`Lifecycle::superseded`]), so nothing is counted twice and
+//! the bridge's (`Lifecycle::superseded`), so nothing is counted twice and
 //! the feed's times win.
 //!
 //! Coverage is what keeps the timeline honest: a moment outside every recorded

@@ -1194,8 +1194,8 @@ def main():
                     bridge.recover(journal_records(output))
                     feeds = Feeds(output.with_suffix(".feeds.json"), max_gap=max_gap)
                 publish(output, manifest, previous, lifecycle(snapshot, manifest, bridge, feeds))
-                # After the journal holds what was read: a crash between the two
-                # re-reads it, and the same IDs change nothing.
+                # After the journal holds what was read: a crash or failed poll between
+                # the two re-reads it, and the same IDs change nothing.
                 feeds.save()
                 previous = manifest
             except (OSError, RuntimeError, ValueError, KeyError) as error:
