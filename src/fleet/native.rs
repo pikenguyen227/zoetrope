@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use futures::StreamExt;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style};
@@ -18,6 +20,17 @@ use crate::provider::{Provider, Session, Target};
 use crate::tailer::{TailRequest, UiEvent};
 
 const RETRY: Duration = Duration::from_secs(3);
+/// The exit status that tells the collector a request is waiting in the file
+/// it named in `ZOE_FLEET_REQUEST` (`REQUEST_EXIT` in the adapter).
+pub const REQUEST_EXIT: i32 = 75;
+
+/// How the viewer ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exit {
+    Quit,
+    /// A request for the collector was written; exit with [`REQUEST_EXIT`].
+    Request,
+}
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 
 pub fn load(path: &Path) -> Result<Manifest> {
@@ -288,6 +301,19 @@ fn route(fleet: &mut Fleet, event: &Event) -> bool {
         if key.kind == KeyEventKind::Release {
             return false;
         }
+        // An open prompt takes the next key: its answer, or a cancel. Ctrl
+        // chords (Ctrl+C) cancel it and still do what they do.
+        if fleet.prompt.is_some() {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            let answer = match key.code {
+                KeyCode::Char(c) if !ctrl => Some(c),
+                _ => None,
+            };
+            let exit = fleet.answer(answer);
+            if !ctrl {
+                return exit;
+            }
+        }
         if fleet.focused.is_some() && key.code == KeyCode::Esc {
             fleet.back();
             return false;
@@ -309,6 +335,10 @@ fn route(fleet: &mut Fleet, event: &Event) -> bool {
                 KeyCode::Char('[') => fleet.step(false),
                 KeyCode::Char(']') => fleet.step(true),
                 KeyCode::Char('g' | 'G') | KeyCode::End => fleet.go_live(),
+                KeyCode::Char('v') => fleet.toggle_finished(),
+                KeyCode::Char('A') => return fleet.archive_selected(),
+                KeyCode::Char('D') => fleet.delete_selected(),
+                KeyCode::Char('C') => fleet.ask_clear(),
                 _ => return crate::handler::handle_event(event, fleet.active()),
             }
             return false;
@@ -327,9 +357,21 @@ fn route_queued(fleet: &mut Fleet, input: &mut mpsc::UnboundedReceiver<Event>) -
     false
 }
 
-pub async fn run(path: PathBuf) -> Result<()> {
+/// Run the Fleet viewer. Under a collector (`ZOE_FLEET_REQUEST` names its
+/// request file) archive and delete are offered, and a confirmed one ends the
+/// viewer with [`Exit::Request`] for the collector to carry out; a note it
+/// leaves in `ZOE_FLEET_NOTICE` opens the next viewer.
+pub async fn run(path: PathBuf) -> Result<Exit> {
     let (initial, mut last_text) = load_with_text(&path)?;
     let mut fleet = Fleet::new(initial).map_err(|e| anyhow!(e))?;
+    let request = std::env::var_os("ZOE_FLEET_REQUEST").map(PathBuf::from);
+    fleet.collector = request.is_some();
+    if let Ok(note) = std::env::var("ZOE_FLEET_NOTICE") {
+        let note: String = note.chars().filter(|c| !c.is_control()).collect();
+        if !note.trim().is_empty() {
+            fleet.prompt = Some(super::Prompt::Notice(note));
+        }
+    }
     let mut journal = JournalTail::beside(&path);
     let (tx, mut rx) = mpsc::channel(64);
     let mut jobs = BTreeMap::new();
@@ -356,7 +398,7 @@ pub async fn run(path: PathBuf) -> Result<()> {
     let mut telemetry = Telemetry::default();
     let mut last = tokio::time::Instant::now();
     let mut dirty = true;
-    let result = loop {
+    let result: Result<()> = loop {
         let now = tokio::time::Instant::now();
         let elapsed = now - last;
         last = now;
@@ -446,7 +488,15 @@ pub async fn run(path: PathBuf) -> Result<()> {
     };
     let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
-    result
+    result?;
+    match (fleet.request.take(), request) {
+        (Some(asked), Some(file)) => {
+            std::fs::write(&file, asked.to_json().to_string())
+                .with_context(|| format!("writing the fleet request {}", file.display()))?;
+            Ok(Exit::Request)
+        }
+        _ => Ok(Exit::Quit),
+    }
 }
 
 /// Exposed to buffer tests so the real Fleet UI can be checked without a TTY.
@@ -478,7 +528,15 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
         .values()
         .filter(|m| m.error.is_some() || !m.loaded)
         .count();
-    let text = if let Some(key) = &fleet.focused {
+    let finished = match (fleet.finished, fleet.show_finished) {
+        (0, _) => String::new(),
+        (n, false) => format!(" · {n} finished hidden"),
+        (n, true) => format!(" · {n} finished shown"),
+    };
+    let text = if let Some(prompt) = fleet.prompt.as_ref().filter(|_| fleet.focused.is_none()) {
+        let (what, keys) = prompt.lines();
+        format!(" {what}\n {keys}")
+    } else if let Some(key) = &fleet.focused {
         format!(
             " {} · {}\n Session timeline · Esc: fleet · q: quit",
             fleet.manifest.label, key.session_id
@@ -498,20 +556,23 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
             .or(fleet.manifest_error.as_deref())
             .or_else(|| fleet.manifest.diagnostics.first().map(String::as_str));
         format!(
-            " {} · {} sessions · {} unavailable · snapshot {}s ago\n {}",
+            " {} · {} sessions · {} unavailable{finished} · snapshot {}s ago\n {}",
             fleet.manifest.label,
             fleet.members.len(),
             unavailable,
             age,
             note.unwrap_or(
-                "FLEET · space: play/pause · drag, [ ]: seek · g: live · Enter: session · x: children · q: quit"
+                "FLEET · space: play/pause · drag, [ ]: seek · g: live · Enter: session · x: children · v: finished · A/D: archive/delete worker · C: clear · q: quit"
             )
         )
     };
-    frame.render_widget(
-        Paragraph::new(text).style(Style::default().fg(Color::Indexed(178)).bg(Color::Black)),
-        header,
-    );
+    // A prompt stands out from the status it replaces.
+    let style = if fleet.prompt.is_some() && fleet.focused.is_none() {
+        Style::default().fg(Color::Black).bg(Color::Indexed(178))
+    } else {
+        Style::default().fg(Color::Indexed(178)).bg(Color::Black)
+    };
+    frame.render_widget(Paragraph::new(text).style(style), header);
     if fleet.focused.is_none() && frame.area().height > 0 {
         let footer =
             ratatui::layout::Rect::new(body.x, body.bottom().saturating_sub(1), body.width, 1);
@@ -897,12 +958,19 @@ mod tests {
     /// The crew fixture, loaded the way `run` does: its journal, then every
     /// transcript, at the live edge.
     fn crew() -> (Fixture, Fleet) {
+        crew_with(true)
+    }
+
+    /// The crew, with or without the lifecycle journal beside its manifest.
+    fn crew_with(journal: bool) -> (Fixture, Fleet) {
         let fixture = Fixture::of("crew");
         let path = fixture.0.join("fleet.json");
         let manifest = load(&path).unwrap();
         let mut fleet = Fleet::new(manifest.clone()).unwrap();
-        let poll = JournalTail::beside(&path).poll().unwrap();
-        assert!(fleet.absorb_lifecycle(poll.reset, poll.events, poll.rejected));
+        if journal {
+            let poll = JournalTail::beside(&path).poll().unwrap();
+            assert!(fleet.absorb_lifecycle(poll.reset, poll.events, poll.rejected));
+        }
         for spec in &manifest.sessions {
             let session = resolve(spec).unwrap();
             let (items, info, _) = crate::tailer::replay::build_replay(&session);
@@ -966,6 +1034,8 @@ mod tests {
         use crate::state::session::AgentStatus;
         use crate::ui::nodes::CrewTone;
         let (_fixture, mut fleet) = crew();
+        // Shown, finished workers read as torn down: dimmed.
+        fleet.toggle_finished();
         // Live: everyone ever registered, lifecycle read in full.
         assert_eq!(fleet.at(), None);
         let docs = mark(&mut fleet, DOCS).unwrap();
@@ -1150,6 +1220,233 @@ mod tests {
         let text = screen(&mut fleet);
         assert!(text.contains("◆"), "the footer narrates the crew");
         assert!(text.contains("tests working"));
+    }
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(crossterm::event::KeyEvent::from(code))
+    }
+
+    fn ids(fleet: &Fleet) -> Vec<String> {
+        fleet.overview.flow.nodes().map(|n| n.id.clone()).collect()
+    }
+
+    /// How wide the laid-out crew is, in graph units.
+    fn span(fleet: &Fleet) -> f64 {
+        let xs: Vec<f64> = fleet.overview.flow.nodes().map(|n| n.position.x).collect();
+        xs.iter().cloned().fold(f64::MIN, f64::max) - xs.iter().cloned().fold(f64::MAX, f64::min)
+    }
+
+    #[test]
+    fn finished_workers_are_hidden_until_toggled() {
+        let (_fixture, mut fleet) = crew();
+        // impl and the docs card were torn down; tests is still registered
+        // and the Captain has no attempt to finish.
+        assert!(!fleet.show_finished, "hidden by default");
+        assert_eq!(fleet.finished, 2);
+        let hidden = [root("impl"), DOCS.to_string()];
+        for id in &hidden {
+            assert!(fleet.overview.session.agent(id).is_none(), "{id} is drawn");
+            assert!(!ids(&fleet).contains(id), "{id} is laid out");
+        }
+        assert!(
+            fleet
+                .overview
+                .flow
+                .edges()
+                .iter()
+                .all(|e| !hidden.contains(&e.source) && !hidden.contains(&e.target))
+        );
+        for live in [root("captain"), root("tests")] {
+            assert!(ids(&fleet).contains(&live));
+        }
+        assert!(screen(&mut fleet).contains("2 finished hidden"));
+        let narrow = span(&fleet);
+
+        // `v` shows them, re-arranged with the rest, and says so.
+        assert!(!route(&mut fleet, &key(KeyCode::Char('v'))));
+        assert!(fleet.show_finished);
+        for id in &hidden {
+            assert!(ids(&fleet).contains(id), "{id} is back");
+        }
+        assert_eq!(fleet.finished, 2);
+        assert!(screen(&mut fleet).contains("2 finished shown"));
+        assert!(span(&fleet) > narrow, "the shown crew is laid out wider");
+
+        // And `v` again re-fits the graph to the crew still at work.
+        route(&mut fleet, &key(KeyCode::Char('v')));
+        assert!(!ids(&fleet).iter().any(|id| hidden.contains(id)));
+        assert!(
+            !fleet.overview.layout_dirty,
+            "re-arranged, not left for later"
+        );
+        assert_eq!(span(&fleet), narrow);
+    }
+
+    #[test]
+    fn workers_the_adapter_no_longer_observes_are_finished_without_a_journal() {
+        // No lifecycle history at all: impl and the docs card are only
+        // `not observed` in the manifest; tests is still working.
+        let (_fixture, mut fleet) = crew_with(false);
+        assert_eq!(fleet.finished, 2);
+        for id in [root("impl"), DOCS.to_string()] {
+            assert!(fleet.overview.session.agent(&id).is_none(), "{id} is drawn");
+            assert!(!fleet.worker(&id).is_some_and(|w| w.registered));
+        }
+        for live in [root("captain"), root("tests")] {
+            assert!(ids(&fleet).contains(&live));
+        }
+        assert!(fleet.worker(&root("tests")).unwrap().registered);
+        assert!(screen(&mut fleet).contains("2 finished hidden"));
+        fleet.toggle_finished();
+        for id in [root("impl"), DOCS.to_string()] {
+            assert!(!fleet.worker(&id).unwrap().registered, "{id} is registered");
+        }
+    }
+
+    #[test]
+    fn hidden_workers_are_still_there_in_the_past() {
+        let (_fixture, mut fleet) = crew();
+        // 08:03 — impl was at work: hiding finished workers does not hide it.
+        seek(&mut fleet, "08:03:00");
+        assert!(fleet.overview.session.agent(&root("impl")).is_some());
+        assert_eq!(fleet.finished, 0);
+        assert!(!screen(&mut fleet).contains("finished hidden"));
+        // 08:11:30 — impl has been torn down; docs is working.
+        seek(&mut fleet, "08:11:30");
+        assert!(fleet.overview.session.agent(&root("impl")).is_none());
+        assert!(fleet.overview.session.agent(DOCS).is_some());
+        assert!(screen(&mut fleet).contains("1 finished hidden"));
+        // 08:14 — docs is gone too.
+        seek(&mut fleet, "08:14:00");
+        assert!(fleet.overview.session.agent(DOCS).is_none());
+        assert_eq!(fleet.finished, 2);
+        // Their lifecycle stays on the scrubber.
+        assert!(
+            fleet
+                .timeline
+                .marks
+                .iter()
+                .any(|(_, kind)| *kind == super::super::timeline::MarkKind::TornDown)
+        );
+    }
+
+    #[test]
+    fn without_a_collector_actions_point_to_the_adapter() {
+        let (_fixture, mut fleet) = crew();
+        for code in ['C', 'A', 'D'] {
+            fleet.overview.flow.select_node(&root("tests"));
+            assert!(!route(&mut fleet, &key(KeyCode::Char(code))));
+            assert!(screen(&mut fleet).contains("No collector runs this viewer"));
+            // Any key dismisses the note and does nothing else.
+            assert!(!route(&mut fleet, &key(KeyCode::Char('y'))));
+            assert!(fleet.prompt.is_none() && fleet.request.is_none());
+        }
+    }
+
+    #[test]
+    fn worker_actions_confirm_deletes_and_hand_over_requests() {
+        use super::super::{Action, Prompt, Request, Target};
+        let (_fixture, mut fleet) = crew();
+        fleet.collector = true;
+        fleet.toggle_finished();
+        let impl_key = SessionKey {
+            provider: "codex".into(),
+            session_id: "c0c0c0c0-0000-4000-8000-000000000002".into(),
+        };
+        let tests_key = SessionKey {
+            provider: "codex".into(),
+            session_id: "c0c0c0c0-0000-4000-8000-000000000003".into(),
+        };
+
+        // Archive is recoverable: a finished worker goes without a question.
+        fleet.overview.flow.select_node(&root("impl"));
+        assert!(route(&mut fleet, &key(KeyCode::Char('A'))));
+        assert_eq!(
+            fleet.request.take(),
+            Some(Request {
+                action: Action::Archive,
+                target: Some(Target::Session(impl_key.clone())),
+                confirmed_registered: false,
+            })
+        );
+        // A registered one would come straight back: refused.
+        fleet.overview.flow.select_node(&root("tests"));
+        assert!(!route(&mut fleet, &key(KeyCode::Char('A'))));
+        assert!(screen(&mut fleet).contains("tests is still registered"));
+        route(&mut fleet, &key(KeyCode::Esc));
+        assert!(fleet.request.is_none());
+
+        // Delete says what goes and that it is permanent; anything but `y` cancels.
+        fleet.overview.flow.select_node(&root("impl"));
+        assert!(!route(&mut fleet, &key(KeyCode::Char('D'))));
+        let Some(Prompt::Delete(worker)) = fleet.prompt.clone() else {
+            panic!("no delete prompt")
+        };
+        assert!(!worker.registered && worker.records > 0);
+        let text = screen(&mut fleet);
+        assert!(text.contains("DELETE impl") && text.contains("cannot be undone"));
+        assert!(text.contains(&format!("{} lifecycle records", worker.records)));
+        assert!(!route(&mut fleet, &key(KeyCode::Char('n'))));
+        assert!(fleet.prompt.is_none() && fleet.request.is_none());
+        route(&mut fleet, &key(KeyCode::Char('D')));
+        assert!(route(&mut fleet, &key(KeyCode::Char('y'))));
+        assert_eq!(
+            fleet.request.take().unwrap().to_json(),
+            serde_json::json!({"action": "delete", "scope": "worker", "session": impl_key})
+        );
+
+        // A registered worker is refused unless the confirmation says so.
+        fleet.overview.flow.select_node(&root("tests"));
+        route(&mut fleet, &key(KeyCode::Char('D')));
+        assert!(screen(&mut fleet).contains("tests is STILL REGISTERED"));
+        assert!(route(&mut fleet, &key(KeyCode::Char('y'))));
+        assert_eq!(
+            fleet.request.take().unwrap().to_json(),
+            serde_json::json!({"action": "delete", "scope": "worker", "session": tests_key,
+                "confirmed_registered": true})
+        );
+
+        // A card with no session is scoped by its attempt.
+        fleet.overview.flow.select_node(DOCS);
+        route(&mut fleet, &key(KeyCode::Char('D')));
+        assert!(route(&mut fleet, &key(KeyCode::Char('y'))));
+        assert_eq!(
+            fleet.request.take().unwrap().to_json()["attempt"],
+            serde_json::json!({"task": "docs", "spawn_gen": "s1790064660.4103.3"})
+        );
+    }
+
+    #[test]
+    fn clearing_everything_archives_or_confirms_a_delete() {
+        let (_fixture, mut fleet) = crew();
+        fleet.collector = true;
+        // `C` asks; anything but an answer cancels.
+        route(&mut fleet, &key(KeyCode::Char('C')));
+        assert!(screen(&mut fleet).contains("a: archive all"));
+        assert!(!route(&mut fleet, &key(KeyCode::Char('q'))));
+        assert!(fleet.prompt.is_none() && fleet.request.is_none());
+        // `a` archives: the menu was the question.
+        route(&mut fleet, &key(KeyCode::Char('C')));
+        assert!(route(&mut fleet, &key(KeyCode::Char('a'))));
+        assert_eq!(
+            fleet.request.take().unwrap().to_json(),
+            serde_json::json!({"action": "archive", "scope": "all"})
+        );
+        // `D` asks again before deleting everything.
+        route(&mut fleet, &key(KeyCode::Char('C')));
+        assert!(!route(&mut fleet, &key(KeyCode::Char('D'))));
+        let text = screen(&mut fleet);
+        assert!(text.contains("DELETE the manifest and its journal: 3 members"));
+        assert!(text.contains("cannot be undone"));
+        assert!(!route(&mut fleet, &key(KeyCode::Enter)));
+        assert!(fleet.request.is_none());
+        route(&mut fleet, &key(KeyCode::Char('C')));
+        route(&mut fleet, &key(KeyCode::Char('D')));
+        assert!(route(&mut fleet, &key(KeyCode::Char('y'))));
+        assert_eq!(
+            fleet.request.take().unwrap().to_json(),
+            serde_json::json!({"action": "delete", "scope": "all"})
+        );
     }
 
     #[test]

@@ -7,6 +7,13 @@ they never use a socket, launch an agent, or impersonate a Herdr environment.
 Beside the manifest, the journal records lifecycle events (spawned, bound,
 status, torn_down) and the coverage windows in which this adapter was
 observing, for the fleet timeline. See Bridge.
+
+--archive and --delete remove records: the whole fleet, or one worker with
+--worker. Archive moves them into a backup-<time> directory beside the
+manifest; delete removes them permanently, after a confirmation. While a
+collector runs, its viewer asks it instead (keys C, A and D), since the
+collector would write back anything removed under it. Agent transcripts and
+the Firstmate home are never touched.
 """
 import argparse
 import copy
@@ -25,6 +32,10 @@ import tempfile
 import time
 
 SCHEMA = "zoetrope.fleet.v1"
+# The viewer exits with this status after writing a request to the file named
+# in ZOE_FLEET_REQUEST (REQUEST_EXIT in src/fleet/native.rs).
+REQUEST_EXIT = 75
+NOT_OBSERVED = "not observed"
 JOURNAL = "zoetrope.fleet.journal.v2"
 LEGACY_JOURNAL = "zoetrope.fleet.journal.v1"
 
@@ -497,33 +508,289 @@ def append_journal(output, records):
         os.fsync(stream.fileno())
 
 
-def publish(output, manifest, previous, lifecycle=()):
-    records = list(lifecycle)
-    if previous is None or semantic(previous) != semantic(manifest):
-        records.append({"schema": JOURNAL, "kind": "manifest", "manifest": manifest})
-    append_journal(output, records)
-    fd, name = tempfile.mkstemp(prefix=".fleet-", dir=output.parent)
+def write_atomic(path, text):
+    fd, name = tempfile.mkstemp(prefix=".fleet-", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as stream:
-            json.dump(manifest, stream, indent=2)
-            stream.write("\n")
+            stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, output)
+        os.replace(name, path)
     finally:
         if os.path.exists(name):
             os.unlink(name)
 
 
+def publish(output, manifest, previous, lifecycle=()):
+    records = list(lifecycle)
+    if previous is None or semantic(previous) != semantic(manifest):
+        records.append({"schema": JOURNAL, "kind": "manifest", "manifest": manifest})
+    append_journal(output, records)
+    write_atomic(output, json.dumps(manifest, indent=2) + "\n")
+
+
+def take_lock(output):
+    """The collector's lock on this fleet, or None while another process has it."""
+    handle = output.with_suffix(".lock").open("a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
+def backup_dir(output, name=None):
+    """A new backup-<local time>[-name] directory beside the manifest."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    if name:
+        stamp += "-" + (re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.")[:40] or "worker")
+    candidate, n = output.parent / f"backup-{stamp}", 1
+    while True:
+        try:
+            candidate.mkdir(mode=0o700)
+            return candidate
+        except FileExistsError:
+            n += 1
+            candidate = output.parent / f"backup-{stamp}-{n}"
+
+
+def clear(output, action):
+    """Archive or delete the whole fleet: the manifest and its journal, which
+    holds every lifecycle record and manifest checkpoint. Archive moves them
+    into a new backup directory; delete unlinks them. Either way the next
+    collection starts empty. The caller holds the lock. Returns what happened."""
+    files = [p for p in (output, output.with_suffix(".events.jsonl")) if p.exists()]
+    if not files:
+        return "nothing to clear"
+    names = " and ".join(p.name for p in files)
+    if action == "archive":
+        backup = backup_dir(output)
+        for path in files:
+            os.replace(path, backup / path.name)
+        return f"archived {names} to {backup}"
+    for path in files:
+        path.unlink()
+    return f"deleted {names} permanently"
+
+
+def attempt_of(event):
+    attempt = event.get("attempt")
+    return (attempt.get("task"), attempt.get("spawn_gen")) if isinstance(attempt, dict) else None
+
+
+def split(manifest, session, attempts):
+    """A manifest without one worker, and the worker's own part of it."""
+    own = lambda task: (task["id"], task["spawn_gen"]) in attempts
+    sessions, tasks = manifest.get("sessions", []), manifest.get("tasks", [])
+    kept = dict(manifest, sessions=[s for s in sessions if s.get("key") != session],
+                tasks=[t for t in tasks if not own(t)],
+                links=[l for l in manifest.get("links", []) if session not in (l.get("from"), l.get("to"))])
+    removed = dict(manifest, sessions=[s for s in sessions if session and s.get("key") == session],
+                   tasks=[t for t in tasks if own(t)], links=[], diagnostics=[])
+    return kept, removed
+
+
+class Worker:
+    """One worker's records: a member session with every attempt joined to it
+    (by the manifest or a journal `bound`), or one attempt without a session.
+    Removal is scoped by those attempts, so it never takes another's records."""
+
+    def __init__(self, output, session=None, attempt=None):
+        self.output = output
+        self.manifest = recover(output) or {"sessions": [], "tasks": [], "links": []}
+        self.records = list(journal_records(output))
+        self.session = session
+        self.attempts = {attempt} if attempt else set()
+        if session:
+            for task in self.manifest["tasks"]:
+                if task.get("session") == session:
+                    self.attempts.add((task["id"], task["spawn_gen"]))
+            for record in self.records:
+                event = record.get("event") or {}
+                if (record.get("kind") == "lifecycle" and event.get("type") == "bound"
+                        and event.get("session") == session and attempt_of(event)):
+                    self.attempts.add(attempt_of(event))
+        member = [s for s in self.manifest["sessions"] if session and s["key"] == session]
+        if not member and not self.attempts:
+            raise ValueError("no such worker in this fleet")
+        self.label = member[0]["label"] if member else attempt[0]
+
+    @classmethod
+    def named(cls, output, name):
+        """By native session ID, task ID (its newest attempt) or task/spawn_gen."""
+        manifest = recover(output) or {"sessions": [], "tasks": []}
+        for spec in manifest["sessions"]:
+            if spec["key"]["session_id"] == name:
+                return cls(output, session=spec["key"])
+        tasks = [t for t in manifest["tasks"]
+                 if t["id"] == name or f"{t['id']}/{t['spawn_gen']}" == name]
+        if not tasks:
+            raise ValueError(f"no worker named {name!r} in this fleet")
+        task = tasks[-1]
+        if task.get("session"):
+            return cls(output, session=task["session"])
+        return cls(output, attempt=(task["id"], task["spawn_gen"]))
+
+    def registered(self):
+        """Whether the adapter, when it last observed, still registered it. A
+        session with no attempt (a Captain, an explicit member) has nothing
+        that says it left, so it counts as registered."""
+        if self.session and not self.attempts:
+            return True
+        tasks = {(t["id"], t["spawn_gen"]): t for t in self.manifest["tasks"]}
+        return any(key in tasks and (tasks[key].get("runtime") or {}).get("value") != NOT_OBSERVED
+                   for key in self.attempts)
+
+    def lifecycle(self):
+        return sum(1 for r in self.records if r.get("kind") == "lifecycle"
+                   and attempt_of(r.get("event") or {}) in self.attempts)
+
+    def describe(self, action):
+        stake = (f"{self.label} is STILL REGISTERED and will reappear on the next collection. "
+                 if self.registered() else "")
+        what = (f"its manifest entry, {self.lifecycle()} lifecycle records and its part of "
+                "every checkpoint, from the live journal. Its transcript stays.")
+        if action == "archive":
+            return f"Archive {self.label}: {what}"
+        return f"{stake}DELETE {self.label}: {what} This cannot be undone."
+
+    def remove(self, action, confirmed_registered=False):
+        """Take this worker's records out of the live manifest and journal.
+        Archive writes them to a backup directory, as a manifest and journal of
+        their own; delete drops them. The caller holds the lock."""
+        if self.registered():
+            if action == "archive":
+                raise ValueError(f"{self.label} is still registered: archive it once it finishes")
+            if not confirmed_registered:
+                raise ValueError(f"{self.label} is still registered: deleting it needs confirmation")
+        journal = self.output.with_suffix(".events.jsonl")
+        kept, removed, count = [], [], 0
+        text = journal.read_text() if journal.exists() else ""
+        for line in text.splitlines(keepends=True):
+            if not line.endswith("\n"):
+                continue  # An interrupted final append; the next one drops it too.
+            try:
+                record = json.loads(line)
+            except ValueError:
+                kept.append(line)
+                continue
+            if not isinstance(record, dict):
+                kept.append(line)
+            elif record.get("kind") == "lifecycle" and isinstance(record.get("event"), dict):
+                mine = attempt_of(record["event"]) in self.attempts
+                (removed if mine else kept).append(line)
+                count += mine
+            elif isinstance(record.get("manifest"), dict):
+                mine, theirs = split(record["manifest"], self.session, self.attempts)
+                kept.append(json.dumps(dict(record, manifest=mine)) + "\n")
+                if theirs["sessions"] or theirs["tasks"]:
+                    removed.append(json.dumps(dict(record, manifest=theirs)) + "\n")
+            else:
+                kept.append(line)
+        manifest, own = split(self.manifest, self.session, self.attempts)
+        if action == "archive":
+            backup = backup_dir(self.output, self.label)
+            write_atomic(backup / journal.name, "".join(removed))
+            if own.get("schema"):
+                write_atomic(backup / self.output.name, json.dumps(own, indent=2) + "\n")
+            outcome = f"archived {self.label} to {backup}"
+        else:
+            outcome = f"deleted {self.label} permanently"
+        if journal.exists():
+            write_atomic(journal, "".join(kept))
+        if self.output.exists() and manifest.get("schema"):
+            write_atomic(self.output, json.dumps(manifest, indent=2) + "\n")
+        return f"{outcome} ({count} lifecycle records); its transcript is untouched"
+
+
+def carry_out(output, path):
+    """Do what the viewer asked before it exited; a note for the next viewer."""
+    try:
+        request = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return "the fleet request could not be read; nothing changed"
+    finally:
+        path.unlink(missing_ok=True)
+    action = request.get("action") if isinstance(request, dict) else None
+    if action not in ("archive", "delete"):
+        return "unknown fleet request; nothing changed"
+    try:
+        if request.get("scope") == "all":
+            return clear(output, action)
+        attempt = request.get("attempt")
+        attempt = (attempt["task"], attempt["spawn_gen"]) if isinstance(attempt, dict) else None
+        worker = Worker(output, session=request.get("session"), attempt=attempt)
+        return worker.remove(action, confirmed_registered=request.get("confirmed_registered") is True)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return f"{action} refused: {error}"
+
+
+def confirm(text):
+    print(text)
+    try:
+        return input("Type y to confirm: ").strip() == "y"
+    except EOFError:
+        return False
+
+
+def manage(args, parser):
+    """--archive / --delete without a collector: the same actions as its viewer."""
+    action = "archive" if args.archive else "delete"
+    output = args.output.absolute()
+    if not output.parent.is_dir():
+        print("nothing to clear")
+        return 0
+    os.umask(0o077)
+    lock = take_lock(output)
+    if lock is None:
+        parser.error("a collector owns this fleet: use its viewer (C, A, D) or close it first")
+    try:
+        if args.worker:
+            worker = Worker.named(output, args.worker)
+            if action == "delete" and not confirm(worker.describe(action)):
+                print("cancelled; nothing changed")
+                return 1
+            print(worker.remove(action, confirmed_registered=True))
+        else:
+            if action == "delete" and not confirm(
+                    f"DELETE {output.name} and {output.with_suffix('.events.jsonl').name} in "
+                    f"{output.parent}: every member, lifecycle record and checkpoint. Backups and "
+                    "transcripts stay. This cannot be undone."):
+                print("cancelled; nothing changed")
+                return 1
+            print(clear(output, action))
+    except (OSError, ValueError, KeyError) as error:
+        print(error, file=sys.stderr)
+        return 1
+    finally:
+        lock.close()
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--home", type=Path, required=True)
+    parser.add_argument("--home", type=Path, help="Firstmate home (required to collect)")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--captain", help="explicit Herdr session:pane target")
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--interval", type=float, default=5)
     parser.add_argument("--view", type=Path, help="Fleet-capable binary to run after initial collection")
+    removal = parser.add_mutually_exclusive_group()
+    removal.add_argument("--archive", action="store_true",
+                         help="move the records into a backup-<time> directory beside them and exit")
+    removal.add_argument("--delete", action="store_true",
+                         help="delete the records permanently, after a confirmation, and exit")
+    parser.add_argument("--worker", help="with --archive/--delete: only this worker, by native "
+                        "session ID, task ID or task/spawn_gen")
     args = parser.parse_args()
+    if args.worker and not (args.archive or args.delete):
+        parser.error("--worker needs --archive or --delete")
+    if args.archive or args.delete:
+        # Only files change here, so this works outside Herdr too.
+        return manage(args, parser)
+    if args.home is None:
+        parser.error("--home is required to collect")
     if os.environ.get("HERDR_ENV") != "1":
         parser.error("run the Firstmate adapter inside a genuine Herdr pane (HERDR_ENV=1)")
     if args.interval < 1:
@@ -532,14 +799,14 @@ def main():
     output = args.output.absolute()
     output.parent.mkdir(parents=True, exist_ok=True)
     os.umask(0o077)
-    lock = output.with_suffix(".lock").open("a")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    lock = take_lock(output)
+    if lock is None:
         parser.error("a collector already owns this fleet; open its existing manifest")
     previous = recover(output)
     bridge = None
     viewer = None
+    request = output.with_suffix(".request.json")
+    note = None
     try:
         while True:
             try:
@@ -564,14 +831,39 @@ def main():
                 publish(output, failed, previous)
                 previous = failed
             if args.view and viewer is None:
-                viewer = subprocess.Popen([str(args.view), "fleet", str(output)])
+                env = dict(os.environ)
+                if args.watch:
+                    # Only a collector that keeps running can carry out requests.
+                    request.unlink(missing_ok=True)
+                    env["ZOE_FLEET_REQUEST"] = str(request)
+                env.pop("ZOE_FLEET_NOTICE", None)
+                if note:
+                    env["ZOE_FLEET_NOTICE"] = note
+                    note = None
+                viewer = subprocess.Popen([str(args.view), "fleet", str(output)], env=env)
             if not args.watch:
                 return viewer.wait() if viewer else 0
             until = time.monotonic() + args.interval
+            asked = False
             while time.monotonic() < until:
                 if viewer and viewer.poll() is not None:
-                    return viewer.returncode
+                    if viewer.returncode != REQUEST_EXIT:
+                        return viewer.returncode
+                    asked = True
+                    break
                 time.sleep(0.2)
+            if asked:
+                # The viewer asked to archive or delete, and exited: nothing
+                # reads the records now. End this run's coverage in the journal
+                # being changed, carry the request out, and forget what this
+                # process held, so the next poll starts from what remains and
+                # a new viewer opens on it. A worker still registered comes
+                # back with that poll, as it should.
+                if bridge:
+                    append_journal(output, bridge.close())
+                note = carry_out(output, request)
+                print(f"{note}; collecting a fresh view...", flush=True)
+                previous, bridge, viewer = recover(output), None, None
     except KeyboardInterrupt:
         return 0
     finally:

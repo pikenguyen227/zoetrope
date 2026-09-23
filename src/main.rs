@@ -342,7 +342,13 @@ async fn main() -> Result<()> {
         Cli::Fleet {
             manifest,
             inspect: false,
-        } => zoetrope::fleet::native::run(manifest).await,
+        } => match zoetrope::fleet::native::run(manifest).await? {
+            zoetrope::fleet::native::Exit::Quit => Ok(()),
+            // The collector reads this status and carries out the request.
+            zoetrope::fleet::native::Exit::Request => {
+                std::process::exit(zoetrope::fleet::native::REQUEST_EXIT)
+            }
+        },
         Cli::Inspect { target, provider } => run_inspect(target, provider).await,
         other => run_tui(other).await,
     }

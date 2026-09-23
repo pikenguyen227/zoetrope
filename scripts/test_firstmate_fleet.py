@@ -2,6 +2,7 @@ import copy
 import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -399,6 +400,231 @@ class BridgeTests(unittest.TestCase):
                              + [(adapter.JOURNAL, "lifecycle")] * len(lines)
                              + [(adapter.JOURNAL, "manifest")])
             self.assertEqual(adapter.recover(output)["observed_at"], second["observed_at"])
+
+
+class RemovalTests(unittest.TestCase):
+    """Archive and delete: the whole fleet or one worker, on a temporary state dir."""
+
+    GONE = {"provider": "codex", "session_id": "native-gone"}
+    LIVE = {"provider": "codex", "session_id": "native-live"}
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.state = Path(self.directory.name)
+        self.output = self.state / "fleet.json"
+        self.journal = self.output.with_suffix(".events.jsonl")
+        # Neighbours an archive or delete must leave alone.
+        (self.state / "autostart.log").write_text("kept\n")
+        (self.state / "backup-20260922-093107").mkdir()
+        self.manifest = self.collect([("gone", "s1790064000.1.1", "native-gone"),
+                                      ("live", "s1790064000.2.2", "native-live")], until=B + 20)
+        # `gone` leaves the snapshot: torn down, no longer registered.
+        self.manifest = self.collect([("live", "s1790064000.2.2", "native-live")],
+                                     start=B + 30, until=B + 30, previous=self.manifest)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def collect(self, rows, start=B + 10, until=B + 10, previous=None):
+        """Polls every ten seconds through a bridge resumed from the journal,
+        as a collector does."""
+        bridge = adapter.Bridge(FLEET, f"run-{start}")
+        bridge.recover(adapter.journal_records(self.output))
+        for now in range(start, until + 1, 10):
+            tasks = [fm_task(task, gen, now, [(B + 1, "working", task)]) for task, gen, _ in rows]
+            panes = {f"crew:w1:{task}": pane(session) for task, _, session in rows}
+            lines, manifest = observe(bridge, now, tasks, panes, previous)
+            adapter.publish(self.output, manifest, previous, lines)
+            previous = manifest
+        adapter.append_journal(self.output, bridge.close())
+        return previous
+
+    def lifecycle(self, output=None):
+        return [r["event"] for r in adapter.journal_records(output or self.output)
+                if r.get("kind") == "lifecycle"]
+
+    def tasks(self, events):
+        return {(e.get("attempt") or {}).get("task") for e in events} - {None}
+
+    def checkpoints(self):
+        return [r["manifest"] for r in adapter.journal_records(self.output) if r.get("kind") == "manifest"]
+
+    def backups(self):
+        return sorted(p.name for p in self.state.glob("backup-*"))
+
+    def test_archive_everything_then_start_fresh(self):
+        before = {p.name: p.read_bytes() for p in (self.output, self.journal)}
+        note = adapter.clear(self.output, "archive")
+        [backup] = [p for p in self.state.glob("backup-*") if p.name != "backup-20260922-093107"]
+        self.assertRegex(backup.name, r"^backup-\d{8}-\d{6}$")
+        self.assertIn(str(backup), note)
+        # Everything moved, byte for byte: restorable by moving it back.
+        self.assertEqual({p.name: p.read_bytes() for p in backup.iterdir()}, before)
+        self.assertFalse(self.output.exists() or self.journal.exists())
+        self.assertIsNone(adapter.recover(self.output))
+        self.assertEqual((self.state / "autostart.log").read_text(), "kept\n")
+        # The next collection starts empty: only who is registered now.
+        fresh = self.collect([("live", "s1790064000.2.2", "native-live")], start=B + 40, until=B + 40)
+        self.assertEqual([s["key"] for s in fresh["sessions"]], [self.LIVE])
+        self.assertEqual(self.tasks(self.lifecycle()), {"live"})
+
+    def test_delete_everything_leaves_backups_and_neighbours(self):
+        self.assertEqual(adapter.clear(self.output, "delete"),
+                         "deleted fleet.json and fleet.events.jsonl permanently")
+        self.assertFalse(self.output.exists() or self.journal.exists())
+        self.assertEqual(self.backups(), ["backup-20260922-093107"])
+        self.assertEqual((self.state / "autostart.log").read_text(), "kept\n")
+        self.assertEqual(adapter.clear(self.output, "delete"), "nothing to clear")
+
+    def test_archive_one_worker(self):
+        removed = [e for e in self.lifecycle() if self.tasks([e]) == {"gone"}]
+        live = [e for e in self.lifecycle() if self.tasks([e]) != {"gone"}]
+        worker = adapter.Worker(self.output, session=self.GONE)
+        self.assertFalse(worker.registered())
+        note = worker.remove("archive")
+        self.assertIn(f"({len(removed)} lifecycle records)", note)
+        # Gone from the live manifest, the journal and every checkpoint...
+        manifest = adapter.recover(self.output)
+        self.assertEqual([s["key"] for s in manifest["sessions"]], [self.LIVE])
+        self.assertEqual([t["id"] for t in manifest["tasks"]], ["live"])
+        self.assertEqual(self.lifecycle(), live)
+        for checkpoint in self.checkpoints():
+            self.assertNotIn(self.GONE, [s["key"] for s in checkpoint["sessions"]])
+        # ...and kept, as a fleet of its own, in a backup named for it.
+        [backup] = [p for p in self.state.glob("backup-*-gone")]
+        self.assertEqual(self.lifecycle(backup / "fleet.json"), removed)
+        excerpt = json.loads((backup / "fleet.json").read_text())
+        self.assertEqual((excerpt["schema"], [s["key"] for s in excerpt["sessions"]]),
+                         (adapter.SCHEMA, [self.GONE]))
+        self.assertEqual([t["id"] for t in excerpt["tasks"]], ["gone"])
+
+    def test_a_registered_worker_is_not_archived(self):
+        before = self.journal.read_bytes(), self.output.read_bytes()
+        worker = adapter.Worker(self.output, session=self.LIVE)
+        self.assertTrue(worker.registered())
+        with self.assertRaisesRegex(ValueError, "still registered"):
+            worker.remove("archive")
+        self.assertEqual((self.journal.read_bytes(), self.output.read_bytes()), before)
+
+    def test_delete_one_worker_and_refuse_a_registered_one_unconfirmed(self):
+        gone = adapter.Worker(self.output, session=self.GONE)
+        self.assertIn("DELETE gone", gone.describe("delete"))
+        self.assertIn("cannot be undone", gone.describe("delete"))
+        gone.remove("delete")
+        self.assertEqual(self.backups(), ["backup-20260922-093107"])
+        self.assertEqual(self.tasks(self.lifecycle()), {"live"})
+        live = adapter.Worker(self.output, session=self.LIVE)
+        self.assertIn("STILL REGISTERED", live.describe("delete"))
+        with self.assertRaisesRegex(ValueError, "needs confirmation"):
+            live.remove("delete")
+        self.assertEqual(self.tasks(self.lifecycle()), {"live"})
+        live.remove("delete", confirmed_registered=True)
+        self.assertEqual(self.tasks(self.lifecycle()), set())
+
+    def test_a_deleted_member_stays_gone_and_a_registered_one_returns(self):
+        adapter.Worker(self.output, session=self.GONE).remove("delete")
+        adapter.Worker(self.output, session=self.LIVE).remove("delete", confirmed_registered=True)
+        self.assertEqual(adapter.recover(self.output)["sessions"], [])
+        after = self.collect([("live", "s1790064000.2.2", "native-live")], start=B + 40,
+                             until=B + 40, previous=adapter.recover(self.output))
+        self.assertEqual([s["key"] for s in after["sessions"]], [self.LIVE])
+        self.assertEqual(self.tasks(self.lifecycle()), {"live"})
+        self.assertIn("spawned", [e["type"] for e in self.lifecycle()])
+
+    def test_removal_is_scoped_by_attempt(self):
+        # `live` relaunches under a new generation and session: the first
+        # attempt's session is finished, the second is at work.
+        rows = [("live", "s1790064100.3.3", "native-again")]
+        self.manifest = self.collect(rows, start=B + 40, until=B + 40, previous=self.manifest)
+        first = {"provider": "codex", "session_id": "native-live"}
+        self.assertTrue(any(l["kind"] == "continues" for l in self.manifest["links"]))
+        worker = adapter.Worker(self.output, session=first)
+        self.assertEqual(worker.attempts, {("live", "s1790064000.2.2")})
+        worker.remove("delete")
+        manifest = adapter.recover(self.output)
+        self.assertEqual([(t["id"], t["spawn_gen"]) for t in manifest["tasks"]],
+                         [("gone", "s1790064000.1.1"), ("live", "s1790064100.3.3")])
+        self.assertEqual(manifest["links"], [])
+        kept = {tuple(e["attempt"].values()) for e in self.lifecycle() if e.get("attempt")}
+        self.assertIn(("live", "s1790064100.3.3"), kept)
+        self.assertNotIn(("live", "s1790064000.2.2"), kept)
+
+    def test_a_card_without_a_session_is_its_attempt(self):
+        worker = adapter.Worker(self.output, attempt=("gone", "s1790064000.1.1"))
+        self.assertEqual(worker.label, "gone")
+        self.assertIn("(", worker.remove("archive"))
+        self.assertEqual(self.tasks(self.lifecycle()), {"live"})
+
+    def run_cli(self, *argv, answer=None):
+        arguments = ["firstmate-fleet.py", "--output", str(self.output), *argv]
+        with mock.patch("sys.argv", arguments), \
+                mock.patch("builtins.input", return_value=answer) as asked, \
+                mock.patch("sys.stdout"):
+            code = adapter.main()
+        return code, asked.called
+
+    def test_command_line_confirms_deletes_but_not_archives(self):
+        code, asked = self.run_cli("--delete", answer="n")
+        self.assertEqual((code, asked), (1, True))
+        self.assertTrue(self.output.exists() and self.journal.exists())
+        code, asked = self.run_cli("--archive", "--worker", "gone")
+        self.assertEqual((code, asked), (0, False))
+        self.assertEqual(self.tasks(self.lifecycle()), {"live"})
+        code, asked = self.run_cli("--delete", "--worker", "native-live", answer="y")
+        self.assertEqual((code, asked), (0, True))
+        self.assertEqual(self.tasks(self.lifecycle()), set())
+        code, _ = self.run_cli("--delete", answer="y")
+        self.assertEqual(code, 0)
+        self.assertFalse(self.output.exists() or self.journal.exists())
+
+    def test_command_line_refuses_while_a_collector_runs(self):
+        held = adapter.take_lock(self.output)
+        try:
+            with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+                self.run_cli("--archive")
+        finally:
+            held.close()
+        self.assertTrue(self.output.exists() and self.journal.exists())
+
+    def test_collector_carries_out_the_viewers_request_and_reopens_it(self):
+        home = self.state / "home"
+        home.mkdir()
+        seen = self.state / "viewer.log"
+        viewer = self.state / "viewer"
+        # Asks to archive everything, then reports the note it reopened with.
+        viewer.write_text(f"""#!{sys.executable}
+import json, os, sys
+log = {str(seen)!r}
+runs = open(log).read().splitlines() if os.path.exists(log) else []
+with open(log, "a") as out:
+    out.write(json.dumps(os.environ.get("ZOE_FLEET_NOTICE")) + "\\n")
+if not runs:
+    open(os.environ["ZOE_FLEET_REQUEST"], "w").write('{{"action": "archive", "scope": "all"}}')
+    sys.exit({adapter.REQUEST_EXIT})
+""")
+        viewer.chmod(0o755)
+        polls = iter(range(B + 40, B + 400, 10))
+
+        def collect(home, herdr, previous, captain):
+            now = next(polls)
+            snap = fm_snapshot(now, [fm_task("live", "s1790064000.2.2", now)])
+            panes = {"crew:w1:live": pane("native-live")}
+            return adapter.build_manifest(snap, snap, panes, previous, observed=adapter.iso(now)), snap
+
+        arguments = ["firstmate-fleet.py", "--home", str(home), "--output", str(self.output),
+                     "--watch", "--interval", "1", "--view", str(viewer)]
+        with mock.patch("sys.argv", arguments), mock.patch.dict(os.environ, {"HERDR_ENV": "1"}), \
+                mock.patch.object(adapter, "collect", collect), mock.patch("sys.stdout"):
+            self.assertEqual(adapter.main(), 0)
+        notes = [json.loads(line) for line in seen.read_text().splitlines()]
+        self.assertEqual(notes[0], None)
+        self.assertRegex(notes[1], r"^archived fleet.json and fleet.events.jsonl to .*backup-")
+        [backup] = [p for p in self.state.glob("backup-*") if p.name != "backup-20260922-093107"]
+        self.assertIn("gone", self.tasks(self.lifecycle(backup / "fleet.json")))
+        # The reopened view started empty: only the worker still registered.
+        self.assertEqual([s["key"] for s in adapter.recover(self.output)["sessions"]], [self.LIVE])
+        self.assertEqual(self.tasks(self.lifecycle()), {"live"})
+        self.assertFalse(self.output.with_suffix(".request.json").exists())
 
 
 if __name__ == "__main__":
