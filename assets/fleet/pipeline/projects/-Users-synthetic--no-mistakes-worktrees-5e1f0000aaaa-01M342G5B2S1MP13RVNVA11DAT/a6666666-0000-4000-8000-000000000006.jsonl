@@ -1,0 +1,4 @@
+{"type":"queue-operation","operation":"enqueue","content":"Workspace boundary (important): SYNTHETIC pipeline prompt","sessionId":"a6666666-0000-4000-8000-000000000006","timestamp":"2026-09-22T08:13:30.000Z"}
+{"type":"user","uuid":"a6666666-u1","parentUuid":null,"sessionId":"a6666666-0000-4000-8000-000000000006","timestamp":"2026-09-22T08:13:30.100Z","message":{"role":"user","content":"Workspace boundary (important): SYNTHETIC pipeline prompt"}}
+{"type":"assistant","uuid":"a6666666-end","parentUuid":"a6666666-u1","sessionId":"a6666666-0000-4000-8000-000000000006","timestamp":"2026-09-22T08:15:40.000Z","message":{"role":"assistant","model":"claude-opus-5-5","stop_reason":"end_turn","content":[{"type":"text","text":"SYNTHETIC: done."}]}}
+{"type":"last-prompt","lastPrompt":"Workspace boundary (important): SYNTHETIC pipeline prompt","sessionId":"a6666666-0000-4000-8000-000000000006"}

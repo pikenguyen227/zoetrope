@@ -76,7 +76,9 @@ Relationships have an ID, type, endpoints, evidence source and observation time:
 - `continues`: an explicitly recorded new session taking over the same work.
 - `depends_on`: a task prerequisite, separate from parentage.
 
-Do not infer these from timestamps, working directories or similar titles. Until
+Do not infer these from timestamps, working directories or similar titles (the
+on-demand pipeline agents below are an inference labelled as one, never an
+edge or a member). Until
 the initiating Captain is verified, associate a worker with its Firstmate home;
 do not draw an invented Captain edge. On a future multi-host extension, add source
 identity before accepting remote native IDs.
@@ -268,6 +270,19 @@ as graph nodes of its own.
   re-emitted, runs that had not ended are read again, and the first read after
   the restart is bounded by the last read before it.
 
+**Pipeline agents on demand** (`src/fleet/pipeline.rs`). `p` on a card lists
+the transcripts of the run its band shows and opens one read-only in the
+session inspector. The join between a run and a transcript is local and
+inferred. A transcript is the run's only when it is filed under the run's
+worktree project key (`…-no-mistakes-worktrees-<repo>-<run>`) and its dated
+records fall between the run's creation (decoded from its ULID) and the first
+read that found it ended. A session filed under two runs is ambiguous. A file
+that cannot be read, one with no dated record, or one with records outside
+the run is listed with its reason and never opened. No agent is attributed to
+a step. An opened transcript is an `Inspection` with its own watcher while
+open: never a member, never in the manifest or journal, and not counted
+toward the session cap. Only files are read, through the Claude provider.
+
 The viewer folds these per attempt (`Lifecycle::validation_at`), keeping each
 attempt's newest run, and checks each run against its own windows
 (`run_verified`). Outside them, or after a `daemon_down` or `gone`, the band
@@ -347,10 +362,11 @@ own live edges. Dead air is compressed only while every session is quiet.
 4. **Partial: combined history.** Implemented: the lifecycle journal, Firstmate's
    lifecycle feed as its source with the snapshot bridge where no feed speaks,
    the fleet timeline over the live fleet, with coverage gaps, and each
-   worker's attributed validation run as a band with its own coverage. Future:
-   mirrored remote secondmate feeds, opening a finished crew as a replay, and
-   a run's pipeline agents on demand (it needs no-mistakes to name each
-   agent's native session).
+   worker's attributed validation run as a band with its own coverage, and
+   a run's pipeline agents on demand, joined by inference from the run's
+   worktree and each transcript's time span (an exact join needs no-mistakes
+   to name each agent's native session). Future: mirrored remote secondmate
+   feeds and opening a finished crew as a replay.
 
 Build a separate `zoe-fleet` development executable before changing any installed
 plugin or shortcut. Keep the existing `zoe` and its single-session behavior intact.

@@ -75,6 +75,7 @@ seconds; transcript tailing and rendering run independently.
 | s | Skip idle gaps (only while every session is quiet) or play in real time |
 | Enter | Open the selected session's inspector and timeline, at the fleet's moment |
 | Esc in a session | Return to the fleet at its moment |
+| p | List the selected card's validation run's pipeline agents; ↑↓ and Enter opens one read-only (see "Pipeline agents") |
 | x in the fleet | Collapse/expand the selected session's native children |
 | v | Show or hide finished workers (hidden when the fleet opens) |
 | A | Archive the selected finished worker (under a collector) |
@@ -153,6 +154,42 @@ demo=$(mktemp -d) && cp -R assets/fleet/crew/. "$demo" &&
   cat assets/fleet/validation/fleet.events.jsonl >> "$demo/fleet.events.jsonl" &&
   cargo run --locked -- fleet "$demo/fleet.json"
 ```
+
+## Pipeline agents
+
+A validation run's agents are not fleet members, but their transcripts can be
+read. Select a card whose band shows a run and press `p`: a list opens over
+the canvas with the run the band shows at the playhead and one row per
+transcript found for it. Each row gives the transcript's first and last
+record, how many tools it called, its subagents and model, and its session.
+`↑`/`↓` choose, Enter opens one in the session inspector (at the fleet's
+moment, like Enter on a card), Esc returns to the list, and Esc again closes
+it.
+
+The join is an inference, and the list says so. no-mistakes does not say
+which transcript is which agent, so the viewer uses what is on disk. Each
+pipeline agent runs in the run's worktree, and Claude files its transcript under
+`~/.claude/projects/-…-no-mistakes-worktrees-<repo>-<run>/<session>.jsonl`.
+A transcript is taken as the run's only when it is filed there and its own
+dated records fall inside the run's life: none before the run was created
+(its ID encodes that) and none after a read found it ended. No agent is tied
+to a step, since nothing on disk says which step ran it. The rest are listed
+dimmed with the reason, and Enter does not open them:
+
+```text
+ambiguous: also filed under run 01M…       the same session under two runs
+not this run's: it began …, before …       records outside the run's life
+cannot be placed in the run: no dated record
+unreadable: Permission denied …            the file could not be read
+```
+
+A run with nothing filed under its worktree says so: its agents may not have
+started yet, their transcripts may have been removed, or they may not be
+Claude's. An opened transcript is read-only and followed live while it is
+open. It is not a fleet member: it is not in the manifest or the journal, it
+does not count toward the crew or the 128-session cap, and closing it stops
+its watcher. The list reads files only. It never talks to no-mistakes or opens its
+database.
 
 ## Finished workers, archive and delete
 
