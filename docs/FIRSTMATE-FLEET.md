@@ -108,6 +108,9 @@ remote snapshot behavior must be explicitly handled before enabling remote crews
 ## UI and performance
 
 - Fleet overview uses readable task names and retains completed nodes, dimmed.
+  Finished workers (every attempt torn down, or no longer registered) are
+  hidden until shown, as of the playhead; archive and delete remove records,
+  through the collector while it runs (see `FLEET-USAGE.md`).
 - Selecting a node opens that session's existing tool and transcript details.
 - Native children can be collapsed. Continuation and dependency edges have explicit
   labels and distinct styles; they must not override native parentage.
@@ -170,7 +173,8 @@ liveness and chips are as of that moment; following the edge, members ride their
 own live edges. Dead air is compressed only while every session is quiet.
 
 - Membership is as of the playhead: a session that has recorded nothing yet is
-  absent, an attempt not yet spawned is absent, a torn-down attempt is dimmed.
+  absent, an attempt not yet spawned is absent, a torn-down attempt is dimmed,
+  or left out while finished workers are hidden (`src/fleet/actions.rs`).
   In the past, cards read the journal, never the manifest, which describes today.
 - Cards carry the attempt's status badge; `needs-decision` and `blocked` (or an
   open decision) are highlighted in amber on the card and the scrubber strip.

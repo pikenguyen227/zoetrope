@@ -1,6 +1,7 @@
 //! Multi-session membership and display projection. Native facts stay in their
 //! own App; only display IDs are namespaced. Firstmate is an external adapter.
 
+pub mod actions;
 pub mod journal;
 pub mod timeline;
 
@@ -15,6 +16,7 @@ use crate::state::session::{AgentInfo, AgentKind, AgentStatus, MAIN_ID, SessionM
 use crate::state::{App, Camera, Mode, graph};
 use crate::tailer::UiEvent;
 use crate::ui::nodes::{CrewMark, CrewTone};
+pub use actions::{Action, Prompt, Request, Target};
 use journal::{Attempt, AttemptState, Lifecycle};
 
 #[cfg(feature = "native")]
@@ -227,6 +229,47 @@ pub struct Fleet {
     /// Where each node last stood, so one that leaves on a scrub back returns
     /// to the same place instead of a fresh grid slot.
     positions: BTreeMap<String, (f64, f64)>,
+    /// Draw finished members and attempt cards (see [`finished`]); hidden by
+    /// default, so the graph fits the crew still at work.
+    pub show_finished: bool,
+    /// How many finished members and cards the last sync found at its moment,
+    /// drawn or not.
+    pub finished: usize,
+    /// What the live edge left out as finished when last synced there: a
+    /// change re-arranges the crew that remains.
+    live_hidden: Option<BTreeSet<String>>,
+    /// Re-arrange on the next sync: the visible crew changed on request.
+    rearrange: bool,
+    /// Attempt cards without a session, by node ID, so actions can name them.
+    pub(crate) cards: BTreeMap<String, Attempt>,
+    /// A question or note the header shows until the next key.
+    pub prompt: Option<Prompt>,
+    /// Whether a collector carries out archive and delete requests; the
+    /// viewer hands one over by exiting (see [`actions`]).
+    pub collector: bool,
+    /// The request to hand the collector on exit.
+    pub request: Option<Request>,
+}
+
+/// Whether a member has finished as of `at` (`None`: the live edge): every
+/// attempt the journal or manifest joins to it was torn down by then, or, at
+/// the live edge, the adapter no longer registers it at all. A member that is
+/// only idle or quiet has not finished, and neither has one with no attempt
+/// to its name, such as a Captain, while it is still registered.
+fn finished(
+    key: &SessionKey,
+    retained: bool,
+    at: Option<DateTime<Utc>>,
+    crew: &BTreeMap<Attempt, AttemptState>,
+    joins: &BTreeMap<Attempt, SessionKey>,
+) -> bool {
+    let mut attempts = crew
+        .iter()
+        .filter(|(attempt, _)| joins.get(*attempt) == Some(key))
+        .peekable();
+    let torn_down = attempts.peek().is_some() && attempts.all(|(_, s)| s.torn_down.is_some());
+    // Registration is today's fact; the past reads the journal alone.
+    torn_down || (at.is_none() && retained)
 }
 
 /// A clock time for badges and details, in the viewer's zone.
@@ -307,6 +350,14 @@ impl Fleet {
             nodes: BTreeMap::new(),
             baselined: BTreeSet::new(),
             positions: BTreeMap::new(),
+            show_finished: false,
+            finished: 0,
+            live_hidden: None,
+            rearrange: false,
+            cards: BTreeMap::new(),
+            prompt: None,
+            collector: false,
+            request: None,
         };
         fleet.update(manifest)?;
         Ok(fleet)
@@ -390,7 +441,7 @@ impl Fleet {
     }
 
     /// Each attempt's native session: the manifest's joins and the journal's.
-    fn joins(&self) -> BTreeMap<Attempt, SessionKey> {
+    pub(crate) fn joins(&self) -> BTreeMap<Attempt, SessionKey> {
         let mut joins = self.lifecycle.sessions();
         for task in &self.manifest.tasks {
             if let Some(key) = &task.session {
@@ -430,6 +481,10 @@ impl Fleet {
         projection.agents.clear();
         projection.spawn_order.clear();
         self.nodes.clear();
+        self.cards.clear();
+        // Node IDs of finished members and cards at this moment; left out of
+        // the projection unless shown, so they are neither laid out nor drawn.
+        let mut done = BTreeSet::new();
         let mut home = AgentInfo::new(AgentKind::Group);
         home.agent_type = Some(self.manifest.label.clone());
         home.description =
@@ -442,6 +497,12 @@ impl Fleet {
             // is not there: its model holds only the root that names it.
             if at.is_some() && !member.active() {
                 continue;
+            }
+            if finished(key, member.retained, at, &crew, &joins) {
+                done.insert(key.node_id(MAIN_ID));
+                if !self.show_finished {
+                    continue;
+                }
             }
             for local in member.app.session.spawn_order() {
                 if local != MAIN_ID && self.collapsed.contains(key) {
@@ -564,6 +625,13 @@ impl Fleet {
         };
         for (attempt, label, detail) in unbound {
             let id = serde_json::to_string(&("task", &attempt.task, &attempt.spawn_gen)).unwrap();
+            if crew.get(&attempt).is_some_and(|s| s.torn_down.is_some()) {
+                done.insert(id.clone());
+                if !self.show_finished {
+                    continue;
+                }
+            }
+            self.cards.insert(id.clone(), attempt.clone());
             let mut agent = AgentInfo::new(AgentKind::Main);
             agent.agent_type = Some(label);
             agent.status = AgentStatus::Idle;
@@ -574,6 +642,21 @@ impl Fleet {
             projection.agents.insert(id.clone(), agent);
             projection.spawn_order.push_back(id);
         }
+        self.finished = done.len();
+        let hidden = if self.show_finished {
+            BTreeSet::new()
+        } else {
+            done
+        };
+        // At the live edge, a worker finishing (or the toggle) re-arranges the
+        // crew that remains, once. Scrubbing only moves the playhead: nodes
+        // come and go in place, as sessions not yet started do.
+        let arrange = std::mem::take(&mut self.rearrange)
+            || (at.is_none()
+                && self
+                    .live_hidden
+                    .replace(hidden.clone())
+                    .is_some_and(|old| old != hidden));
         // The crew root reads busy while any member agent is working.
         let busy = projection
             .agents
@@ -728,7 +811,7 @@ impl Fleet {
         self.overview.session_info.title = Some(self.manifest.label.clone());
         self.overview.layout_dirty |= structural;
         let jumped = std::mem::take(&mut self.timeline.jumped);
-        if before.is_empty() && structural {
+        if (before.is_empty() && structural) || arrange {
             self.overview.relayout_now();
         } else {
             // The overview never folds, so the camera follow-up a fold runs

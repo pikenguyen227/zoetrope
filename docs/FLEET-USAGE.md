@@ -68,6 +68,10 @@ seconds; transcript tailing and rendering run independently.
 | Enter | Open the selected session's inspector and timeline, at the fleet's moment |
 | Esc in a session | Return to the fleet at its moment |
 | x in the fleet | Collapse/expand the selected session's native children |
+| v | Show or hide finished workers (hidden when the fleet opens) |
+| A | Archive the selected finished worker (under a collector) |
+| D | Delete the selected worker, after a confirmation (under a collector) |
+| C | Clear everything: `a` archives it all, `D` deletes it all after a confirmation (under a collector) |
 | r | Arrange the graph |
 | o / f | Overview / follow camera |
 | q or Ctrl+C | Quit |
@@ -90,6 +94,70 @@ Try it without Herdr on the synthetic crew (a finished run with a coverage gap):
 ```sh
 cargo run --locked -- fleet assets/fleet/crew/fleet.json
 ```
+
+## Finished workers, archive and delete
+
+A worker is **finished** once every launch attempt joined to its session was
+torn down (the journal's `torn_down`: it left the Firstmate snapshot), or, at
+the live edge, once the adapter no longer registers its session at all. An
+idle or quiet worker has not finished, and neither has a Captain, which has
+no attempt to finish. Attempt cards without a session finish when torn down.
+
+Finished workers are hidden when the fleet opens: they are left out of the
+graph, which re-arranges around the crew still at work, and the header counts
+them (`14 finished hidden`). `v` shows them again, dimmed, and re-arranges.
+Hiding follows the playhead: scrub back to when a worker was still at work and
+it is there, since it had not finished yet; its lifecycle marks stay on the
+scrubber either way. At the live edge, a worker finishing re-arranges the
+crew once; scrubbing never does.
+
+Archive and delete remove records rather than hiding them, from the adapter's
+state directory only: the manifest `fleet.json` and its journal
+`fleet.events.jsonl`, which holds the lifecycle records and every manifest
+checkpoint. Agent transcripts under `~/.claude` or `~/.codex`, the Firstmate
+home, other backups and anything else in the directory are never touched.
+
+| | Everything | One worker |
+| --- | --- | --- |
+| Archive | Moves both files into `backup-<time>/` beside them. The next collection starts empty. | Moves its manifest entry, its lifecycle records and its part of every checkpoint into `backup-<time>-<worker>/`, a fleet of its own. Refused while it is still registered. |
+| Delete | Removes both files, after a confirmation. | Removes the same records permanently, after a confirmation. |
+
+A worker is its session with every attempt joined to it, or an attempt card
+without a session. Removal is scoped by those attempts: a relaunch under a new
+generation and session keeps its own records. Deleting a worker the adapter
+still registers is refused unless confirmed, and it reappears, with fresh
+records, on the next collection; a finished one does not. Removed records
+leave the timeline too, past included, which is what sets them apart from
+hiding. Every delete names what it removes and that it cannot be undone;
+archive asks nothing, since it can be restored.
+
+**In the viewer**, while it runs under the collector (the Team tab), select a
+card and press `A` or `D` (press `v` first to reach a hidden finished worker),
+or press `C` for everything. The viewer never
+edits the records: the collector owns them and holds them in memory, and
+would write back anything removed under it. So the viewer writes the request
+to the file the collector named, `fleet.request.json`, and exits; the
+collector ends its coverage in the journal, carries the request out, forgets
+what it held, collects afresh and reopens the viewer with a note saying what
+happened. A viewer opened directly (`zoe-fleet fleet …`) has no collector and
+says so.
+
+**From a shell**, while no collector runs (close the Team tab first; these
+refuse while one holds the lock). They only change files, so Herdr is not
+needed:
+
+```sh
+state=../.tools/state/zoe-fleet
+python3 scripts/firstmate-fleet.py --output "$state/fleet.json" --archive
+python3 scripts/firstmate-fleet.py --output "$state/fleet.json" --delete
+python3 scripts/firstmate-fleet.py --output "$state/fleet.json" --archive --worker <session ID, task or task/spawn_gen>
+python3 scripts/firstmate-fleet.py --output "$state/fleet.json" --delete --worker <…>
+```
+
+To restore an archive of everything, with no collector running, move the
+current `fleet.json` and `fleet.events.jsonl` aside and move the backup's two
+files back. A worker's backup opens on its own with
+`zoe-fleet fleet <backup>/fleet.json`.
 
 ## Connections and history
 

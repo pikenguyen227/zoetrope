@@ -576,6 +576,14 @@ impl Lifecycle {
             .collect()
     }
 
+    /// How many events, dated or not, belong to these attempts.
+    pub fn count_for(&self, attempts: &BTreeSet<Attempt>) -> usize {
+        self.events
+            .values()
+            .filter(|e| e.attempt.as_ref().is_some_and(|a| attempts.contains(a)))
+            .count()
+    }
+
     /// The newest point event (not a coverage window) at or before `t`.
     pub fn latest_at(&self, t: Option<DateTime<Utc>>) -> Option<&LifecycleEvent> {
         self.ordered()
