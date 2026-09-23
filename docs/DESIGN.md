@@ -92,6 +92,7 @@ src/
 ├── tui.rs         # terminal lifecycle + the central native event loop (tick_camera/tick_timeline/status_tick/draw)
 ├── handler.rs     # input routing: app-level keys → App, the rest → the flow; scrubber clicks; process_flow_events
 ├── autopilot.rs   # native-only: the scripted pointer/keystroke pilot behind ZOETROPE_DEMO=1 (see DEMO-ASSETS.md)
+├── build.rs       # which build this is: version, commit (short hash, `-dirty`, or why unknown) and build time, stamped by the root build.rs
 ├── fact.rs        # the provider boundary: Fact + FactKind, the vocabulary every provider speaks and the model folds
 ├── provider/
 │   ├── mod.rs     # the input side: Provider enum, SessionFile, Session, the Stream enum, open / sweep / assemble (DISCOVERY.md)

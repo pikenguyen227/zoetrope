@@ -72,7 +72,7 @@ USAGE:
     zoe inspect <file|id>   headless: print the session tree + info
     zoe fleet <manifest>    live graph of registered independent sessions
     zoe fleet <manifest> --inspect  validate and report without a TUI
-    zoe --version           print the version and exit
+    zoe --version           print the version, commit and build time, and exit
 
 Once open, scrub/follow/pause/go-live are available no matter how you launched.";
 
@@ -145,7 +145,7 @@ fn parse_cli(args: impl Iterator<Item = String>) -> Result<Cli> {
             // Packaging depends on this: the Homebrew formula's `test do`
             // block runs `zoe --version`, and it has to exit 0.
             "-V" | "--version" => {
-                println!("zoe {}", env!("CARGO_PKG_VERSION"));
+                println!("zoe {}", zoetrope::build::Build::current());
                 std::process::exit(0);
             }
             "--follow" => follow = true,

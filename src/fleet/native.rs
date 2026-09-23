@@ -127,6 +127,7 @@ pub fn inspect(path: &Path) -> Result<()> {
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
+            "build":crate::build::Build::current().json(),
             "fleet_id":fleet.manifest.fleet_id, "sessions":members,
             "tasks":fleet.manifest.tasks, "links":fleet.manifest.links,
             "nodes":fleet.overview.flow.nodes().count(), "edges":fleet.overview.flow.edges().len()
@@ -439,16 +440,26 @@ fn route_queued(fleet: &mut Fleet, input: &mut mpsc::UnboundedReceiver<Event>) -
 struct Build {
     path: PathBuf,
     stamp: Option<(u64, std::time::SystemTime)>,
+    /// What this process was built from, which the file no longer says once
+    /// it is replaced.
+    running: crate::build::Build,
 }
 
 impl Build {
-    fn of(path: PathBuf) -> Self {
+    fn of(path: PathBuf, running: crate::build::Build) -> Self {
         let stamp = Self::stamp(&path);
-        Self { path, stamp }
+        Self {
+            path,
+            stamp,
+            running,
+        }
     }
 
     fn current() -> Option<Self> {
-        std::env::current_exe().ok().map(Self::of)
+        let running = crate::build::Build::current();
+        std::env::current_exe()
+            .ok()
+            .map(|path| Self::of(path, running))
     }
 
     fn stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
@@ -461,12 +472,27 @@ impl Build {
         let (_, at) = Self::stamp(&self.path).filter(|now| Some(*now) != self.stamp)?;
         let at: chrono::DateTime<chrono::Local> = at.into();
         let name = self.path.file_name().unwrap_or(self.path.as_os_str());
+        let built = match self.running.built {
+            Some(built) => format!("built {}", when(built.into(), at)),
+            None => "build time unknown".into(),
+        };
         Some(format!(
-            "{} was rebuilt at {}; this viewer still runs the old build: reopen the tab to run the new one",
+            "this viewer runs build {} ({built}); {} on disk is newer, rebuilt {}: reopen the tab to run it",
+            self.running.commit,
             name.to_string_lossy(),
             at.format("%H:%M:%S")
         ))
     }
+}
+
+/// A time of day, dated when it is not `today`'s.
+fn when(at: chrono::DateTime<chrono::Local>, today: chrono::DateTime<chrono::Local>) -> String {
+    let format = if at.date_naive() == today.date_naive() {
+        "%H:%M:%S"
+    } else {
+        "%Y-%m-%d %H:%M:%S"
+    };
+    at.format(format).to_string()
 }
 
 /// Run the Fleet viewer. Under a collector (`ZOE_FLEET_REQUEST` names its
@@ -694,11 +720,12 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
             .or(fleet.manifest_error.as_deref())
             .or_else(|| fleet.manifest.diagnostics.first().map(String::as_str));
         format!(
-            " {} · {} sessions · {} unavailable{finished} · snapshot {}s ago\n {}",
+            " {} · {} sessions · {} unavailable{finished} · snapshot {}s ago · build {}\n {}",
             fleet.manifest.label,
             fleet.members.len(),
             unavailable,
             age,
+            crate::build::Build::current().commit,
             note.unwrap_or(
                 "FLEET · space: play/pause · drag, [ ]: seek · g: live · Enter: session · p: pipeline agents · x: children · v: finished · A/D: archive/delete worker · C: clear · q: quit"
             )
@@ -1724,18 +1751,37 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("zoe-fleet");
         std::fs::write(&exe, b"the build running").unwrap();
-        let build = Build::of(exe.clone());
+        let running = crate::build::Build::parse("0.2.0", "1a2b3c4d5e6f-dirty", "1790000000");
+        let build = Build::of(exe.clone(), running);
         assert_eq!(build.replaced(), None);
         // As scripts/install-fleet.sh installs: beside it, then over it.
         std::fs::write(dir.join("zoe-fleet.new"), b"the build installed later").unwrap();
         std::fs::rename(dir.join("zoe-fleet.new"), &exe).unwrap();
         let why = build.replaced().expect("the install replaced it");
+        // A build that cannot name its commit says so rather than guessing.
+        let unknown = Build {
+            running: crate::build::Build::parse("0.2.0", "git unavailable", ""),
+            ..build
+        };
+        let why_unknown = unknown.replaced().expect("the install replaced it");
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(why.starts_with("zoe-fleet was rebuilt at "), "{why}");
+        // It names the build still running, and says the file is the newer one.
+        let built = chrono::DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let built = built
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S");
         assert!(
-            why.ends_with(
-                "this viewer still runs the old build: reopen the tab to run the new one"
-            )
+            why.starts_with(&format!(
+                "this viewer runs build 1a2b3c4d5e6f-dirty (built {built}); zoe-fleet on disk is newer, rebuilt "
+            )),
+            "{why}"
+        );
+        assert!(why.ends_with(": reopen the tab to run it"), "{why}");
+        assert!(
+            why_unknown.starts_with(
+                "this viewer runs build commit unknown (git unavailable) (build time unknown); "
+            ),
+            "{why_unknown}"
         );
         // It outranks the collector's diagnostics in the header.
         let (_fixture, mut fleet) = crew();
@@ -1744,10 +1790,13 @@ mod tests {
         fleet.stale_build = Some(why);
         let text = screen(&mut fleet);
         assert!(
-            text.contains("this viewer still runs the old build"),
+            text.contains("this viewer runs build 1a2b3c4d5e6f-dirty"),
             "{text}"
         );
         assert!(!text.contains("Captain pane"));
+        // The header names this viewer's own build all along.
+        let own = crate::build::Build::current().commit.to_string();
+        assert!(text.contains(&format!("· build {own}")), "{text}");
     }
 
     fn key(code: KeyCode) -> Event {
