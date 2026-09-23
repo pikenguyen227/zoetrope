@@ -3,8 +3,8 @@
 Fleet mode shows independently registered sessions in one graph. Each session
 keeps its parser, timeline, tool identities and native subagent tree. The Firstmate
 adapter supplies membership and observed launch generations. This is a development
-prototype: automated and synthetic terminal checks pass; live Herdr validation is
-pending. The ordinary single-session `zoe` command remains available.
+prototype: automated and synthetic terminal checks pass, and the collector runs in
+Herdr's Team tab. The ordinary single-session `zoe` command remains available.
 
 ## Install and try without model tokens
 
@@ -44,7 +44,9 @@ Opening from Shell still discovers Firstmate workers; a Shell pane is not guesse
 to be a Captain. The adapter does not launch Claude, Codex, or any workers.
 The crew's root card takes the Captain pane's Herdr workspace name (else the
 Fleet tab's own workspace), and reads `Firstmate · Control Tower` when Herdr
-cannot name one.
+cannot name one. Only that one workspace names it: workers in their own
+disposable workspaces, and other workspaces in the same Herdr session, neither
+rename the crew nor leave it.
 
 One Captain stands at a time: the session the Captain pane registers, or, while
 that pane has none (a Shell pane, or between Captain sessions), the last Captain
@@ -75,7 +77,7 @@ seconds; transcript tailing and rendering run independently.
 | s | Skip idle gaps (only while every session is quiet) or play in real time |
 | Enter | Open the selected session's inspector and timeline, at the fleet's moment |
 | Esc in a session | Return to the fleet at its moment |
-| p | List the selected card's validation run's pipeline agents; ↑↓ and Enter opens one read-only (see "Pipeline agents") |
+| p | List the selected card's validation run's pipeline agents; ↑↓ (or `j`/`k`) and Enter opens one read-only, `p` or Esc closes the list (see "Pipeline agents") |
 | x in the fleet | Collapse/expand the selected session's native children |
 | v | Show or hide finished workers (hidden when the fleet opens) |
 | A | Archive the selected finished worker (under a collector) |
@@ -90,7 +92,8 @@ so the graph remains visible while inspecting an agent.
 
 The fleet overview has one timeline for the whole crew: the upstream scrubber
 over every session's activity plus Firstmate lifecycle marks (`+` spawned, `▲`
-needs-decision or blocked, `✓` done, `⊘` torn down) and validation marks (see
+needs-decision, blocked or a decision, `✓` done, `✗` failed, `•` any other
+status line, `⊘` torn down) and validation marks (see
 "Validation runs" below). Scrubbing shows the crew as
 it was then: sessions and attempts that did not exist yet are absent, torn-down
 ones are dimmed, and cards carry the task's status badge at that moment. Hatched
@@ -119,7 +122,10 @@ reads `provider · session`, headline first and then one glyph per step:
 ```text
 ▸ test r1 · 2m ✓✓✓▸·····     running: step, round, how long the round has run
 ▲ review gate · 1 ask-user    parked on findings only the operator decides
+▲ review gate · 3 findings    parked on findings the worker decides (not amber)
 ✓ passed · PR #12             ended (✗ failed at ci, ⊘ cancelled)
+· queued                      read, but no step has started
+? started · not read yet      Firstmate attributed it; no read yet
 ? review r1 · daemon down     unverified: the last read, kept but not trusted
 ```
 
@@ -127,24 +133,29 @@ Step glyphs: `✓` completed, `-` skipped, `·` pending, `▸` running, `⚒`
 fixing, `▲` waiting at a gate, `✗` failed. A narrow card drops the glyphs
 before the headline, and ends a strip it cannot fit whole in `…`. The band
 reads `?` wherever nobody was reading the run (before the adapter first read
-it, while it was down, when a read failed or was not understood) and once the
+it, while it was down, when a read failed or was not understood), once the
 no-mistakes daemon is down, since its record may then be stale (a read that
-says the run ended is still taken). A run that
+says the run ended is still taken), and once the run's record is gone (`·
+record gone`). While in doubt the step glyphs dim too. A run that
 had ended cannot change and never reads `?`; a gate with ask-user findings
 stays amber, since it stays open until someone answers it. Runs outlive their
 workers: press `v` to see a finished worker's card while its CI still runs.
 
-The reading panel adds the run under its header: which run, when it was read
-and created, the gate and PR, then a row per step with its findings, how long
-it ran and when it got there. Those times are the adapter's, since the CLI
+The reading panel adds the run under its header: which run and its status,
+when it was read and created, why it is unverified if it is, the gate with its
+findings and ask-user count, the PR and any error the run reports. Then comes
+the step table, a row per step: its glyph, name and status with its round
+(`fixing r2`), its findings, how long it ran and when it got there. Those times are the adapter's, since the CLI
 only gives ages: `08:10:00–08:10:30` means it changed between two reads, `by
 08:10:30` that no earlier read is known, and `since 08:09:20 (derived)` is an
 active round's start worked out from its age. A panel too short for the table
 keeps the step the run is at and says how many rows it left out.
 
-On the scrubber, `▷` marks a run's start, `▲` a gate parking on ask-user
-findings (`△` on others), and `✓` / `✗` its end, each a `[` / `]` chapter;
-the steps between are not. A stretch where a run was alive but unread is hatched.
+On the scrubber a run leaves three kinds of mark: `▷` its start, `▲` each
+time a gate parks on ask-user findings (`△` on others), and its end, `✓`
+passed, `✗` failed or a dim `✗` cancelled. Each is a `[` / `]` chapter; the
+steps between are not, and the footer names the event at the playhead. A
+stretch where a run was alive but unread is hatched.
 Read failures, format drift and a down daemon are manifest diagnostics in the
 header. Try it on the synthetic crew with the runs the adapter read beside it
 (`assets/fleet/validation`):
@@ -162,9 +173,10 @@ read. Select a card whose band shows a run and press `p`: a list opens over
 the canvas with the run the band shows at the playhead and one row per
 transcript found for it. Each row gives the transcript's first and last
 record, how many tools it called, its subagents and model, and its session.
-`↑`/`↓` choose, Enter opens one in the session inspector (at the fleet's
-moment, like Enter on a card), Esc returns to the list, and Esc again closes
-it.
+`↑`/`↓` (or `j`/`k`) choose, Enter opens one in the session inspector (at the
+fleet's moment, like Enter on a card), Esc returns to the list, and Esc or `p`
+closes it. A card with no run at the playhead, or a run whose ID carries no
+time, says so instead of opening the list.
 
 The join is an inference, and the list says so. no-mistakes does not say
 which transcript is which agent, so the viewer uses what is on disk. Each
@@ -185,7 +197,8 @@ unreadable: Permission denied …            the file could not be read
 
 A run with nothing filed under its worktree says so: its agents may not have
 started yet, their transcripts may have been removed, or they may not be
-Claude's. An opened transcript is read-only and followed live while it is
+Claude's. The heading repeats the run, when it was created and whether a read
+has found it ended. An opened transcript is read-only and followed live while it is
 open. It is not a fleet member: it is not in the manifest or the journal, it
 does not count toward the crew or the 128-session cap, and closing it stops
 its watcher. The list reads files only. It never talks to no-mistakes or opens its
