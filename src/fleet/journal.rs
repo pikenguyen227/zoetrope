@@ -490,13 +490,13 @@ impl Lifecycle {
     /// timeline.
     ///
     /// A bridged spawn, teardown or status gives way only to the feed's own
-    /// record of it: the attempt's spawn, its teardown, a status stamped at
-    /// the same moment or, for a status line without a stamp, the feed's
-    /// status nearest when the bridge noticed it (the last before, or the
-    /// first after) if it says the same verb and key. So a status the feed
-    /// lost still places from the bridge, and a session join, which no feed
-    /// knows, always does. `Reach` in `scripts/firstmate-fleet.py` keeps the
-    /// adapter from writing what the feed already holds.
+    /// record of it: the attempt's spawn, its teardown, or a status stamped at
+    /// the same moment. So a status the feed lost still places from the
+    /// bridge, and a session join, which no feed knows, always does. A status
+    /// line without a stamp has no identity the two sides share, so its
+    /// bridged record always places, even beside the feed's. `Reach` in
+    /// `scripts/firstmate-fleet.py` keeps the adapter from writing what the
+    /// feed already holds.
     fn superseded(&self) -> BTreeSet<&str> {
         type Mark<'a> = (&'a Attempt, &'static str, Option<DateTime<Utc>>);
         fn mark(e: &LifecycleEvent) -> Option<Mark<'_>> {
@@ -510,42 +510,16 @@ impl Lifecycle {
                 _ => None,
             }
         }
-        type Said<'a> = (DateTime<Utc>, &'a str, Option<&'a str>);
-        fn saying(e: &LifecycleEvent) -> Option<(&Attempt, Said<'_>)> {
-            let Change::Status { status } = &e.change else {
-                return None;
-            };
-            Some((
-                e.attempt.as_ref()?,
-                (e.at?, status.value.as_str(), status.key.as_deref()),
-            ))
-        }
-        let feed = || {
-            self.events
-                .values()
-                .filter(|e| e.source.kind == SourceKind::Firstmate)
-        };
-        let held: BTreeSet<Mark> = feed().filter_map(mark).collect();
-        let mut said: BTreeMap<&Attempt, Vec<Said>> = BTreeMap::new();
-        for (attempt, s) in feed().filter_map(saying) {
-            said.entry(attempt).or_default().push(s);
-        }
-        let nearest = |attempt: &Attempt, (at, value, key): Said| {
-            let feed = said.get(attempt).map_or(&[][..], Vec::as_slice);
-            let before = feed.iter().filter(|s| s.0 <= at).max_by_key(|s| s.0);
-            let after = feed.iter().filter(|s| s.0 > at).min_by_key(|s| s.0);
-            [before, after]
-                .into_iter()
-                .flatten()
-                .any(|s| (s.1, s.2) == (value, key))
-        };
+        let held: BTreeSet<Mark> = self
+            .events
+            .values()
+            .filter(|e| e.source.kind == SourceKind::Firstmate)
+            .filter_map(mark)
+            .collect();
         self.events
             .values()
             .filter(|e| e.source.kind == SourceKind::Bridge)
-            .filter(|e| match mark(e) {
-                Some(m) => held.contains(&m),
-                None => saying(e).is_some_and(|(attempt, s)| nearest(attempt, s)),
-            })
+            .filter(|e| mark(e).is_some_and(|m| held.contains(&m)))
             .map(|e| e.id.as_str())
             .collect()
     }
@@ -1144,17 +1118,20 @@ mod tests {
             e
         });
         store.insert([since, first, noticed]);
-        // Each record replaces the bridge's line nearest it (s1, s2). s3 says
-        // what the feed's earlier line did but stands, and a bridged spawn and
-        // teardown stand until the feed records its own.
+        // Unstamped lines share no identity with the feed's, so every bridged
+        // one stands beside the feed's records (s1, s2 duplicate them), and the
+        // repeated s3 the feed lost places. A bridged spawn and teardown stand
+        // until the feed records its own.
         assert_eq!(
             ids(&store),
             [
                 "spawn",
                 "bound",
+                "s1",
                 "firstmate:fmh#w",
                 "c1",
                 "other",
+                "s2",
                 "firstmate:fmh#s",
                 "s3",
                 "c2",
@@ -1186,9 +1163,11 @@ mod tests {
             [
                 "firstmate:fmh#born",
                 "bound",
+                "s1",
                 "firstmate:fmh#w",
                 "c1",
                 "other",
+                "s2",
                 "firstmate:fmh#s",
                 "s3",
                 "c2",

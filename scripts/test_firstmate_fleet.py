@@ -305,7 +305,10 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual([(e["at"], e["at_quality"], e["status"]["value"]) for e in events(lost, "status")],
                          [(adapter.iso(B + 90), "stamp", "needs-decision")])
 
-    def test_an_unstamped_status_the_feed_lost_is_bridged_when_noticed(self):
+    def test_an_unstamped_status_is_always_bridged(self):
+        # No identity links an unstamped line to the feed's record of it, so
+        # the bridge writes it even beside the feed's (a duplicate is
+        # accepted), and a repeated one the feed lost is not missed.
         bridge = self.bridge()
         bridge.reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "spawned",
                           "at": adapter.iso(B), "at_quality": "firstmate",
@@ -314,12 +317,13 @@ class BridgeTests(unittest.TestCase):
                           "at": adapter.iso(B + 65), "at_quality": "observed",
                           "attempt": {"task": "t", "spawn_gen": "one"},
                           "status": {"value": "working"}})
-        statuses = [(B + 60, "working", "held"), (B + 90, "blocked", "lost", "ci")]
-        held, _ = observe(bridge, B + 70, [fm_task("t", "one", B + 70, statuses, stamped=False)])
-        self.assertEqual(events(held, "status"), [])
-        lost, _ = observe(bridge, B + 100, [fm_task("t", "one", B + 100, statuses, stamped=False)])
-        self.assertEqual([(e["at"], e["at_quality"], e["status"]["value"]) for e in events(lost, "status")],
-                         [(adapter.iso(B + 100), "observed", "blocked")])
+        statuses = [(B + 60, "working", "on it"), (B + 90, "working", "on it again")]
+        seen = []
+        for now in (B + 70, B + 100):
+            lines, _ = observe(bridge, now, [fm_task("t", "one", now, statuses, stamped=False)])
+            seen += [(e["at"], e["at_quality"], e["status"]["note"]) for e in events(lines, "status")]
+        self.assertEqual(seen, [(adapter.iso(B + 70), "observed", "on it"),
+                                (adapter.iso(B + 100), "observed", "on it again")])
 
     def test_teardown_and_relaunch_are_observed(self):
         bridge = self.bridge()
@@ -1031,18 +1035,11 @@ class FeedTests(unittest.TestCase):
         # A stamped status, by its stamp.
         self.assertTrue(reach.holds(fact("bridge", "status", B + 120, "stamp", **said("working"))))
         self.assertFalse(reach.holds(fact("bridge", "status", B + 130, "stamp", **said("working"))))
-        # A status without a stamp, by verb and key of the feed's status
-        # nearest when it was noticed: the last before, or the first after.
-        self.assertTrue(reach.holds(fact("bridge", "status", B + 40, **said("blocked", "ci"))))
-        self.assertTrue(reach.holds(fact("bridge", "status", B + 20, **said("blocked", "ci"))))
-        self.assertFalse(reach.holds(fact("bridge", "status", B + 40, **said("blocked"))))
-        self.assertFalse(reach.holds(fact("bridge", "status", B + 40, task="other", **said("blocked", "ci"))))
-        # A repeat the feed lost is not held by the feed's earlier line.
-        self.assertFalse(reach.holds(fact("bridge", "status", B + 20, **said("working"))))
-        self.assertFalse(reach.holds(fact("bridge", "status", B + 130, **said("blocked", "ci"))))
-        # Whatever the feed's time quality: a line stamped after the snapshot
-        # reads as unstamped to the bridge.
-        self.assertTrue(reach.holds(fact("bridge", "status", B + 110, **said("working"))))
+        # A status without a stamp has no identity the feed shares, so none
+        # holds it: not one saying the same, and not a repeat the feed lost.
+        for at in (B + 20, B + 40, B + 110, B + 130):
+            for value in (said("blocked", "ci"), said("working")):
+                self.assertFalse(reach.holds(fact("bridge", "status", at, **value)))
 
     def test_a_failed_poll_rereads_what_it_did_not_publish(self):
         writer = FeedWriter(self.root / "lifecycle")
