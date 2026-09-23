@@ -600,6 +600,9 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
         if let Some(event) = fleet.lifecycle.latest_at(fleet.at()) {
             let what = match &event.change {
                 super::journal::Change::Status { status } => status.value.clone(),
+                super::journal::Change::Validation { validation } => {
+                    super::validation::narrate(validation)
+                }
                 change => change.name().replace('_', " "),
             };
             let task = event.attempt.as_ref().map_or("", |a| a.task.as_str());
@@ -1220,6 +1223,154 @@ mod tests {
         let text = screen(&mut fleet);
         assert!(text.contains("◆"), "the footer narrates the crew");
         assert!(text.contains("tests working"));
+    }
+
+    /// The crew, with the validation runs the adapter read beside it
+    /// (`assets/fleet/validation`) in the same journal.
+    fn validating() -> (Fixture, Fleet) {
+        let fixture = Fixture::of("crew");
+        let runs = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/fleet/validation/fleet.events.jsonl"),
+        )
+        .unwrap();
+        let mut journal = std::fs::OpenOptions::new()
+            .append(true)
+            .open(fixture.0.join("fleet.events.jsonl"))
+            .unwrap();
+        journal.write_all(&runs).unwrap();
+        let path = fixture.0.join("fleet.json");
+        let manifest = load(&path).unwrap();
+        let mut fleet = Fleet::new(manifest.clone()).unwrap();
+        let poll = JournalTail::beside(&path).poll().unwrap();
+        assert_eq!(poll.rejected, 0);
+        fleet.absorb_lifecycle(poll.reset, poll.events, poll.rejected);
+        for spec in &manifest.sessions {
+            let session = resolve(spec).unwrap();
+            let (items, info, _) = crate::tailer::replay::build_replay(&session);
+            fleet.event(
+                &spec.key,
+                UiEvent::ReplayLoaded {
+                    session_id: session.id,
+                    items,
+                    info,
+                    speed: 1.0,
+                },
+            );
+        }
+        fleet.sync();
+        (fixture, fleet)
+    }
+
+    fn band(fleet: &mut Fleet, id: &str) -> Option<crate::ui::nodes::ValidationBand> {
+        fleet.overview.flow.node_content_mut(id)?.validation.clone()
+    }
+
+    #[test]
+    fn a_workers_card_carries_its_validation_run_as_of_the_playhead() {
+        use crate::ui::nodes::CrewTone;
+        let (_fixture, mut fleet) = validating();
+        // Before its run began, impl's card is as it was.
+        seek(&mut fleet, "08:07:40");
+        assert!(band(&mut fleet, &root("impl")).is_none());
+        seek(&mut fleet, "08:08:00");
+        let running = band(&mut fleet, &root("impl")).unwrap();
+        assert_eq!(
+            (running.glyph, running.headline.as_str()),
+            ('▸', "review r1 · 12s")
+        );
+        // The adapter was down: the last read, unverified.
+        seek(&mut fleet, "08:09:00");
+        assert_eq!(band(&mut fleet, &root("impl")).unwrap().glyph, '?');
+        // The run outlives its worker: impl was torn down, its card still says.
+        seek(&mut fleet, "08:12:00");
+        assert!(mark(&mut fleet, &root("impl")).is_none_or(|m| m.dimmed));
+        fleet.toggle_finished();
+        let ci = band(&mut fleet, &root("impl")).unwrap();
+        assert_eq!(ci.headline, "ci r1 · 1m");
+        seek(&mut fleet, "08:14:10");
+        let passed = band(&mut fleet, &root("impl")).unwrap();
+        assert_eq!(
+            (passed.glyph, passed.headline.as_str()),
+            ('✓', "passed · PR #12")
+        );
+        // Today: tests' gate is still open, unverified since the adapter stopped.
+        fleet.go_live();
+        fleet.sync();
+        let asking = band(&mut fleet, &root("tests")).unwrap();
+        assert_eq!((asking.glyph, asking.tone), ('?', CrewTone::Attention));
+        assert_eq!(asking.headline, "review gate · 1 ask-user");
+        // The footer narrates the newest event, a run's included.
+        seek(&mut fleet, "08:16:00");
+        assert!(screen(&mut fleet).contains("tests validation gate review"));
+    }
+
+    #[test]
+    fn validation_marks_its_start_gate_and_end_on_the_scrubber() {
+        let (_fixture, mut fleet) = validating();
+        seek(&mut fleet, "08:16:30");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut fleet)).unwrap();
+        let bar = fleet.overview.scrubber_area.unwrap();
+        let buffer = terminal.backend().buffer();
+        let markers: String = (bar.x..bar.x + bar.width)
+            .map(|x| buffer[(x, bar.y)].symbol().to_string())
+            .collect();
+        for glyph in ["▷", "✓", "▲"] {
+            assert!(markers.contains(glyph), "{glyph} missing from {markers:?}");
+        }
+        // Each step a read found is a chapter: `]` from impl's done lands on
+        // its run's start, then its first read.
+        seek(&mut fleet, "08:07:40");
+        route(&mut fleet, &key(KeyCode::Char(']')));
+        assert_eq!(fleet.at(), Some(at("08:07:45")));
+        route(&mut fleet, &key(KeyCode::Char(']')));
+        assert_eq!(fleet.at(), Some(at("08:08:00")));
+    }
+
+    #[test]
+    fn a_narrow_fleet_shows_the_band_on_the_card_and_the_table_in_the_panel() {
+        let (_fixture, mut fleet) = validating();
+        // impl was torn down as its run went on: shown, it is still there.
+        fleet.toggle_finished();
+        seek(&mut fleet, "08:10:00");
+        // The card: its band in the description's row.
+        let card = screen(&mut fleet);
+        assert!(
+            card.contains("▸ test · 40s ✓✓✓▸·····"),
+            "the band is on the card"
+        );
+        fleet.overview.flow.select_node(&root("impl"));
+        let mut panel_at = |height: u16| {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut fleet)).unwrap();
+            let panel = fleet.overview.detail_area.unwrap();
+            assert!(panel.width <= 40, "{panel:?}");
+            let buffer = terminal.backend().buffer();
+            (panel.y..panel.y + panel.height)
+                .map(|y| {
+                    (panel.x..panel.x + panel.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let text = panel_at(44);
+        assert!(text.contains("─ validation"), "{text}");
+        assert!(text.contains("run 01M342G5B2S1MP13RVNV"), "{text}");
+        assert!(text.contains("✓ review   completed"), "{text}");
+        assert!(text.contains("▸ test     running"), "{text}");
+        // The tool list keeps its rows below it.
+        assert!(text.contains("shell"), "{text}");
+        // Shorter: the step the run is at stays, with what was left out.
+        let text = panel_at(34);
+        assert!(text.contains("… 3 earlier"), "{text}");
+        assert!(text.contains("▸ test     running"), "{text}");
+        assert!(text.contains("… 5 more"), "{text}");
+        assert!(text.contains("shell"), "{text}");
     }
 
     fn key(code: KeyCode) -> Event {
