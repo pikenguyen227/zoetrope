@@ -1033,7 +1033,7 @@ def read_run(text, run_id):
     if run.get("id") != run_id:
         raise Drift("the output names another run")
     status = run.get("status")
-    if status not in RUN_STATUSES:
+    if not isinstance(status, str) or status not in RUN_STATUSES:
         raise Drift(f"run status {status!r}")
     steps, names = [], {}
     for row in toon_table(run, "steps", ("step", "status")):
@@ -1068,7 +1068,7 @@ def read_run(text, run_id):
             state[field] = run[field][:1024]
     gate = doc.get("gate")
     if gate is not None:
-        if not isinstance(gate, dict) or gate.get("step") not in names:
+        if not isinstance(gate, dict) or not isinstance(gate.get("step"), str) or gate["step"] not in names:
             raise Drift("the gate names no step")
         findings = toon_table(gate, "findings", ("action",)) if "findings" in gate else []
         state["gate"] = {"step": gate["step"], "findings": len(findings),
@@ -1076,7 +1076,7 @@ def read_run(text, run_id):
         if isinstance(gate.get("status"), str) and gate["status"]:
             state["gate"]["status"] = gate["status"][:64]
     if "outcome" in doc:
-        if doc["outcome"] not in OUTCOMES:
+        if not isinstance(doc["outcome"], str) or doc["outcome"] not in OUTCOMES:
             raise Drift(f"outcome {doc['outcome']!r}")
         state["outcome"] = doc["outcome"]
     if isinstance(doc.get("error"), str) and doc["error"].strip():
@@ -1251,7 +1251,10 @@ class Validation:
             unverified = 0
             for key in due:
                 if daemon == "down":
-                    lines += self.read(key, ended_only=True)[0]
+                    found, note = self.read(key, ended_only=True)
+                    lines += found
+                    if note:
+                        notes.append(f"{key[0]}: validation run {key[2]} {note}")
                     if self.runs[key]["final"]:
                         continue
                 lines += self.stop(key)

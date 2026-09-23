@@ -1408,6 +1408,9 @@ class ToonTests(unittest.TestCase):
             "an outcome": text + "outcome: maybe\n",
             "a gate on no step": text + "gate:\n  step: deploy\n",
             "a gate without actions": text + "gate:\n  step: review\n  findings[1]{id,severity}:\n    r1,info\n",
+            "a nested run status": text.replace("  status: running", "  status:\n    phase: running", 1),
+            "a nested outcome": text + "outcome:\n  value: passed\n",
+            "a nested gate step": text + "gate:\n  step:\n    name: review\n",
         }
         for name, case in cases.items():
             with self.subTest(name), self.assertRaises(adapter.Drift):
@@ -1577,6 +1580,18 @@ class ValidationTests(unittest.TestCase):
         self.validation, self.down = self.collector(), {B + 700}
         lines, notes = self.poll(B + 700, text=capture("impl-passed").replace(IMPL_RUN, TESTS_RUN))
         self.assertEqual([p for p, *_ in self.seen(lines)], ["started", "ended"])
+
+    def test_a_read_while_the_daemon_is_down_keeps_its_diagnostics(self):
+        self.poll(B + 600, text="impl-review")
+        self.down = {B + 610, B + 620}
+        lines, notes = self.poll(B + 610, text="run:\n  id: \"" + IMPL_RUN + "\"\n  status: warming\n")
+        self.assertIn("daemon_down", [p for p, *_ in self.seen(lines)])
+        self.assertEqual(len(notes), 2)
+        self.assertIn("output not understood (run status 'warming')", notes[0])
+        self.assertEqual(notes[1], "no-mistakes daemon is down: 1 validation run(s) unverified")
+        lines, notes = self.poll(B + 620, text=capture("not-found"))
+        self.assertEqual([p for p, *_ in self.seen(lines)], ["gone"])
+        self.assertEqual(notes, [f"impl: validation run {IMPL_RUN} is gone from no-mistakes; its last read stays"])
 
     def test_drift_and_failed_reads_write_nothing_and_break_coverage(self):
         self.poll(B + 600, text="impl-review")
