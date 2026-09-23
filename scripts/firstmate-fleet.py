@@ -8,7 +8,9 @@ Beside the manifest, the journal records lifecycle events (spawned, bound,
 status, torn_down, ...) and the windows they cover, for the fleet timeline.
 Firstmate's own fm-lifecycle.v1 feeds are the source (see Feeds); where no
 feed speaks, the adapter bridges lifecycle from successive snapshots (see
-Bridge).
+Bridge). The no-mistakes validation run Firstmate attributes to a task is
+read through two allow-listed CLI calls and journalled as it changes (see
+Validation); the adapter never drives a run or its daemon.
 
 --archive and --delete remove records: the whole fleet, or one worker with
 --worker. Archive moves them into a backup-<time> directory beside the
@@ -203,11 +205,13 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
             "diagnostics": diagnostics}
 
 
-def run_json(argv, env=None, timeout=45):
-    # All arguments are separate argv entries. Stop only this observation's
-    # process group on timeout, including any shell children it started.
+def run_text(argv, env=None, timeout=45, cwd=None):
+    """(exit status, stdout, stderr) of one observation command.
+
+    All arguments are separate argv entries. Stop only this observation's
+    process group on timeout, including any shell children it started."""
     with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          text=True, env=env, start_new_session=True) as process:
+                          text=True, env=env, cwd=cwd, start_new_session=True) as process:
         try:
             out, err = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -217,13 +221,21 @@ def run_json(argv, env=None, timeout=45):
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.communicate()
-            raise RuntimeError(f"observation timed out: {argv[0]}")
-        if process.returncode:
-            raise RuntimeError((err or out or f"command failed: {argv[0]}").strip()[:600])
-        data = json.loads(out)
-        if isinstance(data, dict) and data.get("error"):
-            raise RuntimeError(str(data["error"])[:600])
-        return data
+            raise TimeoutError(f"observation timed out: {argv[0]}")
+        return process.returncode, out, err
+
+
+def run_json(argv, env=None, timeout=45):
+    try:
+        code, out, err = run_text(argv, env, timeout)
+    except TimeoutError as error:
+        raise RuntimeError(str(error))
+    if code:
+        raise RuntimeError((err or out or f"command failed: {argv[0]}").strip()[:600])
+    data = json.loads(out)
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(str(data["error"])[:600])
+    return data
 
 
 def pane_get(herdr, target):
@@ -838,14 +850,509 @@ class Feeds:
         return lines, "; ".join(notes) or None
 
 
-def lifecycle(snapshot, manifest, bridge, feeds):
+NM_TIMEOUT = 5
+RUN_ID = re.compile(r"[0-7][0-9A-HJKMNP-TV-Z]{25}")  # a ULID
+CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+RUN_STATUSES = {"pending", "running", "fixing", "ci", "completed", "failed", "cancelled"}
+RUN_ENDED = {"completed", "failed", "cancelled"}
+STEP_STATUSES = {"pending", "running", "fixing", "awaiting_approval", "completed", "skipped", "failed"}
+STEP_SETTLED = {"completed", "skipped", "failed"}
+OUTCOMES = {"checks-passed", "passed", "passed-with-override", "passed-with-skips", "failed", "cancelled"}
+STEP_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+DURATION = re.compile(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?(?:(\d+)ms)?")
+TOON_KEY = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
+                      r"(?:\[(?P<count>\d+)\](?:\{(?P<fields>[A-Za-z0-9_,]*)\})?)?:(?: (?P<value>.*))?")
+
+
+class Drift(ValueError):
+    """no-mistakes printed something this adapter does not understand. It is
+    reported, never guessed at: nothing is journalled from that read."""
+
+
+class Unreadable(RuntimeError):
+    """The CLI answered with its own error instead of a run."""
+
+
+def run_epoch(run_id):
+    """When a run was created, from its ULID: its first ten characters count
+    milliseconds since the epoch. None for anything that is not a ULID."""
+    if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
+        return None
+    ms = 0
+    for char in run_id[:10]:
+        ms = ms * 32 + CROCKFORD.index(char)
+    return ms // 1000
+
+
+class Rows:
+    """A TOON table or list, `key[N]{a,b}:` or `key[N]:`, with its rows kept
+    unsplit until read (toon_table): a part this adapter does not read (help,
+    next_action, ...) cannot fail a read."""
+
+    def __init__(self, count, fields, rows, inline):
+        self.count, self.fields, self.rows, self.inline = count, fields, rows, inline
+
+
+def toon(text):
+    """The TOON `axi status` prints, as nested dicts: `key: value` is a string
+    (a quoted one unescaped), `key:` an object of the lines one level in, and
+    a table or list is Rows. Indentation is two spaces a level, and a key
+    appears once per object; anything else is Drift."""
+    lines = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        body = line.lstrip(" ")
+        indent = len(line) - len(body)
+        if indent % 2 or body[0].isspace():
+            raise Drift(f"line {number}: indentation")
+        lines.append((indent // 2, body.rstrip(), number))
+    return toon_block(lines, 0)
+
+
+def toon_block(lines, depth):
+    node, i = {}, 0
+    while i < len(lines):
+        level, body, number = lines[i]
+        match = TOON_KEY.fullmatch(body)
+        if level != depth or not match:
+            raise Drift(f"line {number}: {'indentation' if level != depth else 'not a key'}")
+        key = match["key"]
+        if key in node:
+            raise Drift(f"line {number}: {key} twice")
+        start = i = i + 1
+        while i < len(lines) and lines[i][0] > depth:
+            i += 1
+        children = lines[start:i]
+        if match["count"] is not None:
+            if any(level != depth + 1 for level, _, _ in children):
+                raise Drift(f"line {number}: {key} rows are not one level in")
+            fields = match["fields"].split(",") if match["fields"] is not None else None
+            node[key] = Rows(int(match["count"]), fields, [body for _, body, _ in children],
+                             match["value"])
+        elif match["value"] is not None:
+            if children:
+                raise Drift(f"line {number}: {key} has a value and lines under it")
+            node[key] = toon_scalar(match["value"], f"line {number}")
+        else:
+            node[key] = toon_block(children, depth + 1)
+    return node
+
+
+def toon_scalar(text, where):
+    if not text.startswith('"'):
+        return text
+    try:
+        value = json.loads(text)
+    except ValueError:
+        raise Drift(f"{where}: unterminated quote") from None
+    if not isinstance(value, str):
+        raise Drift(f"{where}: not a string")
+    return value
+
+
+def toon_cells(row, where):
+    """One table row's cells: comma-separated, a quoted cell unescaped."""
+    cells, i = [], 0
+    while True:
+        if row.startswith('"', i):
+            j = i + 1
+            while j < len(row) and row[j] != '"':
+                j += 2 if row[j] == "\\" else 1
+            if j >= len(row):
+                raise Drift(f"{where}: unterminated quote")
+            cells.append(toon_scalar(row[i:j + 1], where))
+            i = j + 1
+        else:
+            j = row.find(",", i)
+            j = len(row) if j < 0 else j
+            cells.append(row[i:j])
+            i = j
+        if i == len(row):
+            return cells
+        if row[i] != ",":
+            raise Drift(f"{where}: text after a quoted cell")
+        i += 1
+
+
+def toon_table(node, key, need):
+    """Table `key`'s rows as dicts: Drift unless it has the columns in `need`
+    and exactly as many rows as its header counts."""
+    table = node.get(key)
+    if not isinstance(table, Rows) or table.fields is None:
+        raise Drift(f"{key} is not a table")
+    missing = [field for field in need if field not in table.fields]
+    if missing:
+        raise Drift(f"{key} has no {', '.join(missing)} column")
+    if len(table.rows) != table.count:
+        raise Drift(f"{key} counts {table.count} rows but has {len(table.rows)}")
+    found = []
+    for n, row in enumerate(table.rows, 1):
+        cells = toon_cells(row, f"{key} row {n}")
+        if len(cells) != len(table.fields):
+            raise Drift(f"{key} row {n} has {len(cells)} cells for {len(table.fields)} columns")
+        found.append(dict(zip(table.fields, cells)))
+    return found
+
+
+def whole(text, where):
+    if not text.isdigit():
+        raise Drift(f"{where} {text!r} is not a count")
+    return int(text)
+
+
+def seconds(text, where):
+    """A Go-style age such as 2m10s, in whole seconds; None when empty."""
+    match = DURATION.fullmatch(text)
+    if not text:
+        return None
+    if not match or not any(match.groups()):
+        raise Drift(f"{where} {text!r} is not a duration")
+    h, m, s, ms = (float(g) if g else 0 for g in match.groups())
+    return int(h * 3600 + m * 60 + s + ms / 1000)
+
+
+def read_run(text, run_id):
+    """One `axi status --run` read as (state, round ages).
+
+    The state is what the journal records: the run's status, every step's
+    status, round and findings, a waiting gate, outcome, PR and error, and
+    nothing that changes on every read (activity ages, process IDs), so a run
+    that did not change reads the same twice. The round ages are how long each
+    active step's current round had run, in seconds, for a derived start.
+    Raises Unreadable for the CLI's own error and Drift for anything else it
+    does not understand."""
+    doc = toon(text)
+    run = doc.get("run", doc.get("other_branch_run"))
+    if run is None:
+        if isinstance(doc.get("error"), str):
+            raise Unreadable(doc["error"])
+        raise Drift("no run object")
+    if not isinstance(run, dict):
+        raise Drift("run is not an object")
+    if run.get("id") != run_id:
+        raise Drift("the output names another run")
+    status = run.get("status")
+    if status not in RUN_STATUSES:
+        raise Drift(f"run status {status!r}")
+    steps, names = [], {}
+    for row in toon_table(run, "steps", ("step", "status")):
+        name, value = row["step"], row["status"]
+        if not STEP_NAME.fullmatch(name) or name in names:
+            raise Drift(f"step name {name!r}")
+        if value not in STEP_STATUSES:
+            raise Drift(f"{name} status {value!r}")
+        step = {"step": name, "status": value}
+        if "findings" in row:
+            step["findings"] = whole(row["findings"], f"{name} findings")
+        if value in STEP_SETTLED and "duration_ms" in row:
+            # Time the step ran, parked time excluded: a fact about the step,
+            # not a place on the timeline. It changes while a step is active.
+            step["duration_ms"] = whole(row["duration_ms"], f"{name} duration_ms")
+        steps.append(step)
+        names[name] = step
+    ages = {}
+    if "active_steps" in run:
+        for row in toon_table(run, "active_steps", ("step", "status")):
+            step = names.get(row["step"])
+            if step is None:
+                raise Drift(f"active step {row['step']!r} is not a step")
+            if (row.get("round") or "").strip():
+                step["round"] = row["round"].strip()[:64]
+            age = seconds(row.get("round_active_for") or "", f"{row['step']} round_active_for")
+            if age is not None:
+                ages[row["step"]] = age
+    state = {"status": status, "steps": steps}
+    for field in ("branch", "pr"):
+        if isinstance(run.get(field), str) and run[field].strip():
+            state[field] = run[field][:1024]
+    gate = doc.get("gate")
+    if gate is not None:
+        if not isinstance(gate, dict) or gate.get("step") not in names:
+            raise Drift("the gate names no step")
+        findings = toon_table(gate, "findings", ("action",)) if "findings" in gate else []
+        state["gate"] = {"step": gate["step"], "findings": len(findings),
+                         "ask_user": sum(1 for f in findings if f["action"] == "ask-user")}
+        if isinstance(gate.get("status"), str) and gate["status"]:
+            state["gate"]["status"] = gate["status"][:64]
+    if "outcome" in doc:
+        if doc["outcome"] not in OUTCOMES:
+            raise Drift(f"outcome {doc['outcome']!r}")
+        state["outcome"] = doc["outcome"]
+    if isinstance(doc.get("error"), str) and doc["error"].strip():
+        state["error"] = doc["error"][:1024]
+    return state, ages
+
+
+class NoMistakes:
+    """The no-mistakes CLI, limited to two reads: `axi status --run <id>`,
+    which reads a run's record without the daemon's socket, and `daemon
+    status`, which says whether the daemon behind that record still runs.
+    Both run from / with the CLI's network update check off and a short
+    timeout. Nothing here responds to, aborts, reruns, syncs or attaches to a
+    run, touches the daemon, or opens no-mistakes' database."""
+
+    def __init__(self, binary=None, timeout=NM_TIMEOUT):
+        self.binary = binary or os.environ.get("ZOE_NO_MISTAKES_BIN") or "no-mistakes"
+        self.timeout = timeout
+
+    def call(self, *argv):
+        if argv != ("daemon", "status") and not (len(argv) == 4 and argv[:3] == ("axi", "status", "--run")):
+            raise ValueError(f"not an allow-listed no-mistakes read: {' '.join(argv)}")
+        env = dict(os.environ, NO_MISTAKES_NO_UPDATE_CHECK="1")
+        return run_text([self.binary, *argv], env, self.timeout, cwd="/")
+
+    def daemon(self):
+        """up, down, or unanswered (a timeout proves nothing), as Firstmate
+        reads the same probe."""
+        try:
+            code, _, _ = self.call("daemon", "status")
+        except TimeoutError:
+            return "unanswered"
+        return "up" if code == 0 else "down"
+
+    def status(self, run_id):
+        code, out, err = self.call("axi", "status", "--run", run_id)
+        if not out.strip():
+            raise Unreadable((err or f"no output, exit status {code}").strip()[:600])
+        return out
+
+
+def epoch_of(stamp):
+    return int(dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp())
+
+
+def sighting(payload):
+    """The state a `validation` event recorded, as read_run returns it."""
+    state = {k: copy.deepcopy(payload[k]) for k in
+             ("status", "branch", "steps", "gate", "outcome", "pr", "error") if k in payload}
+    for step in state.get("steps", []):
+        step.pop("round_since", None)
+    return state
+
+
+class Validation:
+    """Journal the no-mistakes run Firstmate attributes to each task.
+
+    Firstmate publishes the attribution, the snapshot task's validation_run;
+    this adapter never matches runs by branch. It reads each attributed run
+    through NoMistakes, parses the output strictly (read_run), and journals a
+    `validation` event only when what it read changed:
+
+    - `started` at the run's creation time, from its ID ("derived");
+    - `seen` for a change, `parked` when a gate newly waits on a decision,
+      `ended` when the run newly reached completed, failed or cancelled. Each
+      carries the whole state read and `since`, the read before it: the change
+      happened after `since` and at or before `at`, this read ("observed").
+      The CLI's times are relative, so no event claims a source time; an
+      active round's start is derived from its age, to the second;
+    - `daemon_down` when `no-mistakes daemon status` answers that the daemon
+      is down, so a record still saying running is a dead instrument's: the
+      view reads the run as unverified, and an open gate stays open;
+    - `gone` when the run's record can no longer be found.
+
+    `validation_coverage` events are the windows in which each run was read,
+    like the bridge's, broken whenever a read fails: a stretch nobody read
+    shows as unverified rather than steady. A read that fails or is not
+    understood writes no event and is a manifest diagnostic. A run is read
+    until it ends, even after its task leaves the snapshot (runs outlive their
+    workers), and across restarts: recover() resumes from the journal and
+    re-emits nothing it wrote.
+    """
+
+    def __init__(self, fleet_id, run, max_gap=60, checkpoint=60, reader=None, clock=None):
+        self.fleet_id = fleet_id
+        self.run = run
+        self.max_gap = max_gap
+        self.checkpoint = checkpoint
+        self.reader = reader or NoMistakes()
+        self.clock = clock or (lambda: int(time.time()))
+        # (task, spawn_gen, run id) -> what was written and read about it.
+        self.runs = {}
+
+    def track(self, key):
+        return self.runs.setdefault(key, {"started": False, "state": None, "read": None,
+                                          "down": False, "final": False,
+                                          "window": None, "written": None})
+
+    def recover(self, records):
+        """Resume from journal records, so a restart re-emits nothing it wrote
+        and keeps reading the runs that had not ended."""
+        for record in records:
+            if record.get("schema") != JOURNAL or record.get("kind") != "lifecycle":
+                continue
+            event = record.get("event") or {}
+            kind = event.get("type")
+            payload = event.get(kind) if kind in ("validation", "validation_coverage") else None
+            attempt = attempt_of(event)
+            if ((event.get("source") or {}).get("kind") != "no_mistakes" or not isinstance(payload, dict)
+                    or not attempt or run_epoch(payload.get("run")) is None):
+                continue
+            state = self.track(attempt + (payload["run"],))
+            try:
+                if kind == "validation_coverage":
+                    state["read"] = max(state["read"] or 0, epoch_of(payload["to"]))
+                    continue
+                phase = payload.get("phase")
+                if phase == "started":
+                    state["started"] = True
+                elif phase in ("seen", "parked", "ended"):
+                    state.update(state=sighting(payload), down=False,
+                                 read=max(state["read"] or 0, epoch_of(event["at"])))
+                    state["final"] |= phase == "ended"
+                elif phase == "daemon_down":
+                    state["down"] = True
+                elif phase == "gone":
+                    state["final"] = True
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    def line(self, key, kind, ident, at, quality, payload):
+        task, gen, run = key
+        return {"schema": JOURNAL, "kind": "lifecycle", "event": {
+            "id": f"validation:{self.fleet_id}#{task}/{gen}/{run}/{ident}",
+            "source": {"kind": "no_mistakes", "run": self.run},
+            "at": iso(at), "at_quality": quality,
+            "attempt": {"task": task, "spawn_gen": gen},
+            "type": kind, kind: payload}}
+
+    def event(self, key, phase, at, quality="observed", ident=None, **payload):
+        return self.line(key, "validation", ident or f"{phase}/{at}", at, quality,
+                         dict({"run": key[2], "phase": phase}, **payload))
+
+    def observe(self, snapshot):
+        """Journal lines and manifest diagnostics for one poll."""
+        lines, notes = [], []
+        for task in snapshot["tasks"]:
+            found, gen = task.get("validation_run"), task.get("spawn_gen")
+            if found is None or not gen or task.get("remote"):
+                continue  # Nothing attributed, or an attempt out of reach.
+            run_id = found.get("id") if isinstance(found, dict) else None
+            if run_epoch(run_id) is None:
+                notes.append(f"{task['id']}: validation run {run_id!r} is not a no-mistakes run ID; not read")
+                continue
+            key = (task["id"], gen, run_id)
+            state = self.track(key)
+            if not state["started"]:
+                now, epoch = self.clock(), run_epoch(run_id)
+                at, quality = (epoch, "derived") if epoch <= now else (now, "observed")
+                lines.append(self.event(key, "started", at, quality, ident="started"))
+                state["started"] = True
+        due = [key for key, state in self.runs.items() if not state["final"]]
+        if not due:
+            return lines, notes
+        try:
+            daemon = self.reader.daemon()
+        except OSError as error:
+            daemon = "unanswered"
+            notes.append(f"no-mistakes could not be run: {error.strerror or error}")
+        if daemon != "up":
+            for key in due:
+                lines += self.stop(key)
+                if daemon == "down" and not self.runs[key]["down"]:
+                    lines.append(self.event(key, "daemon_down", self.clock()))
+                    self.runs[key]["down"] = True
+            notes.append(f"no-mistakes daemon is down: {len(due)} validation run(s) unverified"
+                         if daemon == "down" else "no-mistakes daemon did not answer; validation unverified")
+            return lines, notes
+        for key in due:
+            found, note = self.read(key)
+            lines += found
+            if note:
+                notes.append(f"{key[0]}: validation run {key[2]} {note}")
+        return lines, notes
+
+    def read(self, key):
+        """Lines for one run's read, and a diagnostic when it failed."""
+        state = self.runs[key]
+        try:
+            read, ages = read_run(self.reader.status(key[2]), key[2])
+        except Unreadable as error:
+            lines = self.stop(key)
+            if str(error) != f'run "{key[2]}" not found':
+                return lines, f"unreadable: {error}"
+            state["final"] = True
+            return lines + [self.event(key, "gone", self.clock(), ident="gone")], \
+                "is gone from no-mistakes; its last read stays"
+        except Drift as error:
+            return self.stop(key), f"output not understood ({error}); unverified until it reads again"
+        except (OSError, TimeoutError) as error:
+            return self.stop(key), f"unreadable: {getattr(error, 'strerror', None) or error}"
+        now = self.clock()
+        lines = []
+        if read != state["state"] or state["down"]:
+            before = state["state"] or {}
+            if read["status"] in RUN_ENDED and before.get("status") not in RUN_ENDED:
+                phase = "ended"
+            elif read.get("gate") and read["gate"] != before.get("gate"):
+                phase = "parked"
+            else:
+                phase = "seen"
+            payload = copy.deepcopy(read)
+            for step in payload["steps"]:
+                if step["step"] in ages:
+                    step["round_since"] = iso(now - ages[step["step"]])
+            if state["read"] is not None:
+                payload["since"] = iso(state["read"])
+            digest = hashlib.sha256(json.dumps(read, sort_keys=True).encode()).hexdigest()[:16]
+            lines.append(self.event(key, phase, now, ident=f"{phase}/{now}/{digest}", **payload))
+            state.update(state=read, down=False)
+        state["read"] = now
+        lines = self.cover(key, now, bool(lines)) + lines
+        if read["status"] in RUN_ENDED:
+            state["final"] = True
+            lines += self.stop(key)
+        return lines, None
+
+    def cover(self, key, now, due=False):
+        """Extend the run's open coverage window to `now`, as Bridge.cover."""
+        state, lines = self.runs[key], []
+        if state["window"] and now - state["window"][1] > self.max_gap:
+            lines += self.stop(key)
+        if not state["window"]:
+            state["window"] = [now, now]
+            due = True
+        state["window"][1] = now
+        if due or now - state["written"] >= self.checkpoint:
+            lines.append(self.segment(key))
+        return lines
+
+    def segment(self, key):
+        state = self.runs[key]
+        start = state["window"][0] if state["written"] is None else state["written"]
+        state["written"] = state["window"][1]
+        return self.line(key, "validation_coverage", f"coverage/{self.run}/{start}-{state['written']}",
+                         state["written"], "observed",
+                         {"run": key[2], "from": iso(start), "to": iso(state["written"]),
+                          "max_gap": math.ceil(self.max_gap)})
+
+    def stop(self, key):
+        """End the run's coverage at its last read: a read failed, the run
+        ended, or the adapter stops."""
+        state, lines = self.runs[key], []
+        if state["window"] and state["written"] != state["window"][1]:
+            lines.append(self.segment(key))
+        state["window"] = state["written"] = None
+        return lines
+
+    def close(self):
+        return [line for key in list(self.runs) for line in self.stop(key)]
+
+
+def lifecycle(snapshot, manifest, bridge, feeds, validation=None):
     """One poll's lifecycle lines. The feeds are read first, so the bridge
-    knows what they already hold; their diagnostics join the manifest's."""
+    knows what they already hold; their diagnostics join the manifest's, as
+    do validation's."""
     found, notes = feeds.poll(snapshot)
     manifest["diagnostics"].extend(notes)
     for line in found:
         bridge.reach.add(line["event"])
-    return found + bridge.observe(snapshot, manifest)
+    lines = found + bridge.observe(snapshot, manifest)
+    if validation is not None:
+        read, notes = validation.observe(snapshot)
+        manifest["diagnostics"].extend(notes)
+        lines += read
+    return lines
 
 
 def semantic(value):
@@ -1233,7 +1740,7 @@ def main():
     if lock is None:
         parser.error("a collector already owns this fleet; open its existing manifest")
     previous = recover(output)
-    bridge = feeds = None
+    bridge = feeds = validation = None
     viewer = None
     request = output.with_suffix(".request.json")
     note = None
@@ -1244,10 +1751,14 @@ def main():
                                              previous, args.captain)
                 if bridge is None:
                     max_gap = max(60, 4 * args.interval)
-                    bridge = Bridge(manifest["fleet_id"], f"{now()}/{os.getpid()}", max_gap=max_gap)
+                    run = f"{now()}/{os.getpid()}"
+                    bridge = Bridge(manifest["fleet_id"], run, max_gap=max_gap)
                     bridge.recover(journal_records(output))
                     feeds = Feeds(output.with_suffix(".feeds.json"), max_gap=max_gap)
-                publish(output, manifest, previous, lifecycle(snapshot, manifest, bridge, feeds))
+                    validation = Validation(manifest["fleet_id"], run, max_gap=max_gap)
+                    validation.recover(journal_records(output))
+                publish(output, manifest, previous,
+                        lifecycle(snapshot, manifest, bridge, feeds, validation))
                 # After the journal holds what was read: a crash or failed poll between
                 # the two re-reads it, and the same IDs change nothing.
                 feeds.save()
@@ -1255,10 +1766,10 @@ def main():
             except (OSError, RuntimeError, ValueError, KeyError) as error:
                 if bridge:
                     try:
-                        append_journal(output, bridge.close())
+                        append_journal(output, bridge.close() + validation.close())
                     except OSError:
                         pass
-                bridge = feeds = None
+                bridge = feeds = validation = None
                 message = f"fleet refresh failed; retaining last snapshot: {error}"
                 if previous is None or not args.watch:
                     print(message, file=sys.stderr)
@@ -1300,7 +1811,7 @@ def main():
                 # a new viewer opens on it. A worker still registered comes
                 # back with that poll, as it should.
                 if bridge:
-                    append_journal(output, bridge.close() + feeds.close())
+                    append_journal(output, bridge.close() + feeds.close() + validation.close())
                     feeds.save()
                 note = carry_out(output, request)
                 print(f"{note}; collecting a fresh view...", flush=True)
@@ -1313,7 +1824,7 @@ def main():
             viewer.wait(timeout=5)
         if bridge:
             try:
-                append_journal(output, bridge.close() + feeds.close())
+                append_journal(output, bridge.close() + feeds.close() + validation.close())
                 feeds.save()
             except OSError:
                 pass

@@ -1,0 +1,25 @@
+run:
+  id: "01M342X98JT3STSRVNVA11DAT1"
+  branch: fm/tests
+  status: running
+  awaiting_agent: parked 20s
+  head: 7c3d1e00
+  head_sha: 7c3d1e0000000000000000000000000000000000
+  findings: 1 awaiting
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,5
+    rebase,completed,0,2304
+    review,awaiting_approval,2,41210
+    test,pending,0,0
+    document,pending,0,0
+    lint,pending,0,0
+    push,pending,0,0
+    pr,pending,0,0
+    ci,pending,0,0
+gate:
+  step: review
+  status: awaiting_approval
+  findings[2]{id,severity,file,action,description}:
+    review-1,warning,src/parser.rs,auto-fix,"An error from the tokenizer is ignored"
+    review-2,error,"",ask-user,"skipping the flaky test changes intended behaviour; keep it, fix it, or drop it?"
+help[2]: "The explicitly selected gate for run 01M342X98JT3STSRVNVA11DAT1 is inspection-only; no run-scoped response command exists, so answer from its worktree",Run `no-mistakes axi logs --run 01M342X98JT3STSRVNVA11DAT1 --step review` to read the step log

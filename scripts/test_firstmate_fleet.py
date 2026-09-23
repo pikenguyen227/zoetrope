@@ -1272,5 +1272,408 @@ class FeedTests(unittest.TestCase):
             self.assertEqual((FEED_FIXTURE / "lifecycle" / name).read_text(), text)
 
 
+
+# The validation fixture (assets/fleet/validation): the crew scenario's two
+# adapter runs also read the no-mistakes run Firstmate attributes to impl and
+# to tests. Each read returns the newest status capture under status/.
+NM_FIXTURE = Path(__file__).resolve().parent.parent / "assets/fleet/validation"
+IMPL_RUN, TESTS_RUN = "01M342G5B2S1MP13RVNVA11DAT", "01M342X98JT3STSRVNVA11DAT1"
+# Run -> (task it is attributed to, from when, [(from when, capture read)]).
+NM_RUNS = {IMPL_RUN: ("impl", B + 470, [(B + 470, "impl-review"), (B + 540, "impl-test"),
+                                        (B + 645, "impl-ci"), (B + 830, "impl-passed")]),
+           TESTS_RUN: ("tests", B + 896, [(B + 896, "tests-review"), (B + 940, "tests-parked")])}
+NM_DOWN = {B + 930}  # when `daemon status` answers down
+
+
+def capture(name):
+    return (NM_FIXTURE / "status" / f"{name}.toon").read_text()
+
+
+class FakeNoMistakes:
+    """no-mistakes as the scenario's clock sees it, recording every call."""
+
+    def __init__(self, clock, runs=None, down=()):
+        self.clock, self.runs, self.down, self.calls = clock, runs or NM_RUNS, down, []
+
+    def daemon(self):
+        self.calls.append(("daemon", "status"))
+        answer = self.down(self.clock()) if callable(self.down) else self.clock() in self.down
+        return answer if isinstance(answer, str) else ("down" if answer else "up")
+
+    def status(self, run_id):
+        self.calls.append(("axi", "status", "--run", run_id))
+        seen = [name for start, name in self.runs[run_id][2] if start <= self.clock()]
+        if not seen:
+            raise adapter.Unreadable(f'run "{run_id}" not found')
+        return seen[-1] if seen[-1].startswith(("run:", "error:")) else capture(seen[-1])
+
+
+def attributed(task_id, now, runs=NM_RUNS):
+    """The snapshot's validation_run for a task at `now`."""
+    found = [run for run, (owner, since, _) in runs.items() if owner == task_id and since <= now]
+    return {"id": found[-1], "branch": f"fm/{task_id}", "status": "running", "outcome": None,
+            "step": None, "step_status": None, "head": None, "pr": None} if found else None
+
+
+def validation_journal():
+    """What the collector writes for the crew scenario, line by line."""
+    records, now = [], [0]
+    reader = FakeNoMistakes(lambda: now[0], down=NM_DOWN)
+    for run, polls in CREW_RUNS:
+        validation = adapter.Validation(FLEET, run, max_gap=60, checkpoint=120, reader=reader,
+                                        clock=lambda: now[0])
+        validation.recover(records)
+        for t in polls:
+            now[0] = t
+            tasks = []
+            for task_id, spec in CREW.items():
+                start, end = spec["present"]
+                if start <= t and (end is None or t < end):
+                    row = fm_task(task_id, spec["gen"], t, spec["statuses"])
+                    row["validation_run"] = attributed(task_id, t)
+                    tasks.append(row)
+            lines, _ = validation.observe(fm_snapshot(t, tasks))
+            records += lines
+        records += validation.close()
+    return [json.dumps(record, sort_keys=True) for record in records]
+
+
+class ToonTests(unittest.TestCase):
+    def read(self, name, run=IMPL_RUN):
+        return adapter.read_run(capture(name), run)
+
+    def test_every_capture_reads_as_its_state(self):
+        state, ages = self.read("impl-review")
+        self.assertEqual(state["status"], "running")
+        self.assertEqual([s["step"] for s in state["steps"]],
+                         ["intent", "rebase", "review", "test", "document", "lint", "push", "pr", "ci"])
+        self.assertEqual(state["steps"][2], {"step": "review", "status": "running", "findings": 0,
+                                             "round": "round 1"})
+        self.assertEqual(ages, {"review": 12})
+        # A settled step keeps how long it ran; an active one changes, so not.
+        self.assertEqual(state["steps"][1]["duration_ms"], 2204)
+        self.assertNotIn("duration_ms", state["steps"][3])
+        state, ages = self.read("impl-ci")
+        self.assertEqual(state["pr"], "https://github.com/example/synthetic/pull/12")
+        self.assertEqual((state["steps"][-1]["status"], ages), ("running", {"ci": 15}))
+        state, ages = self.read("impl-passed")
+        self.assertEqual((state["status"], state["outcome"], ages), ("completed", "passed", {}))
+        state, _ = self.read("tests-parked", TESTS_RUN)
+        self.assertEqual(state["gate"], {"step": "review", "status": "awaiting_approval",
+                                          "findings": 2, "ask_user": 1})
+        state, _ = adapter.read_run(capture("cancelled"), "01M342B46TCANC311EDRVN0000")
+        self.assertEqual((state["outcome"], state["error"]),
+                         ("cancelled", "cancelled: superseded by new push"))
+        self.assertEqual(state["steps"][0], {"step": "intent", "status": "skipped", "findings": 0,
+                                             "duration_ms": 14634})
+
+    def test_nothing_that_changes_on_every_read_is_state(self):
+        text = capture("impl-review")
+        later = text.replace('"3s ago: claude producing output","41001"', '"1s ago: tool call","41999"')
+        later = later.replace("12s,12s", "42s,42s")
+        self.assertEqual(adapter.read_run(text, IMPL_RUN)[0], adapter.read_run(later, IMPL_RUN)[0])
+
+    def test_the_clis_own_error_is_unreadable_not_drift(self):
+        with self.assertRaises(adapter.Unreadable) as raised:
+            adapter.read_run(capture("not-found"), IMPL_RUN)
+        self.assertEqual(str(raised.exception), f'run "{IMPL_RUN}" not found')
+
+    def test_parts_it_does_not_read_are_left_alone(self):
+        text = capture("impl-test") + "branch_sync:\n  state: pipeline_owned\n  next_action: wait\n" \
+            + 'help[3]:\n  Run `no-mistakes axi logs`, then decide\n  "quoted, with commas"\n  x\n'
+        self.assertEqual(adapter.read_run(text, IMPL_RUN), self.read("impl-test"))
+        # A run an explicit --run names on another branch reads the same.
+        self.assertEqual(adapter.read_run(text.replace("run:", "other_branch_run:", 1), IMPL_RUN)[0],
+                         self.read("impl-test")[0])
+
+    def test_format_drift_is_reported_never_guessed(self):
+        text = capture("impl-review")
+        cases = {
+            "indentation": text.replace("  status: running", "   status: running"),
+            "a tab": text.replace("  status: running", "\tstatus: running"),
+            "unknown run status": text.replace("status: running", "status: warming"),
+            "unknown step status": text.replace("review,running,0,0", "review,thinking,0,0"),
+            "row count": text.replace("steps[9]", "steps[10]"),
+            "cell count": text.replace("review,running,0,0", "review,running,0"),
+            "no steps": text.replace("steps[9]{step,status,findings,duration_ms}", "stages[9]{a,b,c,d}"),
+            "no status column": text.replace("{step,status,findings,duration_ms}",
+                                             "{step,state,findings,duration_ms}"),
+            "another run": text.replace(IMPL_RUN, TESTS_RUN, 1),
+            "a key twice": text.replace("  branch: fm/impl", "  branch: fm/impl\n  branch: fm/other"),
+            "unterminated quote": text.replace('"3s ago: claude producing output"', '"3s ago'),
+            "a count": text.replace("review,running,0,0", "review,running,none,0"),
+            "a duration": text.replace("12s,12s", "twelve,twelve"),
+            "an unknown step": text.replace("    review,running,12s", "    reviews,running,12s"),
+            "no run": "status: running\n",
+            "an outcome": text + "outcome: maybe\n",
+            "a gate on no step": text + "gate:\n  step: deploy\n",
+            "a gate without actions": text + "gate:\n  step: review\n  findings[1]{id,severity}:\n    r1,info\n",
+        }
+        for name, case in cases.items():
+            with self.subTest(name), self.assertRaises(adapter.Drift):
+                adapter.read_run(case, IMPL_RUN)
+
+    def test_a_run_id_is_a_ulid_and_names_its_creation_time(self):
+        # The report's live sample: created at 03:36:40.355Z.
+        self.assertEqual(adapter.run_epoch("01M365CGN3GNWT3WWN6C80XFVN"), 1790134600)
+        self.assertEqual(adapter.run_epoch(IMPL_RUN), B + 465)
+        for bad in (None, "", "01M365CGN3", "01M365CGN3GNWT3WWN6C80XFVI", "81M365CGN3GNWT3WWN6C80XFVN",
+                    "01m365cgn3gnwt3wwn6c80xfvn", "../../etc/passwd"):
+            self.assertIsNone(adapter.run_epoch(bad), bad)
+
+
+class NoMistakesTests(unittest.TestCase):
+    """The CLI wrapper, against a stand-in binary: never the real no-mistakes."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        root = Path(self.directory.name)
+        self.log = root / "calls.jsonl"
+        self.binary = root / "no-mistakes"
+        self.binary.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys, time\n"
+            f"log = {str(self.log)!r}\n"
+            "with open(log, 'a') as out:\n"
+            "    out.write(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd(),\n"
+            "        'update_check': os.environ.get('NO_MISTAKES_NO_UPDATE_CHECK')}) + '\\n')\n"
+            "mode = os.environ.get('FAKE_NM', 'up')\n"
+            "if mode == 'slow': time.sleep(5)\n"
+            "if sys.argv[1:] == ['daemon', 'status']:\n"
+            "    print('  \\u25cf daemon running (pid 1)' if mode == 'up' else '  daemon not running')\n"
+            "    sys.exit(0 if mode == 'up' else 1)\n"
+            "print('error: \"run \\\\\"' + sys.argv[-1] + '\\\\\" not found\"')\n"
+            "sys.exit(1)\n")
+        self.binary.chmod(0o755)
+        self.nm = adapter.NoMistakes(str(self.binary), timeout=2)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def calls(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def test_only_the_two_reads_are_ever_run(self):
+        for argv in (("axi", "respond", "--action", "approve"), ("axi", "abort", "--run", IMPL_RUN),
+                     ("axi", "rerun"), ("axi", "sync"), ("attach",), ("daemon", "restart"),
+                     ("daemon", "stop"), ("axi", "status"), ("axi", "status", "--run", IMPL_RUN, "--full")):
+            with self.subTest(argv), self.assertRaises(ValueError):
+                self.nm.call(*argv)
+        self.assertFalse(self.log.exists(), "a refused command must never start")
+
+    def test_reads_run_from_the_root_with_the_update_check_off(self):
+        with mock.patch.dict(os.environ, {"FAKE_NM": "up"}):
+            self.assertEqual(self.nm.daemon(), "up")
+            with self.assertRaises(adapter.Unreadable):
+                adapter.read_run(self.nm.status(IMPL_RUN), IMPL_RUN)
+        for call in self.calls():
+            self.assertEqual((call["cwd"], call["update_check"]), ("/", "1"))
+        self.assertEqual([c["argv"] for c in self.calls()],
+                         [["daemon", "status"], ["axi", "status", "--run", IMPL_RUN]])
+
+    def test_the_daemon_probe_reads_as_firstmate_reads_it(self):
+        with mock.patch.dict(os.environ, {"FAKE_NM": "down"}):
+            self.assertEqual(self.nm.daemon(), "down")
+        with mock.patch.dict(os.environ, {"FAKE_NM": "slow"}):
+            self.assertEqual(self.nm.daemon(), "unanswered")
+
+
+class ValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.now = B
+        self.captures = {IMPL_RUN: []}
+        self.runs = {IMPL_RUN: ("impl", B, self.captures[IMPL_RUN])}
+        self.down = set()
+        self.reader = FakeNoMistakes(lambda: self.now, self.runs, lambda t: self.answer(t))
+        self.validation = self.collector()
+
+    def answer(self, t):
+        return self.down.get(t, "up") if isinstance(self.down, dict) else t in self.down
+
+    def collector(self, run="run-1"):
+        return adapter.Validation(FLEET, run, max_gap=60, checkpoint=60, reader=self.reader,
+                                  clock=lambda: self.now)
+
+    def poll(self, t, validation=None, present=True, text=None):
+        """One poll at `t`; `text` becomes what a read of the run sees from now."""
+        self.now = t
+        if text is not None:
+            self.captures[IMPL_RUN].append((t, text))
+        row = fm_task("impl", "g1", t)
+        row["validation_run"] = attributed("impl", t, self.runs) if present else None
+        return (validation or self.validation).observe(fm_snapshot(t, [row] if present else []))
+
+    def seen(self, lines):
+        return [(e["validation"]["phase"], e["at"], e["at_quality"], e["validation"].get("since"))
+                for e in events(lines, "validation")]
+
+    def test_a_run_is_journalled_as_it_changes(self):
+        lines, notes = self.poll(B + 10, text="impl-review")
+        self.assertEqual(notes, [])
+        # Created after the adapter's clock says now: its start is only noticed.
+        self.assertEqual(self.seen(lines), [("started", adapter.iso(B + 10), "observed", None),
+                                            ("seen", adapter.iso(B + 10), "observed", None)])
+        review = events(lines, "validation")[1]["validation"]
+        self.assertEqual(review["steps"][2]["round_since"], adapter.iso(B - 2))
+        self.assertEqual(review["run"], IMPL_RUN)
+        # The same read again: only coverage, never a repeat.
+        lines, _ = self.poll(B + 20)
+        self.assertEqual(self.seen(lines), [])
+        # A change: seen, bounded by the read before it.
+        lines, _ = self.poll(B + 30, text="impl-test")
+        self.assertEqual(self.seen(lines), [("seen", adapter.iso(B + 30), "observed", adapter.iso(B + 20))])
+        lines, _ = self.poll(B + 40, text="impl-passed")
+        self.assertEqual(self.seen(lines), [("ended", adapter.iso(B + 40), "observed", adapter.iso(B + 30))])
+        # Ended: never read again, even while Firstmate still names it.
+        calls = len(self.reader.calls)
+        lines, _ = self.poll(B + 50)
+        self.assertEqual((lines, len(self.reader.calls)), ([], calls))
+
+    def test_a_run_started_before_it_was_seen_keeps_its_derived_start(self):
+        lines, _ = self.poll(B + 600, text="impl-review")
+        self.assertEqual(self.seen(lines)[0], ("started", adapter.iso(B + 465), "derived", None))
+
+    def test_a_gate_parks_once_and_its_ask_user_findings_are_counted(self):
+        runs = {TESTS_RUN: ("impl", B, [])}
+        self.runs.clear(); self.runs.update(runs); self.captures = {IMPL_RUN: runs[TESTS_RUN][2]}
+        self.poll(B + 900, text=capture("tests-review"))
+        lines, _ = self.poll(B + 910, text=capture("tests-parked"))
+        parked = events(lines, "validation")
+        self.assertEqual([e["validation"]["phase"] for e in parked], ["parked"])
+        self.assertEqual(parked[0]["validation"]["gate"]["ask_user"], 1)
+        self.assertEqual(self.seen(self.poll(B + 920)[0]), [])
+
+    def test_a_dead_daemon_makes_the_run_unverified_until_it_reads_again(self):
+        self.poll(B + 600, text="impl-review")
+        self.down = {B + 610, B + 620}
+        lines, notes = self.poll(B + 610)
+        self.assertEqual(self.seen(lines), [("daemon_down", adapter.iso(B + 610), "observed", None)])
+        self.assertEqual(notes, ["no-mistakes daemon is down: 1 validation run(s) unverified"])
+        self.assertEqual(self.reader.calls[-1], ("daemon", "status"), "no run read while it is down")
+        lines, _ = self.poll(B + 620)
+        self.assertEqual(self.seen(lines), [], "said once")
+        # Back up, nothing changed: a sighting all the same, to end the doubt.
+        lines, _ = self.poll(B + 630)
+        self.assertEqual(self.seen(lines), [("seen", adapter.iso(B + 630), "observed", adapter.iso(B + 600))])
+        # Unanswered proves nothing either way: no event, no coverage.
+        self.down = {B + 640: "unanswered"}
+        lines, notes = self.poll(B + 640)
+        self.assertEqual((events(lines, "validation"), notes),
+                         ([], ["no-mistakes daemon did not answer; validation unverified"]))
+
+    def test_drift_and_failed_reads_write_nothing_and_break_coverage(self):
+        self.poll(B + 600, text="impl-review")
+        lines, notes = self.poll(B + 610, text="run:\n  id: \"" + IMPL_RUN + "\"\n  status: warming\n")
+        self.assertEqual(events(lines, "validation"), [])
+        self.assertEqual(len(notes), 1)
+        self.assertIn("output not understood (run status 'warming')", notes[0])
+        lines, _ = self.poll(B + 620, text="impl-review")
+        self.assertEqual(self.seen(lines), [], "unchanged since the last understood read")
+        windows = [(e["validation_coverage"]["from"], e["validation_coverage"]["to"])
+                   for e in events(lines, "validation_coverage")]
+        self.assertEqual(windows, [(adapter.iso(B + 620), adapter.iso(B + 620))], "a new window")
+
+    def test_a_run_record_that_is_gone_ends_the_reading(self):
+        self.poll(B + 600, text="impl-review")
+        lines, notes = self.poll(B + 610, text=capture("not-found"))
+        self.assertEqual(self.seen(lines), [("gone", adapter.iso(B + 610), "observed", None)])
+        self.assertIn("is gone from no-mistakes", notes[0])
+        calls = len(self.reader.calls)
+        self.assertEqual(self.poll(B + 620)[0], [])
+        self.assertEqual(len(self.reader.calls), calls)
+
+    def test_coverage_chains_checkpoints_and_splits_on_pauses(self):
+        spans = []
+        for t in [B + 600, B + 630, B + 660, B + 690, B + 720, B + 900, B + 930]:
+            lines, _ = self.poll(t, text="impl-review" if t == B + 600 else None)
+            spans += [(e["validation_coverage"]["from"], e["validation_coverage"]["to"],
+                       e["validation_coverage"]["max_gap"], e["validation_coverage"]["run"])
+                      for e in events(lines, "validation_coverage")]
+        spans += [(e["validation_coverage"]["from"], e["validation_coverage"]["to"], 60, IMPL_RUN)
+                  for e in events(self.validation.close(), "validation_coverage")]
+        i = adapter.iso
+        self.assertEqual(spans, [(i(B + 600), i(B + 600), 60, IMPL_RUN), (i(B + 600), i(B + 660), 60, IMPL_RUN),
+                                 (i(B + 660), i(B + 720), 60, IMPL_RUN), (i(B + 900), i(B + 900), 60, IMPL_RUN),
+                                 (i(B + 900), i(B + 930), 60, IMPL_RUN)])
+
+    def test_a_task_that_leaves_keeps_its_run_read_until_it_ends(self):
+        self.poll(B + 600, text="impl-review")
+        lines, _ = self.poll(B + 610, present=False, text="impl-test")
+        self.assertEqual([e["attempt"] for e in events(lines, "validation")],
+                         [{"task": "impl", "spawn_gen": "g1"}])
+
+    def test_restart_resumes_without_re_emitting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "fleet.json"
+            lines, _ = self.poll(B + 600, text="impl-review")
+            adapter.append_journal(output, lines + self.validation.close())
+            resumed = self.collector("run-2")
+            resumed.recover(adapter.journal_records(output))
+            # Unchanged: a new coverage window, nothing else.
+            lines, _ = self.poll(B + 900, resumed, present=False)
+            self.assertEqual([e["type"] for e in events(lines)], ["validation_coverage"])
+            # A change across the downtime is bounded by the read before it.
+            lines, _ = self.poll(B + 930, resumed, present=False, text="impl-passed")
+            self.assertEqual(self.seen(lines), [("ended", adapter.iso(B + 930), "observed", adapter.iso(B + 900))])
+            adapter.append_journal(output, lines)
+            ended = self.collector("run-3")
+            ended.recover(adapter.journal_records(output))
+            calls = len(self.reader.calls)
+            self.assertEqual(self.poll(B + 960, ended)[0], [])
+            self.assertEqual(len(self.reader.calls), calls, "an ended run is not read again")
+
+    def test_attributions_it_cannot_read_are_diagnosed(self):
+        row = fm_task("impl", "g1", B)
+        row["validation_run"] = {"id": "not-a-run"}
+        remote = fm_task("far", "g2", B)
+        remote.update(remote=True, validation_run={"id": IMPL_RUN})
+        lines, notes = self.validation.observe(fm_snapshot(B, [row, remote]))
+        self.assertEqual(lines, [])
+        self.assertEqual(notes, ["impl: validation run 'not-a-run' is not a no-mistakes run ID; not read"])
+        self.assertEqual(self.reader.calls, [])
+
+    def test_validation_diagnostics_join_the_manifest(self):
+        self.captures[IMPL_RUN].append((B, "impl-review"))
+        self.down = {B}
+        row = fm_task("impl", "g1", B)
+        row["validation_run"] = {"id": IMPL_RUN}
+        snap = fm_snapshot(B, [row])
+        manifest = adapter.build_manifest(snap, snap, {}, observed=adapter.iso(B))
+        lines = adapter.lifecycle(snap, manifest, adapter.Bridge(FLEET, "run-1"),
+                                  adapter.Feeds(Path(tempfile.mkdtemp()) / "f.json"), self.validation)
+        self.assertIn("no-mistakes daemon is down: 1 validation run(s) unverified", manifest["diagnostics"])
+        self.assertTrue(events(lines, "validation"))
+
+    def test_every_line_has_the_viewer_schema(self):
+        for text in validation_journal():
+            record = json.loads(text)
+            self.assertEqual((record["schema"], record["kind"]), (adapter.JOURNAL, "lifecycle"))
+            event = record["event"]
+            self.assertEqual(event["source"]["kind"], "no_mistakes")
+            self.assertIn(event["type"], ("validation", "validation_coverage"))
+            self.assertIn(event["type"], event)
+            self.assertIn(event["at_quality"], ("derived", "observed"))
+            self.assertTrue(event["attempt"]["task"] and event["attempt"]["spawn_gen"])
+
+    def test_validation_fixture_is_adapter_output(self):
+        # Regenerate with ZOE_REGENERATE_CREW=1 after changing the scenario.
+        expected = "".join(line + "\n" for line in validation_journal())
+        path = NM_FIXTURE / "fleet.events.jsonl"
+        if os.environ.get("ZOE_REGENERATE_CREW") == "1":
+            path.write_text(expected)
+        self.assertEqual(path.read_text(), expected)
+
+    def test_removing_a_worker_takes_its_validation_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "fleet.json"
+            lines = [json.loads(text) for text in validation_journal()]
+            adapter.append_journal(output, lines)
+            gen = CREW["impl"]["gen"]
+            worker = adapter.Worker(output, attempt=("impl", gen))
+            self.assertIn("deleted", worker.remove("delete", True))
+            left = {e["attempt"]["task"] for e in (r["event"] for r in adapter.journal_records(output))}
+            self.assertEqual(left, {"tests"})
+
+
 if __name__ == "__main__":
     unittest.main()
