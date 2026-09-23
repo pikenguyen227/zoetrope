@@ -660,6 +660,7 @@ mod tests {
             recorded: true,
             incomplete: false,
             usd: Some(0.5),
+            approximate: false,
         };
         a.description = Some("waiting for session registration\ntask: queued (manifest)".into());
         let rows = header_rows(&a, 120, 24);
@@ -691,6 +692,7 @@ mod tests {
             recorded: true,
             incomplete: false,
             usd: Some(0.095),
+            approximate: false,
         };
         a.description = Some(
             "codex · 22222222-2222-2222-2222-222222222222\n\
