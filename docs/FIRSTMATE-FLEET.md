@@ -96,7 +96,8 @@ backend unreachable, say so in a manifest diagnostic rather than showing a quiet
 
 Publish manifests atomically. Keep the last valid version if a refresh is malformed;
 show its age and diagnostic. Retain lifecycle events in an append-only journal
-outside the source checkout. A worker disappearing from the current snapshot must
+outside the source checkout; only an explicit archive or delete removes records
+from it. A worker disappearing from the current snapshot must
 not erase historical membership or prove task completion. Do not copy private
 transcripts into the repository. Missing transcripts produce an unavailable node.
 
