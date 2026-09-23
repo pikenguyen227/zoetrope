@@ -195,8 +195,9 @@ snapshot's `paths.status_log.last_event` carries `offset`, `stream` and
 that status gives way only to the feed event with that key (the part of its
 `id` after `#`), stamped or not, provided that event has an `at`: an undated
 one never places, so the bridged copy stays. A status stamped at the same
-moment but keyed differently is another line and stays. The key also tells apart two identical
-lines at different offsets, which the bridge writes as two statuses.
+moment but keyed differently is another line and stays. The key also tells
+apart two identical lines at different offsets, which the bridge writes as two
+statuses.
 
 Firstmate leaves all three fields `null` when it could not establish the
 identity (an empty log, or one replaced while it was read), and an older
