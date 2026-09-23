@@ -59,10 +59,13 @@ needed. By default, the manifest and checkpoint journal live in
 `Agentic/.tools/state/zoe-fleet/`, and no-mistakes is the one on `PATH`, else
 `Agentic/.tools/bin/no-mistakes`: without it no card shows a validation run.
 
-Installing a rebuild replaces the binary, not a viewer already running it:
-that viewer's header says `zoe-fleet was rebuilt at …; this viewer still runs
-the old build`, and only reopening the Team tab runs the new one. A change to
-the adapter needs the same reopen.
+Every viewer's header names the build it runs (`build <commit>`, `-dirty` when
+built from an uncommitted tree); `zoe-fleet --version` names the one on disk, and
+`--inspect` reports it under `build`. Installing a rebuild replaces the binary,
+not a viewer already running it: that viewer's header then says `this viewer
+runs build <commit> (built …); zoe-fleet on disk is newer, rebuilt …`, and only
+reopening the Team tab runs the new one. A change to the adapter needs the same
+reopen.
 
 The adapter reads `fm-fleet-snapshot.sh --json` before and after exact Herdr pane
 registrations. Changed generations/endpoints defer a join. The canonical snapshot
