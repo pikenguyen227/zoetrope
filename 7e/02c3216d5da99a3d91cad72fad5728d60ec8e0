@@ -1,0 +1,25 @@
+src/ui/panel.rs
+  s_a67a99cde7a393::t_2c0bb074e7b812 257,261-266,280-281,285,321-330,424-468,473,505,525
+  s_a67a99cde7a393::t_ba8163d73e210d 828-931,934-957
+  s_a67a99cde7a393::t_b95cc627732dec 3-4,6-7
+  s_a67a99cde7a393::t_6ece24071d9db7 742-743
+  s_a67a99cde7a393::t_fa608a635cc16c 94-97,108-110,116-117,121-141,147,153-174,176,186,193-256
+  s_a67a99cde7a393::t_9e0b9236be7feb 932-933
+  s_a67a99cde7a393::t_49b76fdfc62cb8 258
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "7e02c3216d5da99a3d91cad72fad5728d60ec8e0",
+  "prompts": {},
+  "sessions": {
+    "s_a67a99cde7a393": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5e87d27e-5018-47db-97ca-493c3972217b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
