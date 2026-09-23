@@ -36,6 +36,7 @@ Preserve the provider boundary and the time/identity invariants documented in
 ```text
 Firstmate canonical snapshot ---- task ownership and observed state ---+
 Firstmate lifecycle feed(s) ----- timestamped transitions (tailed) ----+
+no-mistakes CLI ----------------- attributed validation runs (read) ---+
                                                                     |
 Herdr exact session registration -- endpoint/session join ------------+-> adapter
                                                                          |
@@ -131,12 +132,14 @@ The adapter appends `zoetrope.fleet.journal.v2` lines to `<manifest>.events.json
 Manifest checkpoints are `{"schema":…,"kind":"manifest","manifest":{…}}` (v1
 checkpoints still recover). Lifecycle lines are
 `{"schema":…,"kind":"lifecycle","event":{…}}`, where the event carries an `id`
-derived from the fact (never from arrival), a `source` (`bridge` or `firstmate`),
-`at` and `at_quality`, the `attempt` (`task`, `spawn_gen`), an optional native
-`session`, and a `type` with its payload under a key of the same name:
-`spawned`, `bound`, `status`, `decision`, `steered`, `steer_acked`,
+derived from the fact (never from arrival), a `source` (`bridge`, `firstmate`
+or `no_mistakes`), `at` and `at_quality`, the `attempt` (`task`, `spawn_gen`),
+an optional native `session`, and a `type` with its payload under a key of the
+same name: `spawned`, `bound`, `status`, `decision`, `steered`, `steer_acked`,
 `reclassified`, `torn_down`, `busy` or `coverage` (`{from, to, max_gap}`, an
-interval someone was observing; `max_gap` in seconds is optional).
+interval someone was observing; `max_gap` in seconds is optional), and, from
+the no-mistakes reads, `validation` and `validation_coverage` (see "Validation
+runs" below).
 Types and validation are in `src/fleet/journal.rs`. The viewer tails complete
 lines from a byte offset, skips lines that do not validate, deduplicates by `id`,
 and orders by time, then same-second rank (spawned and bound before transcript
@@ -208,6 +211,70 @@ both sides share identifies an unstamped line, and no rule guessed from verb,
 key or time can tell a repeat the feed lost from one it holds, so a duplicate
 is accepted where a missing status is not.
 
+### Validation runs
+
+A ship's no-mistakes validation runs as short-lived agents with no Herdr pane
+and no Firstmate task record, so the adapter reads it (`Validation` in
+`scripts/firstmate-fleet.py`) and the worker's card shows it as a band, never
+as graph nodes of its own.
+
+- **Attribution is Firstmate's.** Each snapshot task's additive
+  `validation_run` names the run Firstmate attributed to it (its
+  `docs/configuration.md`, "Attributed validation run"); the adapter never
+  matches runs by branch. A task without a `spawn_gen`, a remote task, or an
+  ID that is not a no-mistakes run ID (a ULID) is left out, the last with a
+  diagnostic. Once attributed, a run is read until it ends, even after its
+  task leaves the snapshot: runs outlive their workers.
+- **Two allow-listed reads, nothing else.** `no-mistakes axi status --run
+  <id>`, which reads the run's record without the daemon's socket, and
+  `no-mistakes daemon status`, both from `/`, with
+  `NO_MISTAKES_NO_UPDATE_CHECK=1` (no network) and a 5 s timeout
+  (`NoMistakes`; `ZOE_NO_MISTAKES_BIN` names another binary). The adapter never
+  responds to, aborts, reruns, syncs or attaches to a run, never starts, stops
+  or restarts the daemon, and never opens no-mistakes' database.
+- **Strict parsing.** The CLI prints TOON only (`read_run`): the run's status,
+  each step's status, round and findings, a waiting gate and its ask-user
+  findings, outcome, PR and error. Anything it does not understand (a status
+  word, a table whose rows do not match its header, indentation) is a
+  manifest diagnostic and journals nothing; parts it does not read (help,
+  `branch_sync`, ...) cannot fail it. The CLI's own error is not drift: a run
+  `not found` is `gone`, any other error a diagnostic.
+- **Written only on change.** Activity ages and process IDs are not part of a
+  read, so an unchanged run writes nothing but coverage. A `validation` event
+  carries `{run, phase, ...}`: `started` at the run's creation, decoded from
+  its ID (`derived`); `seen` for a change, `parked` when a gate newly waits,
+  `ended` when the run newly completed, failed or was cancelled, each with the
+  whole state read; `daemon_down` when `daemon status` answers that the daemon
+  is down; `gone` when the record can no longer be found.
+- **Times are the adapter's.** The CLI's times are relative, so a read is
+  stamped when the adapter made it (`observed`) and carries `since`, the read
+  before it: the change happened after `since` and at or before `at`, and the
+  viewer shows it as that range (`by` when no earlier read is known), never as
+  an exact time. An active round's start (`round_since`) is derived from the
+  age the read gave, to the second. A settled step's `duration_ms` (time
+  parked at a gate excluded) is a duration, never a place on the timeline.
+- **Its own coverage.** `validation_coverage` (`{run, from, to, max_gap}`)
+  is each run's reading windows, like the bridge's segments, broken whenever
+  a read fails, the daemon does not answer, or it answers down: lifecycle
+  coverage says nothing about whether anyone read a run. Being its own type,
+  a viewer that predates it skips it rather than counting it as lifecycle
+  coverage.
+- **A dead instrument proves nothing.** While the daemon is down its records
+  may still say running, so no run is read, `daemon_down` is written once, and
+  the run stays unverified until a read after the daemon is back (which writes
+  a `seen` even when nothing changed). A timeout is neither up nor down.
+- **Restarts** recover what was written from the journal: nothing is
+  re-emitted, runs that had not ended are read again, and the first read after
+  the restart is bounded by the last read before it.
+
+The viewer folds these per attempt (`Lifecycle::validation_at`), keeping each
+attempt's newest run, and checks each run against its own windows
+(`run_verified`). Outside them, or after a `daemon_down` or `gone`, the band
+keeps the last read and marks it `?` (unverified), and an alive run nobody was
+reading hatches the scrubber too. A run that had ended cannot change, so it is
+never in doubt; an open gate with ask-user findings keeps its amber, since it
+stays open until someone answers it.
+
 ### The snapshot bridge
 
 Where no feed speaks (Firstmate without the feed, or history before it began),
@@ -247,8 +314,14 @@ own live edges. Dead air is compressed only while every session is quiet.
   In the past, cards read the journal, never the manifest, which describes today.
 - Cards carry the attempt's status badge; `needs-decision` and `blocked` (or an
   open decision) are highlighted in amber on the card and the scrubber strip.
+- A card whose attempt has a validation run shows it as of the playhead in its
+  description's row, and its reading panel lists the steps with how each time
+  is known (see "Validation runs"). The scrubber marks a run's start, a gate
+  parking for a decision, and its end; each step a read found is a `[` / `]`
+  chapter without a glyph.
 - Outside every coverage window, the scrubber is hatched, the header says so,
-  and badges read `?`: the last record, unverified. At the live edge the same
+  and badges read `?`: the last record, unverified. So is a stretch where a
+  validation run was alive and nobody read it. At the live edge the same
   holds once the newest window is older than twice the `max_gap` its
   segments carry (two minutes when absent): the adapter has stopped, so
   today's state is not observed.
@@ -272,8 +345,11 @@ own live edges. Dead air is compressed only while every session is quiet.
    launching Claude. A provider switch must not reassign old workers retroactively.
 4. **Partial: combined history.** Implemented: the lifecycle journal, Firstmate's
    lifecycle feed as its source with the snapshot bridge where no feed speaks,
-   and the fleet timeline over the live fleet, with coverage gaps. Future:
-   mirrored remote secondmate feeds, and opening a finished crew as a replay.
+   the fleet timeline over the live fleet, with coverage gaps, and each
+   worker's attributed validation run as a band with its own coverage. Future:
+   mirrored remote secondmate feeds, opening a finished crew as a replay, and
+   a run's pipeline agents on demand (it needs no-mistakes to name each
+   agent's native session).
 
 Build a separate `zoe-fleet` development executable before changing any installed
 plugin or shortcut. Keep the existing `zoe` and its single-session behavior intact.
