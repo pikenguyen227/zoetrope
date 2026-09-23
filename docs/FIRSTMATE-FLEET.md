@@ -318,8 +318,8 @@ own live edges. Dead air is compressed only while every session is quiet.
 - A card whose attempt has a validation run shows it as of the playhead in its
   description's row, and its reading panel lists the steps with how each time
   is known (see "Validation runs"). The scrubber marks a run's start, a gate
-  parking for a decision, and its end; each step a read found is a `[` / `]`
-  chapter without a glyph.
+  parking for a decision, and its end, each a `[` / `]` chapter; the steps
+  between are not.
 - Outside every coverage window, the scrubber is hatched, the header says so,
   and badges read `?`: the last record, unverified. So is a stretch where a
   validation run was alive and nobody read it. At the live edge the same
