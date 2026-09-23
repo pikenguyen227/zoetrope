@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use ratatui::Frame;
 use ratatui::style::{Modifier, Style};
 
-use super::journal::{Change, LifecycleEvent, TRANSCRIPT_RANK};
+use super::journal::{Change, LifecycleEvent, Phase, TRANSCRIPT_RANK};
 use super::{Fleet, SessionKey};
 use crate::fact::{AgentKind, Fact, FactKind, Outcome};
 use crate::state::session::MAIN_ID;
@@ -32,6 +32,18 @@ pub enum MarkKind {
     Failed,
     Status,
     TornDown,
+    /// A validation run began.
+    RunStarted,
+    /// A validation gate waits on the worker's decision.
+    Gate,
+    /// A validation gate waits on findings only the operator may decide.
+    GateAsk,
+    RunPassed,
+    RunFailed,
+    RunCancelled,
+    /// A step of a validation run moved on: a chapter, not a glyph (a run
+    /// has nine steps, which would crowd the strip).
+    RunStep,
     Other,
 }
 
@@ -47,6 +59,24 @@ impl MarkKind {
                 _ => Self::Status,
             },
             Change::Decision { .. } => Self::Attention,
+            Change::Validation { validation: v } => match v.phase {
+                Phase::Started => Self::RunStarted,
+                Phase::Parked if v.gate.as_ref().is_some_and(|g| g.ask_user > 0) => Self::GateAsk,
+                Phase::Parked => Self::Gate,
+                Phase::Ended => {
+                    let said = |word| {
+                        v.status.as_deref() == Some(word) || v.outcome.as_deref() == Some(word)
+                    };
+                    if said("failed") {
+                        Self::RunFailed
+                    } else if said("cancelled") {
+                        Self::RunCancelled
+                    } else {
+                        Self::RunPassed
+                    }
+                }
+                Phase::Seen | Phase::DaemonDown | Phase::Gone => Self::RunStep,
+            },
             _ => Self::Other,
         }
     }
@@ -59,7 +89,14 @@ impl MarkKind {
             Self::Failed => ("✗", palette.error),
             Self::Status => ("•", palette.text),
             Self::TornDown => ("⊘", palette.subtle),
-            Self::Other => return None,
+            // Not ◆/◇, the upstream scrubber's prompt ticks.
+            Self::RunStarted => ("▷", palette.success),
+            Self::Gate => ("△", palette.text),
+            Self::GateAsk => ("▲", crate::ui::nodes::ATTENTION),
+            Self::RunPassed => ("✓", palette.success),
+            Self::RunFailed => ("✗", palette.error),
+            Self::RunCancelled => ("✗", palette.subtle),
+            Self::RunStep | Self::Other => return None,
         })
     }
 }
@@ -219,7 +256,7 @@ impl Fleet {
             }
         }
         for event in self.lifecycle.ordered() {
-            if matches!(event.change, Change::Coverage { .. }) {
+            if event.change.is_coverage() {
                 continue;
             }
             let at = event.at.expect("ordered events are dated");
@@ -400,9 +437,10 @@ pub fn draw_overlay(frame: &mut Frame, fleet: &Fleet) {
     let head = ((timeline.progress().clamp(0.0, 1.0) * last).round() as usize).min(width - 1);
     let palette = fleet.overview.flow.theme.palette();
     let buf = frame.buffer_mut();
-    if fleet.lifecycle.has_gaps() {
+    if fleet.lifecycle.has_gaps() || fleet.lifecycle.has_runs() {
         // A column is a gap when its moment lies outside every window the
-        // bridge or a feed was observing: lifecycle there is unknown, not steady.
+        // bridge or a feed was observing, or a validation run was alive there
+        // but nobody read it: that state is unknown, not steady.
         let floor = timeline.floor();
         let reach = len.saturating_sub(floor);
         for c in (0..width).filter(|&c| c != head) {
@@ -410,7 +448,7 @@ pub fn draw_overlay(frame: &mut Frame, fleet: &Fleet) {
             let Some(ts) = timeline.items[index].ts() else {
                 continue;
             };
-            if fleet.lifecycle.covered(ts) {
+            if fleet.lifecycle.covered(ts) && !fleet.lifecycle.unread(ts) {
                 continue;
             }
             // Hatched and dimmed: activity there is real, the crew state is not.
