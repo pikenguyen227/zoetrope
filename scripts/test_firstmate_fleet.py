@@ -627,5 +627,379 @@ if not runs:
         self.assertFalse(self.output.with_suffix(".request.json").exists())
 
 
+
+# The feed fixture (assets/fleet/feed): Firstmate writes its fm-lifecycle.v1
+# feed while two adapter runs, with a gap between them, tail it and bridge the
+# same home. `impl` spawned before the feed began and was backfilled; `tests`
+# was relaunched while no adapter ran; `survey` was promoted. Seq 19 was never
+# written, and the feed rotated before seq 17.
+FEED_HOME_ID = "fmh_fixture0001"
+GENS = {"impl": f"s{B + 100}.4101.1", "tests": f"s{B + 400}.4102.2",
+        "tests-2": f"s{B + 600}.4104.4", "survey": f"s{B + 420}.4103.3"}
+
+
+def fm_record(seq, kind, task, at, source, recorded, data, key, gen=None, backfill=False):
+    return {"schema": adapter.FEED, "home": {"id": FEED_HOME_ID, "path": HOME, "host": None},
+            "seq": seq, "key": key, "type": kind, "at": at, "at_source": source,
+            "recorded_at": recorded,
+            "task": {"id": task, "spawn_gen": GENS[gen or task]} if task else None,
+            "backfill": backfill, "data": data}
+
+
+def spawn_data(kind, relaunch=False, previous=None):
+    return {"kind": kind, "harness": "codex", "model": "default", "effort": "high",
+            "mode": "no-mistakes", "yolo": "off", "project": "/synthetic/project",
+            "backend": "herdr", "endpoint": {"target": "crew:w1:x"}, "relaunch": relaunch,
+            "previous_spawn_gen": previous, "secondmate": None, "remote": None}
+
+
+def line_data(verb, note, offset, key=None):
+    return {"verb": verb, "key": key, "until": None, "note": note, "offset": offset}
+
+
+def status_key(task, offset, gen=None):
+    return f"status/{task}/{GENS[gen or task]}/@{offset}"
+
+
+FEED_RECORDS = [
+    fm_record(1, "feed.started", None, B + 200, "firstmate", B + 200, {"firstmate_rev": "abc"},
+              "started"),
+    fm_record(2, "task.spawned", "impl", B + 100, "firstmate", B + 200, spawn_data("ship"),
+              f"spawned/impl/{GENS['impl']}", backfill=True),
+    fm_record(3, "task.status", "impl", B + 110, "stamp", B + 200,
+              line_data("working", "implementing the parser", 0), status_key("impl", 0), backfill=True),
+    fm_record(4, "task.steered", "impl", B + 150, "inbox", B + 200,
+              {"msg": "001", "delivery": "ringing", "bytes": 12, "sha256": "0" * 64},
+              "steered/impl/001/2026-09-22T08:02:30Z", backfill=True),
+    fm_record(5, "task.steer_acked", "impl", None, "unknown", B + 200, {"msg": "001"},
+              "steer_acked/impl/001/2026-09-22T08:02:30Z", backfill=True),
+    fm_record(6, "feed.backfilled", None, B + 200, "firstmate", B + 200,
+              {"tasks": ["impl"], "events": 4}, f"backfilled/{B + 200}", backfill=True),
+    fm_record(7, "task.status", "impl", B + 300, "stamp", B + 305,
+              line_data("needs-decision", "pick grammar A or B", 60, "design"), status_key("impl", 60)),
+    fm_record(8, "task.decision", "impl", B + 300, "stamp", B + 305,
+              {"key": "design", "change": "opened", "verb": "needs-decision", "closed_by": None,
+               "note": "pick grammar A or B"}, f"decision/impl/{GENS['impl']}/@60/design"),
+    fm_record(9, "task.status", "impl", B + 360, "stamp", B + 362,
+              line_data("resolved", "going with A", 140, "design"), status_key("impl", 140)),
+    fm_record(10, "task.decision", "impl", B + 360, "stamp", B + 362,
+              {"key": "design", "change": "closed", "verb": "needs-decision", "closed_by": "resolved",
+               "note": None}, f"decision/impl/{GENS['impl']}/@140/design"),
+    fm_record(11, "task.spawned", "tests", B + 400, "firstmate", B + 400, spawn_data("ship"),
+              f"spawned/tests/{GENS['tests']}"),
+    fm_record(12, "task.status", "tests", B + 410, "stamp", B + 415,
+              line_data("working", "writing parser tests", 0), status_key("tests", 0)),
+    fm_record(13, "task.spawned", "survey", B + 420, "firstmate", B + 420, spawn_data("scout"),
+              f"spawned/survey/{GENS['survey']}"),
+    fm_record(14, "task.reclassified", "survey", B + 440, "firstmate", B + 440,
+              {"from": {"kind": "scout"}, "to": {"kind": "ship", "mode": "no-mistakes", "yolo": "off"}},
+              f"reclassified/survey/{GENS['survey']}/scout-ship"),
+    fm_record(15, "task.status", "impl", B + 460, "stamp", B + 470,
+              line_data("done", "PR ready for review", 200), status_key("impl", 200)),
+    fm_record(16, "task.torn_down", "impl", B + 500, "firstmate", B + 500,
+              {"transition": "close", "outcome": "merged", "forced": False, "kind": "ship",
+               "report": None, "pr": "https://example.invalid/pr/1"}, f"torn_down/impl/{GENS['impl']}"),
+    fm_record(17, "task.spawned", "tests", B + 600, "firstmate", B + 600,
+              spawn_data("ship", True, GENS["tests"]), f"spawned/tests/{GENS['tests-2']}", "tests-2"),
+    fm_record(18, "task.status", "tests", B + 610, "stamp", B + 612,
+              line_data("working", "relaunched, rerunning", 60), status_key("tests", 60), "tests-2"),
+    # Seq 19 was never written.
+    fm_record(20, "task.status", "tests", B + 700, "stamp", B + 703,
+              line_data("needs-decision", "skip or fix the flaky test?", 160, "flaky"),
+              status_key("tests", 160), "tests-2"),
+    fm_record(21, "task.decision", "tests", B + 700, "stamp", B + 703,
+              {"key": "flaky", "change": "opened", "verb": "needs-decision", "closed_by": None,
+               "note": None}, f"decision/tests/{GENS['tests']}/@160/flaky", "tests-2"),
+    fm_record(22, "task.busy", "tests", B + 705, "firstmate", B + 705, {"state": "busy", "source": "hook"},
+              f"busy/tests/{GENS['tests-2']}/{B + 705}", "tests-2"),
+    fm_record(23, "task.status", "tests", None, "unknown", B + 706,
+              line_data(None, "continuation prose", 240), status_key("tests", 240), "tests-2"),
+    fm_record(24, "task.steered", "tests", B + 750, "inbox", B + 750,
+              {"msg": "001", "delivery": "ringing", "bytes": 40, "sha256": "1" * 64},
+              "steered/tests/001/2026-09-22T08:12:30Z", "tests-2"),
+    fm_record(25, "task.steer_acked", "tests", B + 780, "observed", B + 780, {"msg": "001"},
+              "steer_acked/tests/001/2026-09-22T08:12:30Z", "tests-2"),
+    fm_record(26, "task.status", "tests", B + 870, "stamp", B + 874,
+              line_data("resolved", "fixing it", 300, "flaky"), status_key("tests", 300), "tests-2"),
+    fm_record(27, "task.decision", "tests", B + 870, "stamp", B + 874,
+              {"key": "flaky", "change": "closed", "verb": "needs-decision", "closed_by": "resolved",
+               "note": None}, f"decision/tests/{GENS['tests']}/@300/flaky", "tests-2"),
+]
+FEED_ROTATED_BEFORE = 17
+# Attempt -> (present while start <= t < end, native session and when Herdr joins it).
+FEED_TASKS = {("impl", "impl"): ((B + 100, B + 500), "c0c0c0c0-0000-4000-8000-000000000012", B + 150),
+              ("tests", "tests"): ((B + 400, B + 600), "c0c0c0c0-0000-4000-8000-000000000013", B + 450),
+              ("tests", "tests-2"): ((B + 600, None), "c0c0c0c0-0000-4000-8000-000000000014", B + 680),
+              ("survey", "survey"): ((B + 420, None), None, None)}
+FEED_RUNS = ((f"{adapter.iso(B + 60)}/5100", range(B + 60, B + 481, 30)),
+             (f"{adapter.iso(B + 660)}/5200", range(B + 660, B + 961, 30)))
+FEED_FIXTURE = Path(__file__).resolve().parent.parent / "assets/fleet/feed"
+
+
+def dump(record):
+    return json.dumps(record, separators=(",", ":")) + "\n"
+
+
+class FeedWriter:
+    """Firstmate's side: append each record once it is recorded, rotating the
+    active file into events.v1.<first-seq>.jsonl before FEED_ROTATED_BEFORE."""
+
+    def __init__(self, directory):
+        self.directory = directory
+        directory.mkdir(parents=True, exist_ok=True)
+        self.active = directory / "events.v1.jsonl"
+        self.written = 0
+
+    def advance(self, now):
+        for record in FEED_RECORDS[self.written:]:
+            if record["recorded_at"] > now:
+                break
+            if record["seq"] == FEED_ROTATED_BEFORE:
+                os.replace(self.active, self.directory / "events.v1.1.jsonl")
+            with self.active.open("a") as stream:
+                stream.write(dump(record))
+            self.written += 1
+
+    def pointer(self, homes=()):
+        return {"schema": adapter.FEED, "id": FEED_HOME_ID, "path": str(self.active), "present": True,
+                "head_seq": FEED_RECORDS[self.written - 1]["seq"] if self.written else None,
+                "homes": list(homes)}
+
+
+def feed_rows(now):
+    """The snapshot's task rows and Herdr panes at `now`: an attempt's last
+    status line is the newest the feed dates at or before it."""
+    tasks, panes = [], {}
+    for (task, gen), ((start, end), session, bound) in FEED_TASKS.items():
+        if not (start <= now and (end is None or now < end)):
+            continue
+        lines = [(r["at"], r["data"]["verb"], r["data"]["note"], *([r["data"]["key"]] if r["data"]["key"] else []))
+                 for r in FEED_RECORDS if r["type"] == "task.status" and r["task"]["spawn_gen"] == GENS[gen]
+                 and r["data"]["verb"] and r["seq"] != 19]
+        tasks.append(fm_task(task, GENS[gen], now, lines))
+        if session and now >= bound:
+            panes[f"crew:w1:{task}"] = pane(session)
+    return tasks, panes
+
+
+def feed_journal(directory):
+    """What the adapter writes while it tails the feed fixture, line by line."""
+    writer = FeedWriter(directory / "lifecycle")
+    records, previous = [], None
+    for run, polls in FEED_RUNS:
+        bridge = adapter.Bridge(FLEET, run, max_gap=60, checkpoint=120)
+        bridge.recover(records)
+        feeds = adapter.Feeds(directory / "fleet.feeds.json", max_gap=60, checkpoint=120)
+        for now in range(polls.start - 300, polls.stop, 30):
+            writer.advance(now)  # Firstmate writes whether or not an adapter runs.
+            if now not in polls:
+                continue
+            tasks, panes = feed_rows(now)
+            snap = fm_snapshot(now, tasks)
+            snap["lifecycle"] = writer.pointer()
+            manifest = adapter.build_manifest(snap, snap, panes, previous, observed=adapter.iso(now))
+            records += adapter.lifecycle(snap, manifest, bridge, feeds)
+            feeds.save()
+            previous = manifest
+        records += bridge.close() + feeds.close()
+        feeds.save()
+    return records, writer
+
+
+class FeedTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def poll(self, feeds, now, pointer):
+        snap = fm_snapshot(now, [])
+        snap["lifecycle"] = pointer
+        return feeds.poll(snap)
+
+    def test_every_type_translates_with_honest_times(self):
+        by_seq = {r["seq"]: r for r in FEED_RECORDS}
+        translate = lambda seq: [line["event"] for line in adapter.translate(by_seq[seq], FEED_HOME_ID)]
+        [spawned] = translate(11)
+        self.assertEqual(spawned, {
+            "id": f"firstmate:{FEED_HOME_ID}#spawned/tests/{GENS['tests']}",
+            "source": {"kind": "firstmate", "home": FEED_HOME_ID, "seq": 11},
+            "at": adapter.iso(B + 400), "at_quality": "firstmate",
+            "attempt": {"task": "tests", "spawn_gen": GENS["tests"]}, "type": "spawned",
+            "spawned": {"kind": "ship", "harness": "codex", "project": "/synthetic/project"}})
+        # A backfilled spawn's time is its spawn_gen epoch; a backfilled stamp
+        # or inbox time is as exact as a live one; an unknown one stays unknown.
+        self.assertEqual([(e["type"], e.get("at"), e["at_quality"]) for seq in (2, 3, 4, 5)
+                          for e in translate(seq)],
+                         [("spawned", adapter.iso(B + 100), "backfill"),
+                          ("status", adapter.iso(B + 110), "stamp"),
+                          ("steered", adapter.iso(B + 150), "firstmate"),
+                          ("steer_acked", None, "unknown")])
+        payload = lambda seq: [{k: v for k, v in e.items() if k == e["type"]} for e in translate(seq)]
+        self.assertEqual(payload(7), [{"status": {"value": "needs-decision", "key": "design",
+                                                  "note": "pick grammar A or B"}}])
+        self.assertEqual(payload(10), [{"decision": {"key": "design", "change": "closed",
+                                                     "verb": "needs-decision", "closed_by": "resolved"}}])
+        self.assertEqual(payload(14), [{"reclassified": {"from": "scout", "to": "ship"}}])
+        self.assertEqual(payload(16), [{"torn_down": {"outcome": "merged"}}])
+        self.assertEqual(payload(22), [{"busy": {"state": "busy"}}])
+        self.assertEqual(payload(25), [{"steer_acked": {"msg": "001"}}])
+        self.assertEqual(translate(25)[0]["at_quality"], "observed")
+        # A relaunch ends the attempt it replaces, at the relaunch.
+        relaunch = translate(17)
+        self.assertEqual([(e["type"], e["attempt"]["spawn_gen"], e["at"]) for e in relaunch],
+                         [("spawned", GENS["tests-2"], adapter.iso(B + 600)),
+                          ("torn_down", GENS["tests"], adapter.iso(B + 600))])
+        self.assertEqual(relaunch[1]["torn_down"], {"outcome": "relaunched"})
+        # Bookkeeping, prose, unknown types and taskless records are not events.
+        for seq in (1, 6, 23):
+            self.assertEqual(translate(seq), [])
+        self.assertEqual(adapter.translate(dict(by_seq[11], type="task.teleported"), FEED_HOME_ID), [])
+        self.assertEqual(adapter.translate(dict(by_seq[11], task=None), FEED_HOME_ID), [])
+        # A task without a spawn_gen is the manifest's unresolved attempt.
+        orphan = dict(by_seq[11], task={"id": "far", "spawn_gen": None})
+        self.assertEqual(adapter.translate(orphan, FEED_HOME_ID)[0]["event"]["attempt"],
+                         {"task": "far", "spawn_gen": "unresolved"})
+
+    def test_discovery_from_the_pointer(self):
+        writer = FeedWriter(self.root / "home" / "lifecycle")
+        writer.advance(B + 450)
+        child = FeedWriter(self.root / "child" / "lifecycle")
+        with child.active.open("w") as stream:
+            stream.write(dump(dict(FEED_RECORDS[10], home={"id": "fmh_child", "path": "/c"}, seq=1)))
+        homes = [{"id": "fmh_child", "task": "sm-local", "path": str(child.active), "head_seq": 1,
+                  "remote": False},
+                 {"id": None, "task": "sm-far", "path": None, "head_seq": None, "remote": True},
+                 {"id": "fmh_gone", "task": "sm-gone", "path": str(self.root / "gone/events.v1.jsonl"),
+                  "head_seq": None, "remote": False}]
+        feeds = adapter.Feeds(self.root / "fleet.feeds.json")
+        lines, notes = self.poll(feeds, B + 450, writer.pointer(homes))
+        homes_seen = {(e["event"]["source"]["home"], e["event"]["type"]) for e in lines}
+        self.assertIn(("fmh_child", "spawned"), homes_seen)
+        self.assertIn((FEED_HOME_ID, "coverage"), homes_seen)
+        # Only this home's feed covers the fleet.
+        self.assertNotIn(("fmh_child", "coverage"), homes_seen)
+        self.assertEqual(len([n for n in notes if "sm-far" in n and "remote" in n]), 1)
+        self.assertEqual(len([n for n in notes if "sm-gone" in n and "unreadable" in n]), 1)
+        # No pointer: the feed is off, and the bridge speaks alone.
+        self.assertEqual(self.poll(feeds, B + 460, None), ([], []))
+        lines, notes = self.poll(feeds, B + 460, {"schema": "fm-lifecycle.v9", "path": "/x"})
+        self.assertEqual(lines, [])
+        self.assertIn("not fm-lifecycle.v1", notes[0])
+        # Enabled but nothing written yet is not a failure.
+        empty = {"schema": adapter.FEED, "id": None, "path": str(self.root / "none/events.v1.jsonl"),
+                 "present": False, "head_seq": None, "homes": []}
+        self.assertEqual(self.poll(adapter.Feeds(self.root / "other.json"), B, empty), ([], []))
+
+    def test_tailing_follows_rotation_and_waits_on_a_partial_line(self):
+        writer = FeedWriter(self.root / "lifecycle")
+        feeds = adapter.Feeds(self.root / "fleet.feeds.json")
+        writer.advance(B + 470)
+        seqs = lambda lines: [e["event"]["source"].get("seq") for e in lines
+                              if e["event"]["type"] != "coverage"]
+        first, _ = self.poll(feeds, B + 470, writer.pointer())
+        self.assertEqual(seqs(first), [2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+        # Half a line is still being written: it waits for its newline.
+        text = dump(FEED_RECORDS[15])
+        with writer.active.open("a") as stream:
+            stream.write(text[:30])
+        self.assertEqual(seqs(self.poll(feeds, B + 480, writer.pointer())[0]), [])
+        with writer.active.open("a") as stream:
+            stream.write(text[30:])
+        writer.written += 1
+        self.assertEqual(seqs(self.poll(feeds, B + 490, writer.pointer())[0]), [16])
+        # Rotation renames the file being read; its tail and the new file follow.
+        writer.advance(B + 612)
+        self.assertTrue((writer.directory / "events.v1.1.jsonl").exists())
+        self.assertEqual(seqs(self.poll(feeds, B + 620, writer.pointer())[0]), [17, 17, 18])
+        # A restarted adapter resumes from the saved cursor.
+        feeds.save()
+        again = adapter.Feeds(self.root / "fleet.feeds.json")
+        self.assertEqual(seqs(self.poll(again, B + 630, writer.pointer())[0]), [])
+        # A cursor lost with its file restarts from the rotated file that
+        # holds the next seq and keeps only what is new.
+        again.cursors[str(writer.active)]["file"] = [0, 0]
+        writer.advance(B + 703)
+        self.assertEqual(seqs(self.poll(again, B + 710, writer.pointer())[0]), [20, 21])
+
+    def test_a_seq_gap_is_reported_not_dropped_silently(self):
+        writer = FeedWriter(self.root / "lifecycle")
+        writer.advance(B + 612)
+        feeds = adapter.Feeds(self.root / "fleet.feeds.json")
+        _, notes = self.poll(feeds, B + 612, writer.pointer())
+        self.assertEqual(notes, [])
+        writer.advance(B + 703)
+        _, notes = self.poll(feeds, B + 703, writer.pointer())
+        self.assertEqual(notes, ["Firstmate lifecycle feed: 1 events lost in 1 seq gaps (latest 19-19); "
+                                 "the timeline lacks them"])
+        # It stays reported: the history has a hole.
+        feeds.save()
+        _, notes = self.poll(adapter.Feeds(self.root / "fleet.feeds.json"), B + 900, writer.pointer())
+        self.assertEqual(len(notes), 1)
+        # Unreadable lines are counted too.
+        with writer.active.open("a") as stream:
+            stream.write("{not json\n")
+        _, notes = self.poll(feeds, B + 910, writer.pointer())
+        self.assertIn("1 unreadable lines skipped", notes[0])
+
+    def test_feed_coverage_spans_adapter_downtime(self):
+        records, _ = feed_journal(self.root)
+        windows = [(e["coverage"]["from"], e["coverage"]["to"]) for e in events(records, "coverage")
+                   if e["source"]["kind"] == "firstmate"]
+        t = lambda n: adapter.iso(B + n)
+        # From feed.started, chained, straight across B+480..B+660 when no
+        # adapter ran: Firstmate kept writing.
+        self.assertEqual(windows[0][0], t(200))
+        self.assertEqual(windows[-1][1], t(960))
+        self.assertTrue(all(a[1] == b[0] for a, b in zip(windows, windows[1:])))
+
+    def test_feed_replaces_the_bridge_for_an_attempt(self):
+        records, _ = feed_journal(self.root)
+        about = lambda task, gen, source: [
+            (e["type"], e.get("at")) for e in events(records)
+            if e.get("attempt") == {"task": task, "spawn_gen": GENS[gen]} and e["source"]["kind"] == source]
+        # Before the feed began, the bridge saw impl; once the feed backfilled
+        # its spawn, the bridge only joins its session.
+        self.assertEqual(about("impl", "impl", "bridge"),
+                         [("spawned", adapter.iso(B + 100)), ("status", adapter.iso(B + 110)),
+                          ("bound", adapter.iso(B + 150))])
+        self.assertEqual([k for k, _ in about("impl", "impl", "firstmate")],
+                         ["spawned", "status", "steered", "steer_acked", "status", "decision",
+                          "status", "decision", "status", "torn_down"])
+        # The relaunch happened while no adapter ran: the feed has it at its
+        # real time and the bridge, noticing later, writes nothing of it.
+        self.assertEqual(about("tests", "tests", "bridge"), [("bound", adapter.iso(B + 450))])
+        self.assertIn(("torn_down", adapter.iso(B + 600)), about("tests", "tests", "firstmate"))
+        self.assertEqual(about("tests", "tests-2", "bridge"), [("bound", adapter.iso(B + 690))])
+        # Reach itself: whole life after a spawn; otherwise from the feed's start.
+        reach = adapter.Reach()
+        reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "coverage",
+                   "at": adapter.iso(B + 60), "coverage": {"from": adapter.iso(B), "to": adapter.iso(B + 60)}})
+        reach.add({"source": {"kind": "firstmate", "home": "h"}, "type": "status",
+                   "at": adapter.iso(B + 30), "attempt": {"task": "old", "spawn_gen": "g"}})
+        self.assertFalse(reach.covers(("old", "g"), "status", B - 1))
+        self.assertTrue(reach.covers(("old", "g"), "status", B))
+        self.assertFalse(reach.covers(("old", "g"), "spawned", B + 10))
+        self.assertFalse(reach.covers(("old", "g"), "torn_down", B + 10))
+        self.assertFalse(reach.covers(("other", "g"), "status", B + 10))
+
+    def test_feed_fixture_is_adapter_output(self):
+        # Regenerate with ZOE_REGENERATE_CREW=1 after changing the scenario.
+        records, writer = feed_journal(self.root)
+        journal = "".join(json.dumps(r, sort_keys=True) + "\n" for r in records)
+        feed = {name: (writer.directory / name).read_text()
+                for name in ("events.v1.1.jsonl", "events.v1.jsonl")}
+        if os.environ.get("ZOE_REGENERATE_CREW") == "1":
+            (FEED_FIXTURE / "lifecycle").mkdir(parents=True, exist_ok=True)
+            (FEED_FIXTURE / "fleet.events.jsonl").write_text(journal)
+            for name, text in feed.items():
+                (FEED_FIXTURE / "lifecycle" / name).write_text(text)
+        self.assertEqual((FEED_FIXTURE / "fleet.events.jsonl").read_text(), journal)
+        for name, text in feed.items():
+            self.assertEqual((FEED_FIXTURE / "lifecycle" / name).read_text(), text)
+
+
 if __name__ == "__main__":
     unittest.main()

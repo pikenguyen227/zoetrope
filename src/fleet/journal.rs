@@ -7,10 +7,16 @@
 //! known ([`AtQuality`]). The store is a set keyed by event ID, so a re-read, an
 //! adapter restart that re-emits, or lines in any order converge on one state.
 //!
-//! Coverage is what keeps the timeline honest. The snapshot bridge only sees
-//! what it polls while it runs, so a moment outside every recorded
-//! [`Change::Coverage`] window is a gap: the last record before it is shown as
-//! unverified, never as a reconstruction.
+//! Two sources write these facts. Firstmate's own lifecycle feed records every
+//! transition at its real time, whether or not anyone watches. Where no feed
+//! speaks, the adapter bridges from successive snapshots, which only sees what
+//! it polls while it runs. For an attempt the feed reports on, its facts
+//! replace the bridge's ([`Lifecycle::superseded`]), so nothing is counted
+//! twice and the feed's times win.
+//!
+//! Coverage is what keeps the timeline honest: a moment outside every recorded
+//! [`Change::Coverage`] window is a gap, where the last record before it is
+//! shown as unverified, never as a reconstruction.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -160,8 +166,8 @@ pub struct Busy {
 pub struct Window {
     pub from: DateTime<Utc>,
     pub to: DateTime<Utc>,
-    /// The longest pause, in seconds, the bridge still counts as observing:
-    /// its cadence, so the viewer knows how stale a running bridge's newest
+    /// The longest pause, in seconds, the adapter still counts as observing:
+    /// its cadence, so the viewer knows how stale a running adapter's newest
     /// segment may be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_gap: Option<u32>,
@@ -199,7 +205,8 @@ pub enum Change {
     Busy {
         busy: Busy,
     },
-    /// An interval the bridge was observing. Bridge only.
+    /// An interval someone was observing: the bridge while it polled, or a
+    /// Firstmate feed from its start up to the adapter's latest read of it.
     Coverage {
         coverage: Window,
     },
@@ -395,7 +402,9 @@ pub struct Lifecycle {
     order: Vec<String>,
     /// Merged coverage windows, ascending and disjoint.
     coverage: Vec<Window>,
-    bridge: bool,
+    /// Whether coverage applies: something wrote coverage, or the bridge,
+    /// which only ever sees part of the time, wrote anything.
+    gapped: bool,
     /// Bumped whenever the set changes, so derived indexes know to rebuild.
     pub generation: u64,
     /// Lines that did not validate. They are skipped, never guessed at.
@@ -437,8 +446,12 @@ impl Lifecycle {
     }
 
     fn reindex(&mut self) {
-        let mut dated: Vec<&LifecycleEvent> =
-            self.events.values().filter(|e| e.at.is_some()).collect();
+        let superseded = self.superseded();
+        let mut dated: Vec<&LifecycleEvent> = self
+            .events
+            .values()
+            .filter(|e| e.at.is_some() && !superseded.contains(e.id.as_str()))
+            .collect();
         dated.sort_by(|a, b| a.order().cmp(&b.order()));
         self.order = dated.iter().map(|e| e.id.clone()).collect();
         let mut windows: Vec<Window> = self
@@ -453,7 +466,8 @@ impl Lifecycle {
         self.coverage.clear();
         for window in windows {
             match self.coverage.last_mut() {
-                // Bridge segments chain end to start; touching ones merge.
+                // Segments chain end to start; touching ones merge, and the
+                // feed's and the bridge's overlap.
                 Some(last) if window.from <= last.to => {
                     if window.to >= last.to {
                         last.to = window.to;
@@ -463,11 +477,78 @@ impl Lifecycle {
                 _ => self.coverage.push(window),
             }
         }
-        self.bridge = self
-            .events
-            .values()
-            .any(|e| e.source.kind == SourceKind::Bridge);
+        self.gapped = !self.coverage.is_empty()
+            || self
+                .events
+                .values()
+                .any(|e| e.source.kind == SourceKind::Bridge);
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Bridge facts a Firstmate feed speaks for, by ID. They stay in the store
+    /// (a removal still counts them) but never place on the timeline.
+    ///
+    /// Per attempt the feed reports on: a feed that recorded its spawn, live
+    /// or by backfill (which replays the whole status log), holds its whole
+    /// life. Otherwise the feed holds it from the earliest of when the feed's
+    /// coverage of that home began and the first fact it records about the
+    /// attempt. A bridged spawn or teardown gives way only to the feed's own
+    /// record of it, and a session join, which no feed knows, never does.
+    /// `Reach` in `scripts/firstmate-fleet.py` keeps the adapter from writing
+    /// what this would drop.
+    fn superseded(&self) -> BTreeSet<&str> {
+        #[derive(Default)]
+        struct Held<'a> {
+            home: Option<&'a str>,
+            spawned: bool,
+            torn_down: bool,
+            first: Option<DateTime<Utc>>,
+        }
+        let feed = |e: &&LifecycleEvent| e.source.kind == SourceKind::Firstmate;
+        let mut homes: BTreeMap<Option<&str>, DateTime<Utc>> = BTreeMap::new();
+        let mut held: BTreeMap<&Attempt, Held> = BTreeMap::new();
+        for event in self.events.values().filter(feed) {
+            let home = event.source.home.as_deref();
+            if let Change::Coverage { coverage } = &event.change {
+                let start = homes.entry(home).or_insert(coverage.from);
+                *start = (*start).min(coverage.from);
+                continue;
+            }
+            let Some(attempt) = &event.attempt else {
+                continue;
+            };
+            let entry = held.entry(attempt).or_default();
+            entry.home = entry.home.or(home);
+            entry.spawned |= matches!(event.change, Change::Spawned { .. });
+            entry.torn_down |= matches!(event.change, Change::TornDown { .. });
+            entry.first = match (entry.first, event.at) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+        self.events
+            .values()
+            .filter(|e| e.source.kind == SourceKind::Bridge)
+            .filter(|e| {
+                let Some(held) = e.attempt.as_ref().and_then(|a| held.get(a)) else {
+                    return false;
+                };
+                match e.change {
+                    Change::Bound | Change::Coverage { .. } => false,
+                    Change::Spawned { .. } => held.spawned,
+                    Change::TornDown { .. } => held.torn_down,
+                    _ if held.spawned => true,
+                    _ => {
+                        let start = [homes.get(&held.home).copied(), held.first]
+                            .into_iter()
+                            .flatten()
+                            .min();
+                        start.is_some_and(|start| e.at.is_some_and(|at| at >= start))
+                    }
+                }
+            })
+            .map(|e| e.id.as_str())
+            .collect()
     }
 
     pub fn len(&self) -> usize {
@@ -487,29 +568,29 @@ impl Lifecycle {
         &self.coverage
     }
 
-    /// Whether gaps apply at all: coverage describes the bridge, which only
-    /// sees what it polls while it runs. A journal without bridge events has
-    /// nothing a gap could mean.
+    /// Whether gaps apply at all: something recorded when it was observing,
+    /// or the bridge, which only sees what it polls while it runs, wrote. A
+    /// journal with neither has nothing a gap could mean.
     pub fn has_gaps(&self) -> bool {
-        self.bridge
+        self.gapped
     }
 
     /// Whether `t` lies inside a window someone was observing.
     pub fn covered(&self, t: DateTime<Utc>) -> bool {
-        if !self.bridge {
+        if !self.gapped {
             return true;
         }
         let i = self.coverage.partition_point(|w| w.from <= t);
         i > 0 && t <= self.coverage[i - 1].to
     }
 
-    /// Whether the bridge is still observing at `now`. While it runs, its
-    /// newest segment trails the present by up to a checkpoint (at most its
-    /// `max_gap`) plus a poll (within `max_gap`), so twice its `max_gap` of lag
-    /// still counts, or two minutes for a segment that does not say; past it,
-    /// the adapter has stopped.
+    /// Whether the adapter is still observing at `now`. While it runs, its
+    /// newest segment (bridge or feed) trails the present by up to a
+    /// checkpoint (at most its `max_gap`) plus a poll (within `max_gap`), so
+    /// twice its `max_gap` of lag still counts, or two minutes for a segment
+    /// that does not say; past it, the adapter has stopped.
     pub fn observing(&self, now: DateTime<Utc>) -> bool {
-        !self.bridge
+        !self.gapped
             || self.coverage.last().is_some_and(|w| {
                 let lag = chrono::Duration::seconds(w.max_gap.map_or(60, i64::from) * 2);
                 w.from <= now && now - w.to <= lag
@@ -1014,6 +1095,185 @@ mod tests {
         assert!(!store.has_gaps());
         assert!(store.covered(at("12:00:00")));
         assert!(store.observing(at("12:00:00")));
+    }
+
+    fn feed(mut event: LifecycleEvent, seq: u64) -> LifecycleEvent {
+        event.source = Source {
+            kind: SourceKind::Firstmate,
+            home: Some("fmh".into()),
+            seq: Some(seq),
+            run: None,
+        };
+        event.id = format!("firstmate:fmh#{}", event.id);
+        event
+    }
+
+    fn ids(store: &Lifecycle) -> Vec<&str> {
+        store.ordered().map(|e| e.id.as_str()).collect()
+    }
+
+    #[test]
+    fn a_feed_replaces_bridge_facts_only_where_it_speaks() {
+        let mut store = Lifecycle::default();
+        let mut bound = event("bound", "08:00:30", "impl", Change::Bound);
+        bound.session = Some(SessionKey {
+            provider: "codex".into(),
+            session_id: "native".into(),
+        });
+        store.insert(sample());
+        store.insert([
+            bound,
+            event("other", "08:05:00", "other", status("working")),
+        ]);
+        // The feed began at 08:04 and has said one thing about impl since.
+        let mut since = feed(coverage("cov", "08:04:00", "08:10:00"), 0);
+        since.attempt = None;
+        store.insert([
+            since,
+            feed(event("s", "08:06:30", "impl", status("working")), 1),
+        ]);
+        // Its facts about impl since 08:04 replace the bridge's (s2, s3).
+        assert_eq!(
+            ids(&store),
+            [
+                "spawn",
+                "bound",
+                "s1",
+                "c1",
+                "other",
+                "firstmate:fmh#s",
+                "c2",
+                "down",
+                "c3",
+                "firstmate:fmh#cov"
+            ]
+        );
+        // Before the feed began the bridge still speaks; a bridged spawn and
+        // teardown stand until the feed records its own.
+        let impl_ = attempt("impl").unwrap();
+        assert_eq!(
+            store.state_at(Some(at("08:05:30")))[&impl_]
+                .status
+                .as_ref()
+                .unwrap()
+                .at,
+            at("08:01:00")
+        );
+        // Once the feed holds the spawn, it holds the whole life.
+        let spawned = Change::Spawned {
+            spawned: Spawned::default(),
+        };
+        let mut spawn = feed(event("born", "07:59:30", "impl", spawned), 2);
+        spawn.at_quality = AtQuality::Firstmate;
+        let gone = Change::TornDown {
+            torn_down: TornDown::default(),
+        };
+        store.insert([spawn, feed(event("gone", "08:08:50", "impl", gone), 3)]);
+        assert_eq!(
+            ids(&store),
+            [
+                "firstmate:fmh#born",
+                "bound",
+                "c1",
+                "other",
+                "firstmate:fmh#s",
+                "c2",
+                "firstmate:fmh#gone",
+                "c3",
+                "firstmate:fmh#cov"
+            ]
+        );
+        let live = &store.state_at(None)[&impl_];
+        assert_eq!(live.spawned, Some((at("07:59:30"), AtQuality::Firstmate)));
+        assert_eq!(live.torn_down.unwrap().0, at("08:08:50"));
+        // The join, which no feed knows, and every other attempt stay.
+        assert!(store.sessions().contains_key(&impl_));
+        assert!(
+            store
+                .state_at(None)
+                .contains_key(&attempt("other").unwrap())
+        );
+        // What was superseded is still held, for a removal to count.
+        assert_eq!(store.count_for(&[impl_].into()), 9);
+        // The feed covered the bridge's 08:07-08:08:30 gap.
+        assert!(store.covered(at("08:07:30")));
+        assert!(!store.covered(at("07:58:30")));
+    }
+
+    #[test]
+    fn a_feed_with_coverage_has_gaps_outside_it() {
+        let mut store = Lifecycle::default();
+        let mut since = feed(coverage("cov", "08:00:00", "08:10:00"), 0);
+        since.attempt = None;
+        store.insert([
+            since,
+            feed(event("f", "08:05:00", "t", status("working")), 1),
+        ]);
+        assert!(store.has_gaps());
+        assert!(store.covered(at("08:05:00")));
+        assert!(!store.covered(at("07:59:59")));
+        assert!(store.observing(at("08:11:00")));
+        assert!(!store.observing(at("08:12:01")));
+    }
+
+    /// `assets/fleet/feed`: what the adapter writes while it tails a synthetic
+    /// Firstmate feed and bridges the same home (`feed_journal` in
+    /// `scripts/test_firstmate_fleet.py`).
+    #[test]
+    fn the_feed_fixture_reads_as_the_feed_says() {
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/fleet/feed/fleet.events.jsonl"),
+        )
+        .unwrap();
+        let (consumed, events, rejected) = parse_chunk(&bytes);
+        assert_eq!((consumed, rejected), (bytes.len(), 0));
+        let mut store = Lifecycle::default();
+        store.insert(events);
+        assert_eq!(store.rejected, 0);
+        let attempt = |task: &str, spawn_gen: &str| Attempt {
+            task: task.into(),
+            spawn_gen: spawn_gen.into(),
+        };
+        let impl_ = attempt("impl", "s1790064100.4101.1");
+        let tests = attempt("tests", "s1790064400.4102.2");
+        let relaunched = attempt("tests", "s1790064600.4104.4");
+        // The bridge saw impl before the feed began, but the feed backfilled
+        // its spawn: beside the session join, only the feed's facts place.
+        assert!(
+            store
+                .ordered()
+                .filter(|e| e.attempt.as_ref() == Some(&impl_))
+                .all(|e| e.source.kind == SourceKind::Firstmate || e.change == Change::Bound)
+        );
+        let early = &store.state_at(Some(at("08:02:00")))[&impl_];
+        assert_eq!(early.spawned, Some((at("08:01:40"), AtQuality::Backfill)));
+        assert_eq!(early.status.as_ref().unwrap().quality, AtQuality::Stamp);
+        assert!(store.state_at(Some(at("08:05:30")))[&impl_].needs_attention());
+        assert!(!store.state_at(Some(at("08:06:30")))[&impl_].needs_attention());
+        // Session joins still come from the bridge.
+        let joins = store.sessions();
+        assert!(joins.contains_key(&impl_) && joins.contains_key(&relaunched));
+        // The relaunch happened while no adapter ran: it ends the first
+        // attempt at its real time.
+        let live = store.state_at(None);
+        assert_eq!(
+            live[&tests].torn_down,
+            Some((at("08:10:00"), AtQuality::Firstmate))
+        );
+        assert_eq!(live[&tests].outcome.as_deref(), Some("relaunched"));
+        assert_eq!(
+            live[&attempt("survey", "s1790064420.4103.3")]
+                .kind
+                .as_deref(),
+            Some("ship")
+        );
+        assert!(store.state_at(Some(at("08:12:00")))[&relaunched].needs_attention());
+        assert!(!live[&relaunched].needs_attention());
+        // The feed covers the adapter's downtime; before anyone watched is a gap.
+        assert!(store.covered(at("08:09:30")));
+        assert!(store.covered(at("08:01:30")));
+        assert!(!store.covered(at("08:00:30")));
     }
 
     #[cfg(feature = "native")]

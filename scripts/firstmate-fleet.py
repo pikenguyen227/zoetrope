@@ -5,8 +5,10 @@ Live mode is only available inside Herdr. Offline fixtures call build_manifest;
 they never use a socket, launch an agent, or impersonate a Herdr environment.
 
 Beside the manifest, the journal records lifecycle events (spawned, bound,
-status, torn_down) and the coverage windows in which this adapter was
-observing, for the fleet timeline. See Bridge.
+status, torn_down, ...) and the windows they cover, for the fleet timeline.
+Firstmate's own fm-lifecycle.v1 feeds are the source (see Feeds); where no
+feed speaks, the adapter bridges lifecycle from successive snapshots (see
+Bridge).
 
 --archive and --delete remove records: the whole fleet, or one worker with
 --worker. Archive moves them into a backup-<time> directory beside the
@@ -16,8 +18,10 @@ collector would write back anything removed under it. Agent transcripts and
 the Firstmate home are never touched.
 """
 import argparse
+import contextlib
 import copy
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import json
@@ -38,6 +42,8 @@ REQUEST_EXIT = 75
 NOT_OBSERVED = "not observed"
 JOURNAL = "zoetrope.fleet.journal.v2"
 LEGACY_JOURNAL = "zoetrope.fleet.journal.v1"
+FEED = "fm-lifecycle.v1"
+FEED_CURSORS = "zoetrope.fleet.feeds.v1"
 
 
 def now():
@@ -290,6 +296,10 @@ class Bridge:
     land between polls, and anything while no bridge runs, are lost. Coverage
     events say when the bridge was watching, so the timeline shows those gaps
     instead of a steady state it never saw.
+
+    Where a Firstmate feed speaks for an attempt (Reach), the bridge keeps
+    quiet about it: it still joins sessions, which no feed knows, but writes
+    no spawned, status or torn_down the feed already holds.
     """
 
     def __init__(self, fleet_id, run, max_gap=60, checkpoint=60):
@@ -301,6 +311,7 @@ class Bridge:
         self.attempts = {}
         self.window = None  # [first, last] poll epochs of the open coverage window
         self.written = None  # how far that window's coverage lines reach
+        self.reach = Reach()
 
     def recover(self, records):
         """Resume from journal records, so a restart re-emits nothing it wrote."""
@@ -308,6 +319,9 @@ class Bridge:
             if record.get("schema") != JOURNAL or record.get("kind") != "lifecycle":
                 continue
             event = record.get("event") or {}
+            if (event.get("source") or {}).get("kind") != "bridge":
+                self.reach.add(event)
+                continue
             attempt = event.get("attempt")
             if not isinstance(attempt, dict):
                 continue
@@ -352,7 +366,8 @@ class Bridge:
                 epoch = spawn_epoch(gen)
                 at, quality = (epoch, "derived") if epoch is not None and epoch <= now else (now, "observed")
                 spawned = {k: task.get(k) for k in ("kind", "harness", "project") if task.get(k)}
-                lines.append(self.line("spawned", ident, at, quality, key, spawned=spawned))
+                if not self.reach.covers(key, "spawned", at):
+                    lines.append(self.line("spawned", ident, at, quality, key, spawned=spawned))
             state = self.state(key)
             last = ((task.get("paths") or {}).get("status_log") or {}).get("last_event") or {}
             raw, verb = last.get("raw") or "", last.get("state") or ""
@@ -362,7 +377,9 @@ class Bridge:
                 at, quality = (now - age, "stamp") if stamped else (now, "observed")
                 digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
                 mark = (digest, iso(at) if stamped else None)
-                if state["status"] != mark:
+                if state["status"] != mark and self.reach.covers(key, "status", at):
+                    state["status"] = mark
+                elif state["status"] != mark:
                     status = {"value": verb, "digest": digest}
                     found = re.search(r"\[key=([^\]\s]+)\]", raw)
                     if found:
@@ -383,7 +400,8 @@ class Bridge:
                 state["session"] = session
         for key, state in self.attempts.items():
             if key not in present and not state["down"]:
-                lines.append(self.line("torn_down", f"{key[0]}/{key[1]}", now, "observed", key))
+                if not self.reach.covers(key, "torn_down", now):
+                    lines.append(self.line("torn_down", f"{key[0]}/{key[1]}", now, "observed", key))
                 state["down"] = True
         return self.cover(now, bool(lines)) + lines
 
@@ -417,6 +435,356 @@ class Bridge:
         self.window = None
         self.written = None
         return lines
+
+
+def epoch_of(stamp):
+    return int(dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp())
+
+
+class Reach:
+    """Where Firstmate's own feed speaks for an attempt, so its events replace
+    the bridge's there (Lifecycle::superseded in src/fleet/journal.rs applies
+    the same rule to what the journal already holds).
+
+    A feed that recorded an attempt's spawn, live or by backfill (which also
+    replays its whole status log), holds its whole life. Otherwise it holds
+    the attempt from the earliest of when the feed's coverage of that home
+    began and the first fact it records about the attempt. A spawn or
+    teardown is replaced only by the feed's own record of it.
+    """
+
+    def __init__(self):
+        self.homes = {}  # feed home -> first covered epoch
+        self.attempts = {}  # (task, spawn_gen) -> what the feed holds about it
+
+    def add(self, event):
+        source = event.get("source") or {}
+        if source.get("kind") != "firstmate":
+            return
+        try:
+            at = epoch_of(event["at"]) if event.get("at") else None
+            if event.get("type") == "coverage":
+                start = epoch_of(event["coverage"]["from"])
+                home = source.get("home")
+                self.homes[home] = min(self.homes.get(home, start), start)
+                return
+        except (KeyError, TypeError, ValueError):
+            return
+        attempt = event.get("attempt")
+        if not isinstance(attempt, dict):
+            return
+        held = self.attempts.setdefault((attempt.get("task"), attempt.get("spawn_gen")),
+                                        {"home": source.get("home"), "types": set(), "first": None})
+        held["types"].add(event.get("type"))
+        if at is not None:
+            held["first"] = at if held["first"] is None else min(held["first"], at)
+
+    def covers(self, attempt, kind, at):
+        held = self.attempts.get(attempt)
+        if held is None:
+            return False
+        if kind in ("spawned", "torn_down"):
+            return kind in held["types"]
+        if "spawned" in held["types"]:
+            return True
+        starts = [t for t in (self.homes.get(held["home"]), held["first"]) if t is not None]
+        return bool(starts) and at >= min(starts)
+
+
+# Firstmate's at_source as the journal's at_quality. An inbox time is the one
+# Firstmate stamped on the steering record it wrote, so its own clock. Any
+# source this adapter does not know claims no more than having been noticed.
+AT_QUALITY = {"stamp": "stamp", "firstmate": "firstmate", "inbox": "firstmate",
+              "observed": "observed"}
+
+
+def translate(record, home):
+    """An fm-lifecycle.v1 record as journal lifecycle events: none for the
+    feed's own bookkeeping (feed.started, feed.backfilled), a status line
+    without a verb (continuation prose), or a type this adapter does not know.
+
+    A relaunch also ends the attempt it replaces, which Firstmate records only
+    as the new spawn's previous_spawn_gen, so that becomes its torn_down."""
+    kind, data, task = record.get("type"), record.get("data"), record.get("task")
+    key = record.get("key")
+    if not (isinstance(task, dict) and isinstance(task.get("id"), str) and task["id"]
+            and isinstance(key, str) and key and isinstance(data, dict)):
+        return []
+    text = lambda value: value if isinstance(value, str) and value.strip() else None
+    if kind == "task.spawned":
+        payload = {"spawned": {k: data[k] for k in ("kind", "harness", "project") if text(data.get(k))}}
+    elif kind == "task.reclassified":
+        change = {side: (data.get(side) or {}).get("kind") for side in ("from", "to")
+                  if isinstance(data.get(side), dict)}
+        payload = {"reclassified": {k: v for k, v in change.items() if text(v)}}
+    elif kind == "task.status":
+        if not text(data.get("verb")):
+            return []
+        status = {"value": data["verb"]}
+        status.update({k: data[k] for k in ("key", "note") if text(data.get(k))})
+        payload = {"status": status}
+    elif kind == "task.decision":
+        if not text(data.get("key")) or data.get("change") not in ("opened", "replaced", "closed"):
+            return []
+        payload = {"decision": {k: data[k] for k in ("key", "change", "verb", "closed_by")
+                                if text(data.get(k))}}
+    elif kind in ("task.steered", "task.steer_acked"):
+        if not text(data.get("msg")):
+            return []
+        payload = {kind[5:]: {"msg": data["msg"]}}
+    elif kind == "task.torn_down":
+        payload = {"torn_down": {"outcome": data["outcome"]} if text(data.get("outcome")) else {}}
+    elif kind == "task.busy":
+        if not text(data.get("state")):
+            return []
+        payload = {"busy": {"state": data["state"]}}
+    else:
+        return []
+    at = record.get("at")
+    if isinstance(at, int) and not isinstance(at, bool) and at >= 0:
+        quality = AT_QUALITY.get(record.get("at_source"), "observed")
+        if record.get("backfill") is True and record.get("at_source") == "firstmate":
+            # Replayed later: a backfilled spawn's time is its spawn_gen epoch.
+            quality = "backfill"
+    else:
+        at, quality = None, "unknown"
+    source = {"kind": "firstmate", "home": home}
+    seq = record.get("seq")
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        source["seq"] = seq
+    attempt = {"task": task["id"], "spawn_gen": text(task.get("spawn_gen")) or "unresolved"}
+
+    def event(ident, attempt, payload):
+        line = {"id": f"firstmate:{home}#{ident}", "source": source}
+        if at is not None:
+            line["at"] = iso(at)
+        line.update(at_quality=quality, attempt=attempt, type=next(iter(payload)), **payload)
+        return {"schema": JOURNAL, "kind": "lifecycle", "event": line}
+
+    events = [event(key, attempt, payload)]
+    previous = text(data.get("previous_spawn_gen"))
+    if kind == "task.spawned" and data.get("relaunch") is True and previous:
+        events.append(event(f"{key}/relaunched", dict(attempt, spawn_gen=previous),
+                            {"torn_down": {"outcome": "relaunched"}}))
+    return events
+
+
+def feed_files(active):
+    """A feed's files in seq order: each rotated `<stem>.<first-seq>.jsonl`,
+    then the active file, as (first seq or None, path)."""
+    rotated = re.compile(re.escape(active.stem) + r"\.(\d+)" + re.escape(active.suffix))
+    found = sorted((int(m.group(1)), path) for path in active.parent.iterdir()
+                   if (m := rotated.fullmatch(path.name)))
+    return found + [(None, active)]
+
+
+def read_feed(active, cursor):
+    """Complete records past `cursor`, oldest first, and where reading stopped.
+
+    `cursor` is {"file": [device, inode], "offset": bytes}: reading resumes in
+    that file wherever rotation renamed it, then runs through every later
+    file. When it is gone, or shrank, reading restarts at the rotated file that
+    should hold the next seq (`cursor["seq"] + 1`) and the caller drops what it
+    already has by seq. A final line without its newline is still being
+    written and waits. Returns (records, unreadable lines, file, offset)."""
+    for attempt in range(2):
+        with contextlib.ExitStack() as stack:
+            opened = []
+            for first, path in feed_files(active):
+                try:
+                    stream = stack.enter_context(path.open("rb"))
+                except FileNotFoundError:
+                    continue  # Rotated away between listing and opening.
+                info = os.fstat(stream.fileno())
+                opened.append((first, stream, [info.st_dev, info.st_ino], info.st_size))
+            start = next((i for i, (_, _, ident, size) in enumerate(opened)
+                          if ident == cursor.get("file") and size >= cursor.get("offset", 0)), None)
+            if start is None and cursor.get("file") and attempt == 0:
+                continue  # Perhaps renamed mid-listing: look once more.
+            offset = cursor.get("offset", 0) if start is not None else 0
+            if start is None:
+                start = max([i for i, (first, *_) in enumerate(opened)
+                             if first is not None and first <= cursor.get("seq", 0) + 1], default=0)
+            records, bad = [], 0
+            file, end = cursor.get("file"), cursor.get("offset", 0)
+            for i in range(start, len(opened)):
+                _, stream, ident, _ = opened[i]
+                position = offset if i == start else 0
+                stream.seek(position)
+                data = stream.read()
+                complete = data.rfind(b"\n") + 1
+                for line in data[:complete].splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        record = None
+                    seq = record.get("seq") if isinstance(record, dict) else None
+                    if (record is None or record.get("schema") != FEED or not isinstance(seq, int)
+                            or isinstance(seq, bool) or seq < 1):
+                        bad += 1
+                        continue
+                    records.append(record)
+                file, end = ident, position + complete
+            return records, bad, file, end
+    return [], 0, cursor.get("file"), cursor.get("offset", 0)
+
+
+class Feeds:
+    """Tail the fm-lifecycle.v1 feeds Firstmate's snapshot points at: this
+    home's and each local secondmate home's. A remote secondmate's feed is not
+    mirrored here, so it is skipped with a diagnostic, as is a feed that cannot
+    be read; neither fails a collection.
+
+    Each feed keeps a cursor in <manifest>.feeds.json: the file and byte
+    offset read up to, the last seq, and how far this home's coverage lines
+    reach. A cleared or trimmed journal keeps it, so removed history does not
+    come back. Seqs are gap-free, so a missing one is an event Firstmate could
+    not write: it is counted and reported, never papered over.
+
+    Firstmate writes its feed whether or not this adapter runs, so this
+    home's feed covers from its feed.started to the latest read: one coverage
+    segment per read that brought anything, and a checkpoint at least once a
+    minute. Secondmate homes add no coverage, since coverage is fleet-wide.
+    """
+
+    def __init__(self, path, max_gap=60, checkpoint=60):
+        self.path = path
+        self.max_gap = max_gap
+        self.checkpoint = checkpoint
+        self.cursors = {}
+        self.dirty = False
+        self.read_at = {}  # this home's feed -> when it was last read
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return
+        if isinstance(state, dict) and state.get("schema") == FEED_CURSORS:
+            self.cursors = {k: v for k, v in (state.get("feeds") or {}).items() if isinstance(v, dict)}
+
+    def segment(self, cursor, path, now):
+        start = cursor["written"] if cursor["written"] is not None else cursor["since"]
+        home = cursor["home"] or path
+        cursor["written"] = now
+        return {"schema": JOURNAL, "kind": "lifecycle", "event": {
+            "id": f"firstmate:{home}#coverage/{start}-{now}",
+            "source": {"kind": "firstmate", "home": home},
+            "at": iso(now), "at_quality": "observed", "type": "coverage",
+            "coverage": {"from": iso(start), "to": iso(now), "max_gap": math.ceil(self.max_gap)}}}
+
+    def close(self):
+        """End this home's coverage at its latest read, e.g. when the adapter
+        stops; the next run's first segment carries on from there."""
+        lines = []
+        for path, now in self.read_at.items():
+            cursor = self.cursors.get(path)
+            if cursor and cursor.get("written") is not None and now > cursor["written"]:
+                lines.append(self.segment(cursor, path, now))
+                self.dirty = True
+        self.read_at.clear()
+        return lines
+
+    def save(self):
+        if self.dirty:
+            write_atomic(self.path, json.dumps({"schema": FEED_CURSORS, "feeds": self.cursors},
+                                               indent=2, sort_keys=True) + "\n")
+            self.dirty = False
+
+    def poll(self, snapshot):
+        """Journal lines for what every feed recorded since the last poll, and
+        diagnostics. Without a pointer (the feed is off, or Firstmate predates
+        it) there is nothing to read and the bridge speaks alone."""
+        pointer = snapshot.get("lifecycle")
+        if pointer is None:
+            return [], []
+        if not isinstance(pointer, dict) or pointer.get("schema") != FEED:
+            return [], ["Firstmate's lifecycle feed is not fm-lifecycle.v1; bridging from snapshots"]
+        feeds = [("Firstmate lifecycle feed", pointer.get("path"), pointer.get("id"), True)]
+        notes = []
+        for child in pointer.get("homes") or []:
+            if not isinstance(child, dict):
+                continue
+            name = f"secondmate {child.get('task') or child.get('id') or '?'}"
+            if child.get("remote") or not child.get("path"):
+                notes.append(f"{name}: its lifecycle feed is remote and not mirrored here; not read")
+                continue
+            feeds.append((f"{name} lifecycle feed", child["path"], child.get("id"), False))
+        lines = []
+        for name, path, home, primary in feeds:
+            if not isinstance(path, str) or not os.path.isabs(path):
+                notes.append(f"{name}: no absolute path to read")
+                continue
+            try:
+                found, note = self.read(path, home, primary, snapshot_epoch(snapshot))
+            except OSError as error:
+                notes.append(f"{name} unreadable, skipped: {error.strerror or error}")
+                continue
+            lines += found
+            if note:
+                notes.append(f"{name}: {note}")
+        return lines, notes
+
+    def read(self, path, home, primary, now):
+        active = Path(path)
+        if not active.parent.is_dir():
+            if primary:
+                return [], None  # Enabled, nothing written yet.
+            raise FileNotFoundError(errno.ENOENT, "no such directory", str(active.parent))
+        cursor = dict(self.cursors.get(path) or {"file": None, "offset": 0, "seq": 0, "home": home,
+                                                 "since": None, "written": None, "lost": 0,
+                                                 "gaps": 0, "gap": None, "bad": 0})
+        records, bad, file, offset = read_feed(active, cursor)
+        if records and cursor["seq"] and max(r["seq"] for r in records) < cursor["seq"] \
+                and file != cursor["file"]:
+            # Nothing past the cursor, only a shorter history: a new feed.
+            cursor.update(seq=0, since=None)
+        lines = []
+        for record in records:
+            seq = record["seq"]
+            if seq <= cursor["seq"]:
+                continue  # Already read, before a rotation or restart.
+            if seq > cursor["seq"] + 1:
+                cursor["lost"] += seq - cursor["seq"] - 1
+                cursor["gaps"] += 1
+                cursor["gap"] = [cursor["seq"] + 1, seq - 1]
+            cursor["seq"] = seq
+            identity = (record.get("home") or {}).get("id")
+            if isinstance(identity, str) and identity:
+                cursor["home"] = identity
+            if cursor["since"] is None:
+                begun = record.get("at") if record.get("type") == "feed.started" else None
+                begun = begun if isinstance(begun, int) else record.get("recorded_at")
+                cursor["since"] = begun if isinstance(begun, int) and not isinstance(begun, bool) else None
+            lines += translate(record, cursor["home"] or path)
+        cursor["bad"] += bad
+        if primary and cursor["since"] is not None:
+            start = cursor["written"] if cursor["written"] is not None else cursor["since"]
+            if start <= now and (lines or cursor["written"] is None or now - start >= self.checkpoint):
+                lines.append(self.segment(cursor, path, now))
+            self.read_at[path] = now
+        cursor.update(file=file, offset=offset)
+        if self.cursors.get(path) != cursor or lines:
+            self.cursors[path] = cursor
+            self.dirty = True
+        notes = []
+        if cursor["lost"]:
+            first, last = cursor["gap"]
+            notes.append(f"{cursor['lost']} events lost in {cursor['gaps']} seq gaps (latest "
+                         f"{first}-{last}); the timeline lacks them")
+        if cursor["bad"]:
+            notes.append(f"{cursor['bad']} unreadable lines skipped")
+        return lines, "; ".join(notes) or None
+
+
+def lifecycle(snapshot, manifest, bridge, feeds):
+    """One poll's lifecycle lines. The feeds are read first, so the bridge
+    knows what they already hold; their diagnostics join the manifest's."""
+    found, notes = feeds.poll(snapshot)
+    manifest["diagnostics"].extend(notes)
+    for line in found:
+        bridge.reach.add(line["event"])
+    return found + bridge.observe(snapshot, manifest)
 
 
 def semantic(value):
@@ -803,7 +1171,7 @@ def main():
     if lock is None:
         parser.error("a collector already owns this fleet; open its existing manifest")
     previous = recover(output)
-    bridge = None
+    bridge = feeds = None
     viewer = None
     request = output.with_suffix(".request.json")
     note = None
@@ -813,10 +1181,14 @@ def main():
                 manifest, snapshot = collect(home, os.environ.get("HERDR_BIN_PATH", "herdr"),
                                              previous, args.captain)
                 if bridge is None:
-                    bridge = Bridge(manifest["fleet_id"], f"{now()}/{os.getpid()}",
-                                    max_gap=max(60, 4 * args.interval))
+                    max_gap = max(60, 4 * args.interval)
+                    bridge = Bridge(manifest["fleet_id"], f"{now()}/{os.getpid()}", max_gap=max_gap)
                     bridge.recover(journal_records(output))
-                publish(output, manifest, previous, bridge.observe(snapshot, manifest))
+                    feeds = Feeds(output.with_suffix(".feeds.json"), max_gap=max_gap)
+                publish(output, manifest, previous, lifecycle(snapshot, manifest, bridge, feeds))
+                # After the journal holds what was read: a crash between the two
+                # re-reads it, and the same IDs change nothing.
+                feeds.save()
                 previous = manifest
             except (OSError, RuntimeError, ValueError, KeyError) as error:
                 message = f"fleet refresh failed; retaining last snapshot: {error}"
@@ -860,7 +1232,8 @@ def main():
                 # a new viewer opens on it. A worker still registered comes
                 # back with that poll, as it should.
                 if bridge:
-                    append_journal(output, bridge.close())
+                    append_journal(output, bridge.close() + feeds.close())
+                    feeds.save()
                 note = carry_out(output, request)
                 print(f"{note}; collecting a fresh view...", flush=True)
                 previous, bridge, viewer = recover(output), None, None
@@ -872,7 +1245,8 @@ def main():
             viewer.wait(timeout=5)
         if bridge:
             try:
-                append_journal(output, bridge.close())
+                append_journal(output, bridge.close() + feeds.close())
+                feeds.save()
             except OSError:
                 pass
         lock.close()

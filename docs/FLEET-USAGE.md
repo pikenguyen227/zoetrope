@@ -84,7 +84,8 @@ over every session's activity plus Firstmate lifecycle marks (`+` spawned, `▲`
 needs-decision or blocked, `✓` done, `⊘` torn down). Scrubbing shows the crew as
 it was then: sessions and attempts that did not exist yet are absent, torn-down
 ones are dimmed, and cards carry the task's status badge at that moment. Hatched
-stretches are times the adapter was not observing Firstmate; there badges read
+stretches are times nothing observed Firstmate (before its lifecycle feed began,
+and outside the adapter's polls where it bridges); there badges read
 `?` and the header says the lifecycle there is unverified. The footer narrates
 the newest lifecycle event at the playhead. Inside a session, its own timeline
 works as before.
@@ -118,7 +119,9 @@ Archive and delete remove records rather than hiding them, from the adapter's
 state directory only: the manifest `fleet.json` and its journal
 `fleet.events.jsonl`, which holds the lifecycle records and every manifest
 checkpoint. Agent transcripts under `~/.claude` or `~/.codex`, the Firstmate
-home, other backups and anything else in the directory are never touched.
+home, other backups and anything else in the directory are never touched. The
+adapter's feed cursor `fleet.feeds.json` stays too, so the removed history is
+not read back from Firstmate's lifecycle feed.
 
 | | Everything | One worker |
 | --- | --- | --- |
@@ -180,10 +183,12 @@ membership. Transcript contents are neither copied into the journal nor retained
 an agent deletes them.
 
 Automatic Captain lineage/handoff capture and opening a finished crew as a replay
-are future work. The journal records lifecycle the adapter observed (see
-`FIRSTMATE-FLEET.md`, "Lifecycle journal"): a status line keeps its own stamp and a
-spawn its `spawn_gen` time, but lines written between polls or while no adapter
-ran are not recovered. The manifest accepts at most 128 sessions and 4096 task attempts/links;
+are future work. The journal records lifecycle from Firstmate's own feed where
+the snapshot points at one, with every transition at its real time, including
+those while no adapter ran (see `FIRSTMATE-FLEET.md`, "Lifecycle journal").
+Without a feed, the adapter bridges from snapshots: a status line keeps its own
+stamp and a spawn its `spawn_gen` time, but lines written between polls or while
+no adapter ran are not recovered. The manifest accepts at most 128 sessions and 4096 task attempts/links;
 start a separately named archive for larger histories. Invalid refreshes retain the
 last usable view and show its age.
 
