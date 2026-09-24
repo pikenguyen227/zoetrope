@@ -705,8 +705,9 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
     } else {
         // A viewer older than its install outranks everything it shows; a
         // moment nobody observed, past or present, outranks today's diagnostics.
-        let gap = (!fleet.covered())
-            .then(|| fleet.at().unwrap_or_else(chrono::Utc::now))
+        let now = chrono::Utc::now();
+        let gap = (!fleet.covered(now))
+            .then(|| fleet.at().unwrap_or(now))
             .map(|t| {
                 format!(
                     "no lifecycle coverage at {}: badges marked ? are last records, unverified",
@@ -1530,6 +1531,40 @@ mod tests {
         // The footer narrates the newest event, a run's included.
         seek(&mut fleet, "08:16:00");
         assert!(screen(&mut fleet).contains("tests validation gate review"));
+    }
+
+    /// Parked in the tail a running adapter's newest windows trail the
+    /// present by, the overlay, the status line, the badges and the band give
+    /// one verdict: observed while the readers are fresh, unknown once they
+    /// stop.
+    #[test]
+    fn a_parked_moment_in_a_fresh_readers_tail_reads_one_way_everywhere() {
+        use crate::ui::nodes::CrewTone;
+        let (fixture, mut fleet) = validating();
+        // A record after the newest windows, so the playhead can park there.
+        let later = r#"{"event": {"at": "2026-09-22T08:16:40Z", "at_quality": "stamp", "attempt": {"spawn_gen": "s1790064400.4102.2", "task": "tests"}, "id": "bridge:firstmate:/synthetic/firstmate#status/tests/s1790064400.4102.2/1790065000/7a1e0f3c2b9d4e51", "source": {"kind": "bridge", "run": "2026-09-22T08:10:00Z/4200"}, "status": {"digest": "7a1e0f3c2b9d4e51", "note": "still finishing", "value": "working"}, "type": "status"}, "kind": "lifecycle", "schema": "zoetrope.fleet.journal.v2"}"#;
+        let path = fixture.0.join("fleet.json");
+        let mut journal = std::fs::OpenOptions::new()
+            .append(true)
+            .open(fixture.0.join("fleet.events.jsonl"))
+            .unwrap();
+        writeln!(journal, "{later}").unwrap();
+        let poll = JournalTail::beside(&path).poll().unwrap();
+        assert_eq!(poll.rejected, 0);
+        fleet.absorb_lifecycle(poll.reset, poll.events, poll.rejected);
+        fleet.sync();
+        let t = at("08:16:20");
+        seek(&mut fleet, "08:16:20");
+        assert_eq!(fleet.at(), Some(t));
+        for (now, observed) in [(at("08:16:30"), true), (at("08:30:00"), false)] {
+            fleet.sync_as_of(now);
+            assert_eq!(fleet.lifecycle.accounted(t, now), observed, "overlay");
+            assert_eq!(fleet.covered(now), observed, "status line");
+            let tests = mark(&mut fleet, &root("tests")).unwrap();
+            assert_eq!(tests.tone == CrewTone::Unknown, !observed, "{tests:?}");
+            let run = band(&mut fleet, &root("tests")).unwrap();
+            assert_eq!(run.glyph == '?', !observed, "{run:?}");
+        }
     }
 
     #[test]

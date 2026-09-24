@@ -19,20 +19,22 @@ use super::journal::{Attempt, Gate, Lifecycle, Phase, RunView, Step};
 use crate::ui::nodes::{CrewTone, ValidationBand};
 
 /// The band for the newest run among `attempts`, as of `at` (`None`: the
-/// live edge, where `now` is the wall clock).
+/// live edge, where `now` is the wall clock), verified as of the wall clock
+/// `clock`.
 pub(super) fn band_for<'a>(
     lifecycle: &Lifecycle,
     runs: &BTreeMap<Attempt, RunView>,
     attempts: impl Iterator<Item = &'a Attempt>,
     at: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
+    clock: DateTime<Utc>,
 ) -> Option<ValidationBand> {
     let (attempt, view) = attempts
         .filter_map(|a| Some((a, runs.get(a)?)))
         .max_by_key(|(_, view)| view.start())?;
     Some(band(
         view,
-        lifecycle.run_verified(attempt, &view.run, at),
+        lifecycle.run_verified(attempt, &view.run, at, clock),
         now,
     ))
 }
@@ -371,6 +373,7 @@ mod tests {
             [&attempt].into_iter(),
             t,
             t.unwrap_or_else(Utc::now),
+            Utc::now(),
         )
         .unwrap()
     }

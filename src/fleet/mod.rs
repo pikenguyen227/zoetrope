@@ -548,10 +548,16 @@ impl Fleet {
     /// journal beside the manifest's current observations; parked in the past
     /// from the journal alone, since the manifest describes the present.
     pub fn sync(&mut self) {
+        self.sync_as_of(Utc::now());
+    }
+
+    /// [`Fleet::sync`], with what was observed judged as of the wall clock
+    /// `clock`.
+    pub(crate) fn sync_as_of(&mut self, clock: DateTime<Utc>) {
         self.refresh_timeline();
         let at = self.at();
         let crew = self.lifecycle.state_at(at);
-        let covered = self.covered();
+        let covered = self.covered(clock);
         let joins = self.joins();
         let mut marks: BTreeMap<String, CrewMark> = BTreeMap::new();
         // Validation runs as of the moment, and each card's band.
@@ -668,7 +674,7 @@ impl Fleet {
                     }
                     let joined = joins.iter().filter(|(_, k)| *k == key).map(|(a, _)| a);
                     if let Some(band) =
-                        validation::band_for(&self.lifecycle, &runs, joined, at, now)
+                        validation::band_for(&self.lifecycle, &runs, joined, at, now, clock)
                     {
                         bands.insert(id.clone(), band);
                     }
@@ -752,9 +758,14 @@ impl Fleet {
             if let Some(state) = crew.get(&attempt) {
                 marks.insert(id.clone(), crew_mark(state, covered));
             }
-            if let Some(band) =
-                validation::band_for(&self.lifecycle, &runs, [&attempt].into_iter(), at, now)
-            {
+            if let Some(band) = validation::band_for(
+                &self.lifecycle,
+                &runs,
+                [&attempt].into_iter(),
+                at,
+                now,
+                clock,
+            ) {
                 bands.insert(id.clone(), band);
             }
             projection.agents.insert(id.clone(), agent);

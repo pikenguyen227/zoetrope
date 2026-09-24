@@ -360,8 +360,9 @@ own live edges. Dead air is compressed only while every session is quiet.
   holds once the newest window is older than twice the `max_gap` its
   segments carry (two minutes when absent): the adapter has stopped, so
   today's state is not observed. Until then the moments after the newest
-  window, which trails the present by a checkpoint, are observed and not
-  hatched (`Lifecycle::accounted`).
+  window, which trails the present by a checkpoint, are observed (`held`):
+  not hatched, and a playhead parked there shows unmarked badges, an
+  unmarked band and no coverage warning.
 - Space, `[` / `]` (member prompts and lifecycle transitions), `g`/End and the
   scrubber move the one playhead. Enter opens a session at that moment with its
   own DVR; Esc rejoins the fleet's moment.

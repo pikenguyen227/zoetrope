@@ -201,12 +201,13 @@ impl Fleet {
         }
     }
 
-    /// Whether lifecycle was observed at the moment shown: parked, whether a
-    /// coverage window holds it; at the live edge, whether the adapter still is.
-    pub fn covered(&self) -> bool {
+    /// Whether lifecycle was observed at the moment shown, as of `now`:
+    /// parked, whether the coverage windows hold it (`Lifecycle::covered`);
+    /// at the live edge, whether the adapter still is.
+    pub fn covered(&self, now: DateTime<Utc>) -> bool {
         match self.at() {
-            Some(t) => self.lifecycle.covered(t),
-            None => self.lifecycle.observing(Utc::now()),
+            Some(t) => self.lifecycle.covered(t, now),
+            None => self.lifecycle.observing(now),
         }
     }
 
