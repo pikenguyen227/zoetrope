@@ -39,9 +39,14 @@ Run `zoe-fleet-open` from a shell **inside Herdr**. It links the separate
 to run outside Herdr. Close an existing Fleet collector before opening another.
 
 Once linked, invoke **Zoetrope: Firstmate Fleet tab** through the plugin manager
-with a Captain pane focused to include that pane's exact session as a Captain.
-Opening from Shell still discovers Firstmate workers; a Shell pane is not guessed
-to be a Captain. The adapter does not launch Claude, Codex, or any workers.
+from any pane. The Fleet tab binds the Captain by what a pane runs, not by focus
+or tab name (`fleet-plugin/captain.py`): the one pane whose registered Claude or
+Codex session was launched in the Firstmate home and which no Firstmate task
+names as its endpoint. A plain shell, such as your own Shell tab, a crew or
+secondmate pane, and an agent outside the home are never taken for it; the
+focused pane only settles a choice between two coordinators. When none can be
+identified the collector gets no `--captain` and shows the last Captain
+registered. The adapter does not launch Claude, Codex, or any workers.
 Space and tab names are yours to rename, and the view follows them without
 reading them as identity. The crew's root card takes the standing Captain's
 Herdr workspace name (else the Captain pane's, else the Fleet tab's own

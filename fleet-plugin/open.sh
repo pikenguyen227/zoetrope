@@ -32,9 +32,14 @@ fi
 captain=()
 context="${HERDR_PLUGIN_CONTEXT_JSON:-}"
 [ -n "$context" ] || context='{}'
-focused=$(printf '%s' "$context" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("focused_pane_id", ""))')
-if [ -n "$focused" ]; then
-  captain=(--captain "$focused")
+focused=$(printf '%s' "$context" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("focused_pane_id", ""))' || true)
+# The Captain is the pane running this home's coordinator, never merely the
+# focused one: the captain's own Shell tab is often focused. With none found,
+# pass no --captain and the collector keeps the last Captain registered.
+coordinator=$(python3 "$repo/fleet-plugin/captain.py" "${HERDR_BIN_PATH:-herdr}" \
+  "$firstmate_home" "$focused" || true)
+if [ -n "$coordinator" ]; then
+  captain=(--captain "$coordinator")
 fi
 # Herdr runs this with macOS /bin/bash 3.2, where an empty "${captain[@]}" is
 # unbound under set -u; expand it only when set.
