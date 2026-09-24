@@ -528,3 +528,65 @@ fn running_cards_pulse_on_the_app_clock() {
     let (off, _) = glyphs(&mut fleet);
     assert_eq!(off, 0);
 }
+
+#[test]
+fn relaunched_member_keeps_its_root_edge() {
+    // A secondmate relaunched once: its first launch generation is no longer
+    // observed, and the adapter records the new session continuing it.
+    let manifest = Manifest::parse(
+        r#"{
+      "schema":"zoetrope.fleet.v1", "fleet_id":"test", "label":"Test fleet",
+      "observed_at":"2026-09-22T00:00:00Z",
+      "sessions":[
+        {"key":{"provider":"codex","session_id":"mate-1"},"label":"Mate"},
+        {"key":{"provider":"codex","session_id":"mate-2"},"label":"Mate"}
+      ],
+      "tasks":[
+        {"id":"mate","spawn_gen":"1","label":"Mate",
+          "session":{"provider":"codex","session_id":"mate-1"},
+          "state":{"value":"working","source":"fixture","observed_at":"2026-09-22T00:00:00Z"},
+          "runtime":{"value":"not observed","source":"fixture","observed_at":"2026-09-22T00:00:00Z"}},
+        {"id":"mate","spawn_gen":"2","label":"Mate",
+          "session":{"provider":"codex","session_id":"mate-2"},
+          "state":{"value":"working","source":"fixture","observed_at":"2026-09-22T00:00:00Z"},
+          "runtime":{"value":"working","source":"fixture","observed_at":"2026-09-22T00:00:00Z"}}
+      ],
+      "links":[{"id":"relaunch", "from":{"provider":"codex","session_id":"mate-1"},
+        "to":{"provider":"codex","session_id":"mate-2"}, "kind":"continues",
+        "evidence":"launch generation 1 -> 2", "observed_at":"2026-09-22T00:00:00Z"}]
+    }"#,
+    )
+    .unwrap();
+    let mut fleet = Fleet::new(manifest).unwrap();
+    for id in ["mate-1", "mate-2"] {
+        fleet.event(&key(id), activity(id));
+    }
+    let current = key("mate-2").node_id(MAIN_ID);
+    let member = |fleet: &Fleet| {
+        fleet.overview.flow.edges().iter().any(|e| {
+            e.id == format!("member:{current}") && e.source == FLEET_ROOT && e.target == current
+        })
+    };
+    fleet.sync();
+    assert!(!fleet.show_finished);
+    assert_eq!(fleet.finished, 1, "the first launch has finished");
+    assert!(
+        member(&fleet),
+        "hidden predecessor: current session is on the root"
+    );
+    fleet.toggle_finished();
+    assert!(fleet.show_finished);
+    assert!(
+        member(&fleet),
+        "shown predecessor: current session is on the root"
+    );
+    // The succession itself is still drawn, as history.
+    assert!(
+        fleet
+            .overview
+            .flow
+            .edges()
+            .iter()
+            .any(|e| e.label.as_deref() == Some("continues") && e.target == current)
+    );
+}

@@ -827,6 +827,9 @@ impl Fleet {
                 .iter()
                 .map(|l| format!("fleet-link:{}", l.id)),
         );
+        // A delegated member hangs off its delegator instead of the root. A
+        // dependency or a continuation is not parentage: a relaunched session
+        // stays a full member, whether or not its predecessor is shown.
         let member_edges: BTreeMap<_, _> = self
             .members
             .keys()
@@ -835,7 +838,7 @@ impl Fleet {
                     .manifest
                     .links
                     .iter()
-                    .any(|l| &l.to == *key && l.kind != Relation::DependsOn)
+                    .any(|l| &l.to == *key && l.kind == Relation::Delegates)
             })
             .map(|key| {
                 (
