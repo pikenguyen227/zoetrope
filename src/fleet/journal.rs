@@ -110,6 +110,9 @@ pub struct Spawned {
     pub harness: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// The secondmate whose own crew this is, when not the home's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mate: Option<String>,
 }
 
 /// One status line: its verb (`working`, `needs-decision`, `done`, ...).

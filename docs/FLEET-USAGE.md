@@ -306,7 +306,12 @@ files back. A worker's backup opens on its own with
 ## Connections and history
 
 - **member:** observed fleet membership, without implying Captain ancestry.
-- **delegates:** explicit relationship supplied in the manifest.
+- **delegates:** explicit assignment. The adapter records one from a local
+  secondmate to each worker it dispatched in its own Firstmate home, so that
+  crew hangs under the secondmate as Herdr's sidebar nests it, with its own
+  status and timeline. It follows the secondmate's current session across a
+  relaunch; while the secondmate is not shown (hidden as finished), its crew
+  hangs from the root. A remote secondmate's crew is not read.
 - **continues:** a new native session taking over the same work. The adapter records
   different observed launch generations/IDs of the same Firstmate task/project.
   Resuming the same native ID keeps one node. The new session keeps its own

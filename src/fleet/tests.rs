@@ -590,3 +590,56 @@ fn relaunched_member_keeps_its_root_edge() {
             .any(|e| e.label.as_deref() == Some("continues") && e.target == current)
     );
 }
+
+#[test]
+fn a_secondmates_crew_hangs_under_it_while_it_is_shown() {
+    // A secondmate's own worker, delegated by it in its Firstmate home. The
+    // secondmate's launch is no longer observed, so it is finished.
+    let manifest = Manifest::parse(
+        r#"{
+      "schema":"zoetrope.fleet.v1", "fleet_id":"test", "label":"Test fleet",
+      "observed_at":"2026-09-22T00:00:00Z",
+      "sessions":[
+        {"key":{"provider":"codex","session_id":"mate"},"label":"uiux"},
+        {"key":{"provider":"codex","session_id":"crew"},"label":"acceptance-docs-typo"}
+      ],
+      "tasks":[
+        {"id":"uiux","spawn_gen":"1","label":"uiux",
+          "session":{"provider":"codex","session_id":"mate"},
+          "state":{"value":"working","source":"fixture","observed_at":"2026-09-22T00:00:00Z"},
+          "runtime":{"value":"not observed","source":"fixture","observed_at":"2026-09-22T00:00:00Z"}},
+        {"id":"acceptance-docs-typo","spawn_gen":"1","label":"acceptance-docs-typo",
+          "session":{"provider":"codex","session_id":"crew"},
+          "state":{"value":"working","source":"fixture","observed_at":"2026-09-22T00:00:00Z"},
+          "runtime":{"value":"working","source":"fixture","observed_at":"2026-09-22T00:00:00Z"}}
+      ],
+      "links":[{"id":"crew", "from":{"provider":"codex","session_id":"mate"},
+        "to":{"provider":"codex","session_id":"crew"}, "kind":"delegates",
+        "evidence":"secondmate uiux's own task", "observed_at":"2026-09-22T00:00:00Z"}]
+    }"#,
+    )
+    .unwrap();
+    let mut fleet = Fleet::new(manifest).unwrap();
+    for id in ["mate", "crew"] {
+        fleet.event(&key(id), activity(id));
+    }
+    let (mate, crew) = (key("mate").node_id(MAIN_ID), key("crew").node_id(MAIN_ID));
+    let edge =
+        |fleet: &Fleet, source: &str, label: &str| {
+            fleet.overview.flow.edges().iter().any(|e| {
+                e.source == source && e.target == crew && e.label.as_deref() == Some(label)
+            })
+        };
+    fleet.sync();
+    assert_eq!(fleet.finished, 1, "the secondmate has finished");
+    assert!(
+        edge(&fleet, FLEET_ROOT, "member"),
+        "hidden secondmate: its crew is on the root"
+    );
+    fleet.toggle_finished();
+    assert!(edge(&fleet, &mate, "delegates"), "crew hangs under it");
+    assert!(
+        !edge(&fleet, FLEET_ROOT, "member"),
+        "shown secondmate: its crew is off the root"
+    );
+}
