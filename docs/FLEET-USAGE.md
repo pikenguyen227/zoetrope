@@ -303,7 +303,8 @@ files back. A worker's backup opens on its own with
 - **delegates:** explicit relationship supplied in the manifest.
 - **continues:** a new native session taking over the same work. The adapter records
   different observed launch generations/IDs of the same Firstmate task/project.
-  Resuming the same native ID keeps one node.
+  Resuming the same native ID keeps one node. The new session keeps its own
+  member edge to the crew root: succession is history, not parentage.
 - **depends on:** explicit session dependency in the manifest. Firstmate blocker
   IDs are retained as task metadata; automatic dependency arrows are future work.
 - Unlabelled edges inside a session are the provider's native subagent relationships.
