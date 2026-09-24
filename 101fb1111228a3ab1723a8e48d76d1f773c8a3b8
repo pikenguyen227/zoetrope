@@ -1,0 +1,24 @@
+scripts/firstmate-fleet.py
+  s_eddab1cdbf7af5::t_c216a71bb1e8f1 51-59,132-135,206-208,210-217
+scripts/test_firstmate_fleet.py
+  s_eddab1cdbf7af5::t_20d473697a777d 83-116
+  s_eddab1cdbf7af5::t_f5143fd536d977 4,8
+docs/FIRSTMATE-FLEET.md
+  s_eddab1cdbf7af5::t_d95d8105510b43 92-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "101fb1111228a3ab1723a8e48d76d1f773c8a3b8",
+  "prompts": {},
+  "sessions": {
+    "s_eddab1cdbf7af5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8608b92-24c3-41b1-9e3e-f8e2da94c24c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

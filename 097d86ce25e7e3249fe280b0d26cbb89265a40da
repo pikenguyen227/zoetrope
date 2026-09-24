@@ -1,0 +1,20 @@
+src/usage.rs
+  s_3d47258591ccd6::t_3d5f68edab5b1e 126-145,147-150,154-155,164-167,178,180,344-345
+  s_3d47258591ccd6::t_c469391ebd39cb 186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "097d86ce25e7e3249fe280b0d26cbb89265a40da",
+  "prompts": {},
+  "sessions": {
+    "s_3d47258591ccd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "77e8832e-6880-45ce-b449-a786314c024c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

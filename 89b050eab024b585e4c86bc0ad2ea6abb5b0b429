@@ -1,0 +1,87 @@
+web/wasm/src/main.rs
+  s_770e6168064eef::t_d59899cc54ca6a 508-511
+src/fleet/native.rs
+  s_770e6168064eef::t_7370def4208e38 339,348,373,414-426,428-434,467-471,489-588,650-667,679-712
+  s_770e6168064eef::t_0501c15ec6a199 713-717
+src/state/mod.rs
+  s_770e6168064eef::t_d59899cc54ca6a 199-200,254,995-1000
+  s_770e6168064eef::t_9861407e605b89 1004-1010
+src/state/graph.rs
+  s_770e6168064eef::t_d59899cc54ca6a 35-37
+  s_770e6168064eef::t_e8e9cbd0177fda 79,92
+src/ui/mod.rs
+  s_770e6168064eef::t_d59899cc54ca6a 80
+src/handler.rs
+  s_770e6168064eef::t_d59899cc54ca6a 24-30
+  s_770e6168064eef::t_20686e6cc69c31 31-39,367-432,464,518,550
+docs/FLEET-USAGE.md
+  s_770e6168064eef::t_da6361f4399958 61-63,71-74,119-165
+fleet-plugin/open.sh
+  s_770e6168064eef::t_a767d66cc14527 12
+scripts/claude-telemetry.py
+  s_770e6168064eef::t_13104d0582f769 1-129
+scripts/fleet-demo.py
+  s_770e6168064eef::t_462e8b50ecf06f 38-43
+scripts/install-fleet.sh
+  s_770e6168064eef::t_40a8a07e5167f6 10-11
+scripts/test_claude_telemetry.py
+  s_770e6168064eef::t_ba8b09ce0733b4 1-63
+src/fact.rs
+  s_770e6168064eef::t_0e11f843b24cf2 80-83,166-167,237
+src/fleet/activity.rs
+  s_770e6168064eef::t_2caf569d93f4ab 1-135
+src/fleet/mod.rs
+  s_770e6168064eef::t_4e47e9af9949af 4-5,208,222
+src/lib.rs
+  s_770e6168064eef::t_8ed5c7f10d52cc 36
+src/provider/claude/mod.rs
+  s_770e6168064eef::t_6859e0d2192a3b 211-233
+src/provider/claude/wire.rs
+  s_770e6168064eef::t_1c57340d22f4f0 232-239
+src/provider/codex/mod.rs
+  s_770e6168064eef::t_915c4ec5423ba2 45-47,242-286,317,330,576-625
+src/provider/codex/wire.rs
+  s_770e6168064eef::t_124ea2a5d934f6 329-332,356-382
+src/state/info.rs
+  s_770e6168064eef::t_1a6075f1963c39 17-18,30-38
+src/state/session.rs
+  s_770e6168064eef::t_34fdc54906aab1 223,258,422-423,477-481
+src/ui/nodes.rs
+  s_770e6168064eef::t_2901b03b1175f2 19,21,47,165-170,173-183,189-194,268
+src/ui/panel.rs
+  s_770e6168064eef::t_51a1a26b293100 153,213-219
+src/usage.rs
+  s_770e6168064eef::t_ec009217f3f1c9 1-248
+assets/claude/demo.timeline.txt
+  s_2a5b3b96dbb0ad::t_8d05d8f68cf2d7 2,12,14,20-21,23-25,27,31,34,36-37,39-41,43,45,47,49,51,53,55,57
+assets/codex/cli-0.149.1.timeline.txt
+  s_2a5b3b96dbb0ad::t_558db493284d37 16,21,28,33,46,55,69,75,79,84,94,100,106,110,118,124,135,145,156,165,170,172,184,187,196,199,205,213,217,221,231,234,237,245,256
+assets/codex/cli-0.153.4.timeline.txt
+  s_2a5b3b96dbb0ad::t_55c175fd5249e8 20,31,36,46,55,61,72,76,80,88,95,98,104,113,121,136,140,147,152,155,165,171,178,181,189,192,202,210,213,216,224,228,232,241,244,248,257,261,276,282,287,290,296,301,306,314,323,329,334,337,347,352,358
+assets/codex/desktop-0.150.0.timeline.txt
+  s_2a5b3b96dbb0ad::t_a534d463c451eb 12,26,32,38,44,50,53,67,71,77,83,89,95,101,112,124,130,140,156,160,173,176,184,189,194,199,209,212,218,223,231,237,244,247,250,265,277,283,289,294,299,309,319,333,336,347,351,360,363,368,373,386,392,398,404,409,423,427,433,439,445,451,456
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "89b050eab024b585e4c86bc0ad2ea6abb5b0b429",
+  "prompts": {},
+  "sessions": {
+    "s_2a5b3b96dbb0ad": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c6cc-7438-7fe0-b404-900933d030d9",
+        "model": "unknown"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    },
+    "s_770e6168064eef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c37e-e597-7843-a358-ef1f584020f9",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

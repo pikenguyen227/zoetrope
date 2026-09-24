@@ -1,0 +1,30 @@
+src/fleet/native.rs
+  s_b3ecb6637c03bb::t_23c9b7735cd0db 119
+  s_b3ecb6637c03bb::t_5c786daf44b78b 470
+  s_b3ecb6637c03bb::t_eff6e9d07b3f96 471-472,916-917,920,922
+src/fleet/journal.rs
+  s_b3ecb6637c03bb::t_6c2f5e2a159804 964-967,985
+  s_b3ecb6637c03bb::t_eff6e9d07b3f96 496-506
+src/fleet/mod.rs
+  s_b3ecb6637c03bb::t_eff6e9d07b3f96 420
+docs/FIRSTMATE-FLEET.md
+  s_b3ecb6637c03bb::t_434c60b42aa5cb 177-179
+src/fleet/timeline.rs
+  s_b3ecb6637c03bb::t_eff6e9d07b3f96 170-178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "06dea6ebc319c0f6169c3457a59c28bd0cbb2b04",
+  "prompts": {},
+  "sessions": {
+    "s_b3ecb6637c03bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47339579-2edc-4708-ac40-25e60ceb9348",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+AGENTS.md
+  s_eddab1cdbf7af5::t_236987a5c02675 1-40
+CLAUDE.md
+  s_eddab1cdbf7af5::t_236987a5c02675 1-2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "642cf39859fbc0a6b7c41e8eae71b3162b26882e",
+  "prompts": {},
+  "sessions": {
+    "s_eddab1cdbf7af5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d8608b92-24c3-41b1-9e3e-f8e2da94c24c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
