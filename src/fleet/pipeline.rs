@@ -427,6 +427,7 @@ impl Fleet {
                 label: format!("pipeline agent {short}"),
                 file: Some(agent.path.clone()),
                 runtime: None,
+                herdr: None,
             },
             run: picker.agents.run.clone(),
             loaded: false,

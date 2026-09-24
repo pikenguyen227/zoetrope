@@ -167,26 +167,24 @@ class AdapterTests(unittest.TestCase):
 
     def test_the_workspace_names_the_fleet(self):
         snap = snapshot()
-        named = adapter.build_manifest(snap, snap, {}, observed=WHEN, workspace="Control Tower")
+        names = {("workspace", "wA"): "Control Tower"}
+        named = adapter.build_manifest(snap, snap, {}, observed=WHEN, own_workspace="wA",
+                                       names=lambda kind, ident: names.get((kind, ident)))
         self.assertEqual(named["label"], "Control Tower")
         self.assertEqual(self.build()["label"], "Firstmate · Control Tower")
 
-    def test_workspace_name_asks_herdr_for_the_captains_workspace(self):
-        answer = {"result": {"workspace": {"workspace_id": "wA", "label": " Control Tower "}}}
-        with mock.patch.object(adapter, "run_json", return_value=answer) as run, \
-                mock.patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "wB"}):
-            self.assertEqual(adapter.workspace_name("herdr", {"workspace_id": "wA"}), "Control Tower")
-            self.assertEqual(run.call_args.args[0], ["herdr", "workspace", "get", "wA"])
-            # Without a Captain pane, the adapter's own workspace.
-            adapter.workspace_name("herdr", None)
-            self.assertEqual(run.call_args.args[0], ["herdr", "workspace", "get", "wB"])
-        # Unknown, unreachable or unnamed: None, so the fleet keeps its default name.
-        with mock.patch.dict(os.environ, clear=True):
-            self.assertIsNone(adapter.workspace_name("herdr", None))
-        for failure in (RuntimeError("no socket"), {"result": {}}, {"result": {"workspace": {"label": ""}}}):
+    def test_herdr_names_a_workspace_or_a_tab_by_its_id(self):
+        for kind, ident in (("workspace", "wA"), ("tab", "wA:t1")):
+            answer = {"result": {kind: {kind + "_id": ident, "label": " (General) Captain "}}}
+            with mock.patch.object(adapter, "run_json", return_value=answer) as run:
+                self.assertEqual(adapter.herdr_name("herdr", kind, ident), "(General) Captain")
+                self.assertEqual(run.call_args.args[0], ["herdr", kind, "get", ident])
+        # Unreachable or unnamed: None, so the last name known (or a default) stays.
+        for failure in (RuntimeError("no socket"), {"result": {}}, {"result": {"tab": {"label": ""}}},
+                        {"result": {"tab": {"label": "bell\x07"}}}):
             effect = {"side_effect": failure} if isinstance(failure, Exception) else {"return_value": failure}
             with mock.patch.object(adapter, "run_json", **effect):
-                self.assertIsNone(adapter.workspace_name("herdr", {"workspace_id": "wA"}))
+                self.assertIsNone(adapter.herdr_name("herdr", "tab", "wA:t1"))
 
     def test_only_the_registered_captain_stands(self):
         def captain(session=None):
@@ -205,8 +203,9 @@ class AdapterTests(unittest.TestCase):
         self.assertIsNone(runtime(first, "captain-one"))
         # A later Captain registers: the earlier one stays, no longer registered.
         second = build(first, captain("captain-two"))
+        # Newest registration last among the Captains.
         self.assertEqual([s["key"]["session_id"] for s in second["sessions"]],
-                         ["captain-one", "native-one", "captain-two"])
+                         ["native-one", "captain-one", "captain-two"])
         self.assertEqual(runtime(second, "captain-one")["value"], "not observed")
         self.assertIsNone(runtime(second, "captain-two"))
         self.assertIsNone(runtime(second, "native-one"))  # a worker is judged by its task
@@ -323,6 +322,233 @@ def observe(bridge, now, tasks, panes=None, previous=None):
     snap = fm_snapshot(now, tasks)
     manifest = adapter.build_manifest(snap, snap, panes or {}, previous, observed=adapter.iso(now))
     return bridge.observe(snap, manifest), manifest
+
+
+# Captain-renamed spaces and tabs. prefix+f / prefix+shift+f (the captain's
+# Herdr keys, open-firstmate claude / codex) start a Claude or a Codex
+# Captain in "Control Tower"; the secondmates zoe and pma2 run in spaces of
+# their own. Spawning names each space and tab, and the captain renames every
+# one by hand: identity must not rest on any of those names.
+SUPERVISORS = {  # pane -> (workspace, generated space, renamed space, tab, generated tab, renamed tab)
+    "wA:p5": ("wA", "firstmate", "Control Tower", "wA:t1", "Captain (Claude)", "(General) Captain"),
+    "w14:p2": ("w14", "2ndmate-zoe", "Repo-zoe", "w14:t2", "zoe", "(Zoe) Captain"),
+    "w15:p2": ("w15", "2ndmate-pma2", "Repo-pma2.clients", "w15:t2", "pma2", "(LMA) Captain"),
+}
+CAPTAIN_PANE, ZOE_PANE, PMA2_PANE = SUPERVISORS
+RENAMED = {"Control Tower", "(General) Captain", "Repo-zoe", "(Zoe) Captain",
+           "Repo-pma2.clients", "(LMA) Captain"}
+CAPTAINS_FIXTURE = Path(__file__).resolve().parent.parent / "assets/fleet/captains"
+
+
+def herdr_names(renamed):
+    """The captain's live Herdr names, before or after the rename."""
+    names = {}
+    for workspace, space, new_space, tab, label, new_label in SUPERVISORS.values():
+        names["workspace", workspace] = new_space if renamed else space
+        names["tab", tab] = new_label if renamed else label
+    return lambda kind, ident: names.get((kind, ident))
+
+
+def supervisor_pane(pane_id, session, provider):
+    workspace, _, _, tab, _, _ = SUPERVISORS[pane_id]
+    return {"pane_id": pane_id, "tab_id": tab, "workspace_id": workspace, "agent_status": "working",
+            "agent_session": {"agent": provider, "kind": "id", "value": session}}
+
+
+def supervisors(provider, harness="claude", ids=None):
+    """Snapshot, pane reads and one collect-alike for the three supervisors."""
+    ids = ids or {"captain": "captain-general", "zoe": "sm-zoe", "pma2": "sm-pma2"}
+    tasks = [{"id": t, "kind": "secondmate", "harness": harness, "spawn_gen": f"s{t}", "backend": "herdr",
+              "remote": None, "project": f"/synthetic/{t}", "endpoint": {"target": "default:" + pane_id},
+              "current_state": {"state": "working", "source": "status"}}
+             for t, pane_id in (("zoe", ZOE_PANE), ("pma2", PMA2_PANE))]
+    snap = {"schema": "fm-fleet-snapshot.v1", "fm_home": "/synthetic/firstmate", "generated": WHEN,
+            "tasks": tasks, "backlog": {"records": []}}
+    panes = {"default:" + ZOE_PANE: supervisor_pane(ZOE_PANE, ids["zoe"], harness),
+             "default:" + PMA2_PANE: supervisor_pane(PMA2_PANE, ids["pma2"], harness)}
+    captain = supervisor_pane(CAPTAIN_PANE, ids["captain"], provider)
+
+    def collect(previous, pane_id=CAPTAIN_PANE, renamed=True, names=None):
+        # The Team tab opens in the invoking pane's workspace.
+        record = captain if pane_id == CAPTAIN_PANE else panes["default:" + pane_id]
+        return adapter.build_manifest(snap, snap, panes, previous, record, WHEN,
+                                      names=names or herdr_names(renamed),
+                                      own_workspace=SUPERVISORS[pane_id][0])
+    return collect
+
+
+def standing(manifest):
+    """The Captains that stand: sessions no attempt names, still registered."""
+    joined = {adapter.identity(t["session"]) for t in manifest["tasks"] if t.get("session")}
+    return [s for s in manifest["sessions"] if adapter.identity(s["key"]) not in joined
+            and (s.get("runtime") or {}).get("value") != adapter.NOT_OBSERVED]
+
+
+def labels(manifest):
+    return {s["key"]["session_id"]: s["label"] for s in manifest["sessions"]}
+
+
+def captains_fixture():
+    """assets/fleet/captains/fleet.json: a Codex Captain (shift-F) and two
+    secondmates, spawned under generated names, renamed by the captain, then
+    collected from each secondmate's pane in turn; plus the transcripts the
+    fixture ships (`file`), which the adapter leaves to Herdr's registration."""
+    ids = {"captain": "c2c2c2c2-0000-4000-8000-000000000001",
+           "zoe": "c2c2c2c2-0000-4000-8000-000000000002",
+           "pma2": "c2c2c2c2-0000-4000-8000-000000000003"}
+    collect = supervisors("codex", "codex", ids)
+    manifest = collect(None, renamed=False)
+    for pane_id in (CAPTAIN_PANE, ZOE_PANE, PMA2_PANE):
+        manifest = collect(manifest, pane_id)
+    for spec in manifest["sessions"]:
+        spec["file"] = f"sessions/2026/09/24/rollout-2026-09-24T02-00-00-{spec['key']['session_id']}.jsonl"
+    return json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+
+
+class CaptainRenameTests(unittest.TestCase):
+    """Both keys: F is a Claude Captain, shift-F a Codex one."""
+    KEYS = (("F", "claude"), ("shift-F", "codex"))
+
+    def test_renamed_spaces_and_tabs_name_three_distinct_supervisors(self):
+        for key, provider in self.KEYS:
+            with self.subTest(key):
+                collect = supervisors(provider)
+                spawned = collect(None, renamed=False)
+                self.assertEqual(spawned["label"], "firstmate")
+                self.assertEqual(labels(spawned), {"captain-general": "Captain (Claude)",
+                                                   "sm-zoe": "zoe", "sm-pma2": "pma2"})
+                renamed = collect(spawned)
+                # The root reads the space, each supervisor its tab: nothing generated.
+                self.assertEqual(renamed["label"], "Control Tower")
+                self.assertEqual(labels(renamed), {"captain-general": "(General) Captain",
+                                                   "sm-zoe": "(Zoe) Captain", "sm-pma2": "(LMA) Captain"})
+                # Renaming moved no identity: the same three sessions, one Captain.
+                self.assertEqual([s["key"] for s in renamed["sessions"]],
+                                 [s["key"] for s in spawned["sessions"]])
+                self.assertEqual([s["key"] for s in standing(renamed)],
+                                 [{"provider": provider, "session_id": "captain-general"}])
+                self.assertEqual({t["id"]: t["label"] for t in renamed["tasks"]},
+                                 {"zoe": "(Zoe) Captain", "pma2": "(LMA) Captain"})
+                captain = next(s for s in renamed["sessions"] if s["key"]["session_id"] == "captain-general")
+                self.assertEqual(captain["herdr"], {"pane_id": "wA:p5", "tab_id": "wA:t1", "workspace_id": "wA",
+                                                    "workspace": "Control Tower", "tab": "(General) Captain"})
+                zoe = next(s for s in renamed["sessions"] if s["key"]["session_id"] == "sm-zoe")
+                self.assertEqual(zoe["herdr"], {"pane_id": "w14:p2", "tab_id": "w14:t2", "workspace_id": "w14",
+                                                "tab": "(Zoe) Captain"})
+                self.assertEqual(renamed["diagnostics"], [])
+
+    def test_a_secondmates_pane_is_never_the_captain(self):
+        # A secondmate's own SessionStart autostart can hand the collector its pane.
+        for key, provider in self.KEYS:
+            with self.subTest(key):
+                collect = supervisors(provider)
+                manifest = collect(None)
+                for pane_id, task in ((ZOE_PANE, "zoe"), (PMA2_PANE, "pma2"), (CAPTAIN_PANE, None)):
+                    manifest = collect(manifest, pane_id)
+                    self.assertEqual(manifest["label"], "Control Tower")
+                    self.assertEqual(labels(manifest), {"captain-general": "(General) Captain",
+                                                        "sm-zoe": "(Zoe) Captain", "sm-pma2": "(LMA) Captain"})
+                    self.assertEqual([s["key"]["session_id"] for s in standing(manifest)], ["captain-general"])
+                    if task:
+                        self.assertIn(f"Captain pane {pane_id} is task {task}'s pane, not a Captain; "
+                                      "showing the last Captain registered", manifest["diagnostics"])
+                    else:
+                        self.assertEqual(manifest["diagnostics"], [])
+                # Opened from a secondmate before any Captain registered: no
+                # Captain, and the crew is not named after the secondmate's space.
+                fresh = collect(None, ZOE_PANE)
+                self.assertEqual(standing(fresh), [])
+                self.assertEqual(fresh["label"], "Firstmate · Control Tower")
+                self.assertIn(f"Captain pane {ZOE_PANE} is task zoe's pane, not a Captain; "
+                              "no Captain registered yet", fresh["diagnostics"])
+
+    def test_a_rename_is_read_again_on_every_collection(self):
+        collect = supervisors("claude")
+        manifest = collect(None)
+        # The captain renames again, the Captain pane goes quiet: the last
+        # Captain registered stands, under its tab's new name.
+        again = {("workspace", "wA"): "Bridge", ("tab", "wA:t1"): "Captain",
+                 ("tab", "w14:t2"): "zoe (repo)", ("tab", "w15:t2"): "LMA"}
+        shell = {"pane_id": "wA:p9", "tab_id": "wA:t9", "workspace_id": "wA"}
+        snap = {"schema": "fm-fleet-snapshot.v1", "fm_home": "/synthetic/firstmate", "generated": WHEN,
+                "tasks": [], "backlog": {"records": []}}
+        renamed = adapter.build_manifest(snap, snap, {}, manifest, shell, WHEN,
+                                         names=lambda kind, ident: again.get((kind, ident)))
+        self.assertEqual(renamed["label"], "Bridge")
+        self.assertEqual(labels(renamed)["captain-general"], "Captain")
+        # Herdr cannot name anything now: the last names known stay, never
+        # a generated label in their place.
+        dark = collect(manifest, names=lambda kind, ident: None)
+        self.assertEqual(dark["label"], "Control Tower")
+        self.assertEqual(labels(dark), labels(manifest))
+
+    def test_a_manifest_the_rebind_mislabelled_heals(self):
+        # Before this fix a secondmate's pane made its session "Captain · claude"
+        # and named the crew after its space; the next collection repairs both.
+        collect = supervisors("claude")
+        broken = collect(None)
+        broken["label"] = "Repo-zoe"
+        for spec in broken["sessions"]:
+            spec["label"] = "Captain · claude"
+            spec.pop("herdr", None)
+        healed = collect(copy.deepcopy(broken))
+        self.assertEqual(healed["label"], "Control Tower")
+        self.assertEqual(labels(healed), {"captain-general": "(General) Captain",
+                                          "sm-zoe": "(Zoe) Captain", "sm-pma2": "(LMA) Captain"})
+        # From a secondmate's pane the secondmates heal at once. That manifest
+        # never recorded where its Captain sits, so the Captain keeps its label
+        # and the crew its default name until the Captain's pane is seen again.
+        partial = collect(copy.deepcopy(broken), ZOE_PANE)
+        self.assertEqual(partial["label"], "Firstmate · Control Tower")
+        self.assertEqual(labels(partial), {"captain-general": "Captain · claude",
+                                           "sm-zoe": "(Zoe) Captain", "sm-pma2": "(LMA) Captain"})
+        self.assertEqual([s["key"]["session_id"] for s in standing(partial)], ["captain-general"])
+
+    def test_collect_reads_names_by_id_from_herdr(self):
+        home = Path("/synthetic/firstmate")
+        tasks = [{"id": t, "kind": "secondmate", "harness": "claude", "spawn_gen": f"s{t}", "backend": "herdr",
+                  "remote": None, "project": f"/synthetic/{t}", "endpoint": {"target": "default:" + pane_id},
+                  "current_state": {"state": "working", "source": "status"}}
+                 for t, pane_id in (("zoe", ZOE_PANE), ("pma2", PMA2_PANE))]
+        snapshot_json = {"schema": "fm-fleet-snapshot.v1", "fm_home": str(home), "generated": WHEN,
+                         "tasks": tasks, "backlog": {"records": []}}
+        sessions = {CAPTAIN_PANE: "captain-general", ZOE_PANE: "sm-zoe", PMA2_PANE: "sm-pma2"}
+        names = herdr_names(True)
+        asked = []
+
+        def herdr(argv, env=None, timeout=45):
+            asked.append(argv[1:4])
+            if argv[1:3] == ["pane", "get"]:
+                return {"result": {"pane": supervisor_pane(argv[3], sessions[argv[3]], "claude")}}
+            if argv[1] in ("workspace", "tab"):
+                return {"result": {argv[1]: {"label": names(argv[1], argv[3])}}}
+            return snapshot_json
+
+        with mock.patch.object(adapter, "run_json", side_effect=herdr), \
+                mock.patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "w14"}):
+            manifest, _ = adapter.collect(home, "herdr", None, ZOE_PANE)
+            self.assertEqual(manifest["label"], "Firstmate · Control Tower")
+            manifest, _ = adapter.collect(home, "herdr", manifest, CAPTAIN_PANE)
+        self.assertEqual(manifest["label"], "Control Tower")
+        self.assertEqual(labels(manifest), {"captain-general": "(General) Captain",
+                                            "sm-zoe": "(Zoe) Captain", "sm-pma2": "(LMA) Captain"})
+        # Each name is asked for once per collection, by ID, and a
+        # secondmate's only by its tab.
+        self.assertEqual(sum(a[:2] == ["tab", "get"] for a in asked), 5)
+        self.assertEqual([a for a in asked if a[0] == "workspace"], [["workspace", "get", "wA"]])
+
+    def test_captains_fixture_is_adapter_output(self):
+        # Regenerate with ZOE_REGENERATE_CREW=1 after changing the scenario.
+        expected = captains_fixture()
+        path = CAPTAINS_FIXTURE / "fleet.json"
+        if os.environ.get("ZOE_REGENERATE_CREW") == "1":
+            path.write_text(expected)
+        self.assertEqual(path.read_text(), expected)
+        manifest = json.loads(expected)
+        self.assertEqual(manifest["label"], "Control Tower")
+        self.assertEqual(sorted(s["label"] for s in manifest["sessions"]),
+                         ["(General) Captain", "(LMA) Captain", "(Zoe) Captain"])
+        self.assertTrue(RENAMED >= {manifest["label"], *(s["label"] for s in manifest["sessions"])})
 
 
 # The crew fixture (assets/fleet/crew): two adapter runs with a gap between

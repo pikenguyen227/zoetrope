@@ -1799,6 +1799,93 @@ mod tests {
         assert!(text.contains(&format!("· build {own}")), "{text}");
     }
 
+    /// The captains fixture: a Codex Captain and the zoe and pma2 secondmates
+    /// in spaces and tabs the captain renamed, collected last from a
+    /// secondmate's pane (see `captains_fixture` in the adapter's tests).
+    fn captains() -> (Fixture, Fleet) {
+        let fixture = Fixture::of("captains");
+        let manifest = fixture.manifest();
+        let mut fleet = Fleet::new(manifest.clone()).unwrap();
+        for spec in &manifest.sessions {
+            let session = resolve(spec).unwrap();
+            let (items, info, _) = crate::tailer::replay::build_replay(&session);
+            fleet.event(
+                &spec.key,
+                UiEvent::ReplayLoaded {
+                    session_id: session.id,
+                    items,
+                    info,
+                    speed: 1.0,
+                },
+            );
+        }
+        fleet.sync();
+        (fixture, fleet)
+    }
+
+    #[test]
+    fn renamed_spaces_and_tabs_draw_one_node_per_supervisor_under_f_and_shift_f() {
+        let (_fixture, mut fleet) = captains();
+        let supervisors = ["(General) Captain", "(Zoe) Captain", "(LMA) Captain"];
+        let check = |fleet: &mut Fleet, when: &str| {
+            let mut drawn: Vec<String> = fleet
+                .overview
+                .flow
+                .nodes()
+                .filter_map(|n| fleet.overview.session.agent(&n.id)?.agent_type.clone())
+                .collect();
+            drawn.sort();
+            // The root reads the space; each supervisor, once, its tab.
+            assert_eq!(
+                drawn,
+                [
+                    "(General) Captain",
+                    "(LMA) Captain",
+                    "(Zoe) Captain",
+                    "Control Tower"
+                ],
+                "{when}"
+            );
+            assert_eq!(
+                fleet.overview.session_info.title.as_deref(),
+                Some("Control Tower"),
+                "{when}"
+            );
+            let screen = screen(fleet);
+            assert!(!screen.contains("Captain ·"), "{when}: a generated name");
+            assert!(!screen.contains("no longer registered"), "{when}");
+            screen
+        };
+        // The overview frames the whole crew.
+        let opened = check(&mut fleet, "opened");
+        for name in supervisors.iter().chain(&["Control Tower"]) {
+            assert!(opened.contains(name), "{name} is not drawn");
+        }
+        // F follows; shift-F arrives as a shifted F. Neither renames or
+        // re-identifies a node.
+        for (code, modifiers) in [
+            (KeyCode::Char('f'), KeyModifiers::NONE),
+            (KeyCode::Char('F'), KeyModifiers::SHIFT),
+        ] {
+            let event = Event::Key(crossterm::event::KeyEvent::new(code, modifiers));
+            assert!(!route(&mut fleet, &event));
+            assert_eq!(fleet.overview.camera, crate::state::Camera::Follow);
+            fleet.sync();
+            // Follow frames one supervisor and narrates it by its tab's name.
+            let followed = check(&mut fleet, &format!("after {code:?}"));
+            assert!(supervisors.iter().any(|name| followed.contains(name)));
+        }
+        // Each supervisor is its session.
+        assert_eq!(fleet.members.len(), 3);
+        let captain = SessionKey {
+            provider: "codex".into(),
+            session_id: "c2c2c2c2-0000-4000-8000-000000000001".into(),
+        }
+        .node_id(crate::state::session::MAIN_ID);
+        let detail = fleet.overview.session.agent(&captain).unwrap();
+        assert_eq!(detail.agent_type.as_deref(), Some("(General) Captain"));
+    }
+
     fn key(code: KeyCode) -> Event {
         Event::Key(crossterm::event::KeyEvent::from(code))
     }
@@ -1901,6 +1988,7 @@ mod tests {
             label: "Captain · codex".into(),
             file: None,
             runtime: None,
+            herdr: None,
         });
         fleet.update(next).unwrap();
         let earlier = root("captain");

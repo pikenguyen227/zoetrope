@@ -67,6 +67,34 @@ def registered(pane):
     return None
 
 
+def pane_of(target):
+    """The pane ID in a Firstmate `session:pane` target, or a bare pane ID."""
+    return target.partition(":")[2] if target.count(":") == 2 else target
+
+
+def place(pane, known=None, kinds=("workspace", "tab")):
+    """Where a pane sits, by Herdr's own IDs, with the last names of `kinds`
+    `known` gave those same IDs. Renaming a tab or a workspace changes none of
+    the IDs, so the names are only ever display."""
+    where = {k: pane[k] for k in ("pane_id", "tab_id", "workspace_id")
+             if isinstance(pane.get(k), str) and pane[k]}
+    for kind in kinds:
+        if (known or {}).get(kind) and known.get(kind + "_id") == where.get(kind + "_id"):
+            where[kind] = known[kind]
+    return where
+
+
+def named(where, names, kinds=("workspace", "tab")):
+    """`where` with the live names of `kinds`, keeping the last ones known when
+    Herdr cannot name them now."""
+    where = dict(where)
+    for kind in kinds:
+        label = names(kind, where[kind + "_id"]) if where.get(kind + "_id") else None
+        if label:
+            where[kind] = label
+    return where
+
+
 def observation(value, source, when):
     return {"value": str(value or "unknown"), "source": str(source or "firstmate.snapshot"),
             "observed_at": when}
@@ -87,13 +115,21 @@ def unreachable(task):
 
 
 def build_manifest(before, after, panes, previous=None, captain=None, observed=None,
-                   workspace=None):
+                   names=None, own_workspace=None):
     """Join only stable generations/endpoints captured on both sides of pane reads.
 
     `panes` is keyed by Firstmate's exact session:pane target. `captain` is an
     explicitly chosen pane record, a current member rather than inferred ancestry.
-    `workspace` is the Herdr workspace's name, which names the fleet.
+    `names(kind, id)` is Herdr's live name for a "workspace" or "tab" ID, or
+    None; `own_workspace` is the workspace this collector runs in.
+
+    Identity never rests on a name, since the captain renames spaces and tabs
+    at will: a Captain is the session its pane registers, a supervisor card is
+    its session, and each carries its Herdr IDs (`herdr`) so its current names
+    can be read again. The crew root takes the standing Captain's workspace
+    name; a Captain's and a secondmate's card, its tab's name.
     """
+    names = names or (lambda kind, ident: None)
     check_snapshot(before)
     check_snapshot(after)
     home = after["fm_home"]
@@ -109,11 +145,13 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
     diagnostics = []
     for task in attempts.values():
         task["runtime"] = observation("not observed", "firstmate.snapshot", when)
-    standing = registered(captain) if captain else None
-    if standing:
-        # Newest registration last: it is the Captain that stands.
-        sessions.pop(identity(standing), None)
-        sessions[identity(standing)] = {"key": standing, "label": "Captain · " + standing["provider"]}
+    # Every local task's pane is crew (a worker or a secondmate), never a
+    # Captain, whatever its tab is called.
+    crew_panes = {}
+    for current in after["tasks"]:
+        target = (current.get("endpoint") or {}).get("target")
+        if target and not current.get("remote") and current.get("backend") == "herdr":
+            crew_panes[pane_of(target)] = current["id"]
     earlier = {task["id"]: task for task in before["tasks"]}
     records = {r.get("id"): r for r in after.get("backlog", {}).get("records", [])}
     for current in after["tasks"]:
@@ -137,12 +175,21 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                                      state.get("observed_at") or when),
                 "runtime": observation("unavailable", "herdr.pane.get", when),
                 "depends_on": records.get(task_id, {}).get("blocked_by_ids", [])}
+        pane = panes.get(target, {}) if target else {}
+        where = None
+        if current.get("kind") == "secondmate":
+            # A secondmate is a supervisor: its card reads its tab's name,
+            # else the last one known, else its task ID.
+            prior = (sessions.get(identity(task["session"])) or {}) if task["session"] else {}
+            where = (named(place(pane, prior.get("herdr"), ("tab",)), names, ("tab",))
+                     if pane.get("pane_id")
+                     else prior.get("herdr") or {})
+            task["label"] = where.get("tab") or task_id
         if current.get("remote") or current.get("backend") != "herdr":
             diagnostics.append(f"{task_id}: only local Herdr endpoints are supported")
         elif not stable:
             diagnostics.append(f"{task_id}: generation/endpoint changed; join deferred")
         elif target:
-            pane = panes.get(target, {})
             key = registered(pane)
             if key and key["provider"] == current.get("harness"):
                 known = task["session"]
@@ -152,7 +199,14 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                     diagnostics.append(f"{task_id}: session changed without a new spawn generation")
                 else:
                     task["session"] = key
-                    sessions.setdefault(identity(key), {"key": key, "label": task_id})
+                    # Its task names it, never an earlier collection's guess
+                    # (such as a Captain label when its pane was taken for one).
+                    spec = sessions.setdefault(identity(key), {"key": key, "label": task_id})
+                    spec["label"] = task["label"]
+                    if where:
+                        spec["herdr"] = where
+                    else:
+                        spec.pop("herdr", None)
                     task["runtime"] = observation(pane.get("agent_status"), "herdr.pane.get", when)
             else:
                 diagnostics.append(f"{task_id}: waiting for matching native session registration")
@@ -167,17 +221,48 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
     # the pane's, or else the last registered. Earlier ones keep their
     # membership and history, but are no longer registered.
     joined = {identity(t["session"]) for t in attempts.values() if t.get("session")}
+    standing = registered(captain) if captain else None
+    # The pane is only where this collector looks. A crew pane is never a
+    # Captain, whatever its tab or workspace is called: a secondmate's own
+    # autostart can hand this collector its pane.
+    crew = crew_panes.get((captain or {}).get("pane_id"))
+    if standing and not crew and identity(standing) in joined:
+        crew = next(t["id"] for t in attempts.values()
+                    if t.get("session") and identity(t["session"]) == identity(standing))
+    if crew:
+        standing = None
+    if standing:
+        # Newest registration last: it is the Captain that stands.
+        known = sessions.pop(identity(standing), {})
+        where = named(place(captain, known.get("herdr")), names)
+        sessions[identity(standing)] = {"key": standing, "herdr": where,
+                                        "label": where.get("tab") or "Captain · " + standing["provider"]}
     captains = [k for k in sessions if k not in joined]
     for k in captains:
         sessions[k].pop("runtime", None)
         if k != captains[-1]:
             sessions[k]["runtime"] = observation(NOT_OBSERVED, "herdr.pane.get", when)
+    head = sessions[captains[-1]] if captains else {}
+    if head and not standing and head.get("herdr"):
+        # The last Captain registered still stands: read its names again.
+        head["herdr"] = named(head["herdr"], names)
+        head["label"] = head["herdr"].get("tab") or head["label"]
     if captain and not standing:
-        # The pane is only where this collector looks; a Captain it registered
-        # before, or another collector did, still stands.
-        diagnostics.append(f"Captain pane {captain.get('pane_id')} has no supported registered "
-                           "session; showing the last Captain registered" if captains else
+        what = (f"Captain pane {captain.get('pane_id')} is task {crew}'s pane, not a Captain" if crew
+                else f"Captain pane {captain.get('pane_id')} has no supported registered session")
+        diagnostics.append(f"{what}; showing the last Captain registered" if captains else
+                           f"{what}; no Captain registered yet" if crew else
                            "Captain pane has no supported registered session yet")
+    # The crew is named after the standing Captain's workspace, else the
+    # Captain pane's, else this collector's unless a crew pane's is (the Fleet
+    # tab opens where it was invoked, a secondmate's space included).
+    title = (head.get("herdr") or {}).get("workspace")
+    if not title and captain and not crew and captain.get("workspace_id"):
+        title = names("workspace", captain["workspace_id"])
+    crew_workspaces = {p.get("workspace_id") for p in panes.values()} | {
+        (captain or {}).get("workspace_id") if crew else None}
+    if not title and own_workspace and own_workspace not in crew_workspaces:
+        title = names("workspace", own_workspace)
     # Capture continuation only when two distinct native IDs are explicitly
     # registered under distinct launch generations of the SAME Firstmate task.
     links = {link["id"]: link for link in previous.get("links", [])}
@@ -200,7 +285,7 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                     "to": attempt["session"], "kind": "continues",
                     "evidence": f"Firstmate task {current['id']}: observed launch generation {last['spawn_gen']} -> {attempt['spawn_gen']}",
                     "observed_at": when})
-    return {"schema": SCHEMA, "fleet_id": fleet_id, "label": workspace or LABEL,
+    return {"schema": SCHEMA, "fleet_id": fleet_id, "label": title or LABEL,
             "observed_at": when, "sessions": list(sessions.values()),
             "tasks": list(attempts.values()), "links": list(links.values()),
             "diagnostics": diagnostics}
@@ -316,23 +401,27 @@ def collect(home, herdr, previous, captain_target):
         except (RuntimeError, ValueError, KeyError) as error:
             errors.append(f"Captain: {error}")
     after = run_json(command, env)
-    manifest = build_manifest(before, after, panes, previous, captain,
-                              workspace=workspace_name(herdr, captain))
+    cache = {}
+
+    def names(kind, ident):
+        if (kind, ident) not in cache:
+            cache[kind, ident] = herdr_name(herdr, kind, ident)
+        return cache[kind, ident]
+
+    manifest = build_manifest(before, after, panes, previous, captain, names=names,
+                              own_workspace=os.environ.get("HERDR_WORKSPACE_ID"))
     manifest["diagnostics"].extend(errors)
     if missing:
         manifest["diagnostics"].append(missing)
     return manifest, after
 
 
-def workspace_name(herdr, captain):
-    """The Herdr workspace the Captain pane sits in, else this pane's; None
-    when neither is known or Herdr cannot name it."""
-    workspace = (captain or {}).get("workspace_id") or os.environ.get("HERDR_WORKSPACE_ID")
-    if not workspace:
-        return None
+def herdr_name(herdr, kind, ident):
+    """Herdr's current name for a "workspace" or "tab" ID; None when Herdr
+    cannot name it. Names are display only: the captain renames them freely."""
     try:
-        data = run_json([herdr, "workspace", "get", workspace], timeout=8)
-        label = data["result"]["workspace"]["label"]
+        data = run_json([herdr, kind, "get", ident], timeout=8)
+        label = data["result"][kind]["label"]
     except (RuntimeError, ValueError, KeyError, TypeError):
         return None
     label = label.strip() if isinstance(label, str) else ""

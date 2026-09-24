@@ -42,16 +42,25 @@ Once linked, invoke **Zoetrope: Firstmate Fleet tab** through the plugin manager
 with a Captain pane focused to include that pane's exact session as a Captain.
 Opening from Shell still discovers Firstmate workers; a Shell pane is not guessed
 to be a Captain. The adapter does not launch Claude, Codex, or any workers.
-The crew's root card takes the Captain pane's Herdr workspace name (else the
-Fleet tab's own workspace), and reads `Firstmate · Control Tower` when Herdr
-cannot name one. Only that one workspace names it: workers in their own
-disposable workspaces, and other workspaces in the same Herdr session, neither
-rename the crew nor leave it.
+Space and tab names are yours to rename, and the view follows them without
+reading them as identity. The crew's root card takes the standing Captain's
+Herdr workspace name (else the Captain pane's, else the Fleet tab's own
+workspace), and reads `Firstmate · Control Tower` when Herdr cannot name one.
+The Captain's card, and each secondmate's, takes its tab's name, such as
+`(General) Captain` or `(Zoe) Captain`. When Herdr cannot name the tab, the card
+keeps the last name known, else `Captain · <provider>` or the task ID. Each one
+is found again by Herdr's pane, tab and workspace IDs, which a rename leaves
+alone, so a rename shows at the next collection. Workers in their own disposable
+workspaces, and other workspaces in the same Herdr session, neither rename the
+crew nor leave it.
 
 One Captain stands at a time: the session the Captain pane registers, or, while
 that pane has none (a Shell pane, or between Captain sessions), the last Captain
 registered. An earlier Captain keeps its membership and history but is no
-longer registered, so it counts as finished below.
+longer registered, so it counts as finished below. A crew pane is never a
+Captain, whatever its tab is called: opened (or autostarted) from a secondmate's
+or a worker's pane, the Fleet keeps the last Captain registered, keeps the
+crew's name, and a diagnostic names the task whose pane it was.
 
 Default arrangement: `Agentic/firstmate` beside `Agentic/zoetrope`. Override with
 `FM_HOME`, `ZOE_FLEET_BIN`, `ZOE_FLEET_STATE_DIR` or `ZOE_NO_MISTAKES_BIN` if
