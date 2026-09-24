@@ -437,7 +437,9 @@ pub fn draw_overlay(frame: &mut Frame, fleet: &Fleet) {
     if fleet.lifecycle.has_gaps() || fleet.lifecycle.has_runs() {
         // A column is a gap when its moment lies outside every window the
         // bridge or a feed was observing, or a validation run was alive there
-        // but nobody read it: that state is unknown, not steady.
+        // but nobody read it: that state is unknown, not steady. The tail a
+        // still-running reader trails the present by is watched.
+        let now = Utc::now();
         let floor = timeline.floor();
         let reach = len.saturating_sub(floor);
         for c in (0..width).filter(|&c| c != head) {
@@ -445,7 +447,7 @@ pub fn draw_overlay(frame: &mut Frame, fleet: &Fleet) {
             let Some(ts) = timeline.items[index].ts() else {
                 continue;
             };
-            if fleet.lifecycle.covered(ts) && !fleet.lifecycle.unread(ts) {
+            if fleet.lifecycle.accounted(ts, now) {
                 continue;
             }
             // Hatched and dimmed: activity there is real, the crew state is not.

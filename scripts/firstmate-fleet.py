@@ -982,6 +982,17 @@ TOON_KEY = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
                       r"(?:\[(?P<count>\d+)\](?:\{(?P<fields>[A-Za-z0-9_,]*)\})?)?:(?: (?P<value>.*))?")
 
 
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+
+
+def fold(text):
+    """`text` on one line: each run of control characters (no-mistakes words
+    a failed push over several lines) becomes a space, none left at either
+    end. The viewer rejects a journal line whose text holds one, and with it
+    the fact it carries: a run's end."""
+    return " ".join(part for part in CONTROL.split(text) if part)
+
+
 class Drift(ValueError):
     """no-mistakes printed something this adapter does not understand. It is
     reported, never guessed at: nothing is journalled from that read."""
@@ -1197,8 +1208,8 @@ def read_run(text, run_id):
         if not isinstance(doc["outcome"], str) or doc["outcome"] not in OUTCOMES:
             raise Drift(f"outcome {doc['outcome']!r}")
         state["outcome"] = doc["outcome"]
-    if isinstance(doc.get("error"), str) and doc["error"].strip():
-        state["error"] = doc["error"][:1024]
+    if isinstance(doc.get("error"), str) and fold(doc["error"]).strip():
+        state["error"] = fold(doc["error"])[:1024]
     return state, ages
 
 

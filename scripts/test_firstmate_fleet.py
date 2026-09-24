@@ -1636,6 +1636,18 @@ class ToonTests(unittest.TestCase):
         self.assertEqual(state["steps"][0], {"step": "intent", "status": "skipped", "findings": 0,
                                              "duration_ms": 14634})
 
+    def test_a_multiline_error_is_journalled_on_one_line(self):
+        # no-mistakes words a failed push over several lines; the viewer
+        # rejects control characters, and with them the run's end.
+        text = capture("cancelled").replace(
+            '"cancelled: superseded by new push"',
+            '"step push failed: exit status 128: remote: denied.\\r\\nfatal: 403\\n"')
+        state, _ = adapter.read_run(text, "01M342B46TCANC311EDRVN0000")
+        self.assertEqual(state["error"], "step push failed: exit status 128: remote: denied. fatal: 403")
+        self.assertEqual(adapter.fold("\x1b[31m  a\t\tb \n"), "[31m  a b ")
+        blank = capture("cancelled").replace('"cancelled: superseded by new push"', '"\\n"')
+        self.assertNotIn("error", adapter.read_run(blank, "01M342B46TCANC311EDRVN0000")[0])
+
     def test_nothing_that_changes_on_every_read_is_state(self):
         text = capture("impl-review")
         later = text.replace('"3s ago: claude producing output","41001"', '"1s ago: tool call","41999"')

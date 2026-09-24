@@ -256,7 +256,10 @@ as graph nodes of its own.
   word, a table whose rows do not match its header, indentation) is a
   manifest diagnostic and journals nothing; parts it does not read (help,
   `branch_sync`, ...) cannot fail it. The CLI's own error is not drift: a run
-  `not found` is `gone`, any other error a diagnostic.
+  `not found` is `gone`, any other error a diagnostic. A run's error, often
+  several lines, is journalled on one (`fold`): the viewer rejects text with
+  control characters, and a rejected end left the run alive and unread. The
+  viewer folds an older journal's error the same way on read.
 - **Written only on change.** Activity ages and process IDs are not part of a
   read, so an unchanged run writes nothing but coverage. A `validation` event
   carries `{run, phase, ...}`: `started` at the run's creation, decoded from
@@ -356,7 +359,9 @@ own live edges. Dead air is compressed only while every session is quiet.
   validation run was alive and nobody read it. At the live edge the same
   holds once the newest window is older than twice the `max_gap` its
   segments carry (two minutes when absent): the adapter has stopped, so
-  today's state is not observed.
+  today's state is not observed. Until then the moments after the newest
+  window, which trails the present by a checkpoint, are observed and not
+  hatched (`Lifecycle::accounted`).
 - Space, `[` / `]` (member prompts and lifecycle transitions), `g`/End and the
   scrubber move the one playhead. Enter opens a session at that moment with its
   own DVR; Esc rejoins the fleet's moment.
