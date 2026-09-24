@@ -79,7 +79,8 @@ crew, never a Captain, whatever pane the collector is handed.
 
 Relationships have an ID, type, endpoints, evidence source and observation time:
 
-- `delegates`: explicit Captain-to-worker assignment.
+- `delegates`: explicit assignment: a worker a local secondmate dispatched in
+  its own Firstmate home (see "Secondmate crews").
 - `native_parent`: parentage stated by the provider's native records.
 - `continues`: an explicitly recorded new session taking over the same work.
 - `depends_on`: a task prerequisite, separate from parentage.
@@ -117,6 +118,24 @@ Preserve Firstmate task state, Herdr runtime state and transcript activity separ
 including unknown/stale values and their provenance. Snapshot observation time is
 not an exact historical transition time. Initial integration is local-only;
 remote snapshot behavior must be explicitly handled before enabling remote crews.
+
+### Secondmate crews
+
+A home's snapshot `tasks` are its direct reports only: a secondmate's own
+workers live in the secondmate's home. The collector reads each local
+registered secondmate's `home` from the snapshot's `secondmate_current` and
+runs that home's own `fm-fleet-snapshot.sh --json` (all at once, before and
+after the pane reads, as for this home), since `secondmate_current` summarizes
+a crew without the launch generations, endpoints, status lines and validation
+runs a join needs (`mate_homes`, `read_crews` and `rows` in
+`scripts/firstmate-fleet.py`). A crew task then joins, bridges and validates as
+a direct report does. Its home's record of it is the evidence of a `delegates`
+link from the secondmate's current session, keyed by the secondmate and the
+crew attempt, so a relaunched secondmate carries its crew along. A crew that
+cannot be read is a diagnostic for that poll: it keeps its members and tears
+down no attempt, since an unread home proves no worker left. A remote
+secondmate's crew is not read, and neither is a secondmate's own secondmates'.
+Each crew's lifecycle feed is already tailed through the `lifecycle` pointer.
 
 ## UI and performance
 
@@ -322,7 +341,8 @@ the adapter bridges lifecycle from successive `fm-fleet-snapshot.v1` polls
   re-emitted: the same key, or without one the same text and stamp.
 - `spawned` at the epoch in `spawn_gen` (`derived`); observed time otherwise.
 - `bound` when the Herdr join is first made, `torn_down` when an attempt leaves
-  the snapshot (a relaunch tears down the previous generation), both observed.
+  the snapshot (a relaunch tears down the previous generation), both observed;
+  no attempt is torn down in a poll that could not read every secondmate crew.
 - `coverage` windows while it polls: a segment at least once a minute and
   whenever it emits anything else, split when polls stop for longer than its
   `max_gap` (60 s, or four poll intervals if longer), which each segment carries.

@@ -20,6 +20,7 @@ collector would write back anything removed under it. Agent transcripts and
 the Firstmate home are never touched.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import copy
 import datetime as dt
@@ -114,6 +115,41 @@ def unreachable(task):
             and (state.get("detail") or "").startswith("backend unreachable"))
 
 
+def mate_homes(snapshot):
+    """Each local secondmate's own Firstmate home, {mate task ID: home}, and
+    diagnostics. A home's `tasks` are only its direct reports: a secondmate's
+    own workers live in its home, which secondmate_current names. A remote
+    secondmate's home is not here to read."""
+    homes, notes = {}, []
+    for record in (snapshot.get("secondmate_current") or {}).get("records") or []:
+        mate, home = record.get("id"), record.get("home")
+        if not (isinstance(mate, str) and mate) or record.get("registered") is False:
+            continue
+        if record.get("remote"):
+            notes.append(f"secondmate {mate}: its home is remote; its own crew is not read")
+        elif isinstance(home, str) and os.path.isabs(home):
+            homes[mate] = home
+    return homes, notes
+
+
+def rows(snapshot):
+    """Every task one observation holds: the home's own, then each local
+    secondmate's own crew (`crews`, read from the mate's home), as copies
+    naming their mate. A crew that could not be read is None."""
+    found = list(snapshot["tasks"])
+    for mate, crew in (snapshot.get("crews") or {}).items():
+        if crew:
+            found += [dict(task, mate=mate) for task in crew["tasks"]]
+    return found
+
+
+def backlog(snapshot):
+    """Backlog records by (mate or None, task ID), each from its own home."""
+    homes = [(None, snapshot)] + list((snapshot.get("crews") or {}).items())
+    return {(mate, record.get("id")): record for mate, home in homes if home
+            for record in (home.get("backlog") or {}).get("records", [])}
+
+
 def build_manifest(before, after, panes, previous=None, captain=None, observed=None,
                    names=None, own_workspace=None):
     """Join only stable generations/endpoints captured on both sides of pane reads.
@@ -128,6 +164,10 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
     its session, and each carries its Herdr IDs (`herdr`) so its current names
     can be read again. The crew root takes the standing Captain's workspace
     name; a Captain's and a secondmate's card, its tab's name.
+
+    A secondmate's own crew (`crews`, see rows) joins as any worker does, and
+    its home's record of it is the evidence of a `delegates` link from the
+    secondmate's current session, so it hangs under that secondmate.
     """
     names = names or (lambda kind, ident: None)
     check_snapshot(before)
@@ -148,20 +188,21 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
     # Every local task's pane is crew (a worker or a secondmate), never a
     # Captain, whatever its tab is called.
     crew_panes = {}
-    for current in after["tasks"]:
+    for current in rows(after):
         target = (current.get("endpoint") or {}).get("target")
         if target and not current.get("remote") and current.get("backend") == "herdr":
             crew_panes[pane_of(target)] = current["id"]
-    earlier = {task["id"]: task for task in before["tasks"]}
-    records = {r.get("id"): r for r in after.get("backlog", {}).get("records", [])}
-    for current in after["tasks"]:
-        task_id = current["id"]
+    earlier = {(task.get("mate"), task["id"]): task for task in rows(before)}
+    records = backlog(after)
+    for current in rows(after):
+        task_id, mate = current["id"], current.get("mate")
+        name = f"{mate}/{task_id}" if mate else task_id
         generation = current.get("spawn_gen")
         if not generation:
-            diagnostics.append(f"{task_id}: launch generation unavailable; session join deferred")
+            diagnostics.append(f"{name}: launch generation unavailable; session join deferred")
         generation = generation or "unresolved"
         attempt = (task_id, generation)
-        old = earlier.get(task_id, {})
+        old = earlier.get((mate, task_id), {})
         endpoint = current.get("endpoint") or {}
         target = endpoint.get("target")
         stable = (bool(current.get("spawn_gen"))
@@ -174,7 +215,7 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                 "state": observation(state.get("state"), state.get("source"),
                                      state.get("observed_at") or when),
                 "runtime": observation("unavailable", "herdr.pane.get", when),
-                "depends_on": records.get(task_id, {}).get("blocked_by_ids", [])}
+                "depends_on": records.get((mate, task_id), {}).get("blocked_by_ids", [])}
         pane = panes.get(target, {}) if target else {}
         where = None
         if current.get("kind") == "secondmate":
@@ -186,9 +227,9 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                      else prior.get("herdr") or {})
             task["label"] = where.get("tab") or task_id
         if current.get("remote") or current.get("backend") != "herdr":
-            diagnostics.append(f"{task_id}: only local Herdr endpoints are supported")
+            diagnostics.append(f"{name}: only local Herdr endpoints are supported")
         elif not stable:
-            diagnostics.append(f"{task_id}: generation/endpoint changed; join deferred")
+            diagnostics.append(f"{name}: generation/endpoint changed; join deferred")
         elif target:
             key = registered(pane)
             if key and key["provider"] == current.get("harness"):
@@ -196,7 +237,7 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                 if known and key != known:
                     # Same launch generation unexpectedly names another session.
                     # Preserve history; do not silently reassign task ownership.
-                    diagnostics.append(f"{task_id}: session changed without a new spawn generation")
+                    diagnostics.append(f"{name}: session changed without a new spawn generation")
                 else:
                     task["session"] = key
                     # Its task names it, never an earlier collection's guess
@@ -209,11 +250,11 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                         spec.pop("herdr", None)
                     task["runtime"] = observation(pane.get("agent_status"), "herdr.pane.get", when)
             else:
-                diagnostics.append(f"{task_id}: waiting for matching native session registration")
+                diagnostics.append(f"{name}: waiting for matching native session registration")
         if generation != "unresolved":
             attempts.pop((task_id, "unresolved"), None)
         attempts[attempt] = task
-    local = [t for t in after["tasks"] if not t.get("remote") and t.get("backend") == "herdr"]
+    local = [t for t in rows(after) if not t.get("remote") and t.get("backend") == "herdr"]
     if local and all(unreachable(t) for t in local):
         diagnostics.append("Firstmate reads every task as backend unreachable; "
                            "task state is unknown until herdr is on the snapshot's PATH")
@@ -267,7 +308,7 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
     # registered under distinct launch generations of the SAME Firstmate task.
     links = {link["id"]: link for link in previous.get("links", [])}
     previous_attempts = previous.get("tasks", [])
-    for current in after["tasks"]:
+    for current in rows(after):
         attempt = attempts.get((current["id"], current.get("spawn_gen")))
         if not attempt or not attempt.get("session"):
             continue
@@ -285,6 +326,23 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                     "to": attempt["session"], "kind": "continues",
                     "evidence": f"Firstmate task {current['id']}: observed launch generation {last['spawn_gen']} -> {attempt['spawn_gen']}",
                     "observed_at": when})
+    # A secondmate's own crew hangs under it: its home records the assignment.
+    # The link names the secondmate's current session, so a relaunched
+    # secondmate carries its crew along.
+    mates = {t["id"]: attempts.get((t["id"], t.get("spawn_gen"))) or {} for t in after["tasks"]}
+    for current in rows(after):
+        mate = current.get("mate")
+        delegator = (mates.get(mate) or {}).get("session") if mate else None
+        worker = (attempts.get((current["id"], current.get("spawn_gen"))) or {}).get("session")
+        if not delegator or not worker or worker == delegator:
+            continue
+        link_id = json.dumps(["delegates", mate, current["id"], current["spawn_gen"]])
+        known = links.get(link_id) or {}
+        if known.get("from") != delegator or known.get("to") != worker:
+            links[link_id] = {"id": link_id, "from": delegator, "to": worker, "kind": "delegates",
+                              "evidence": f"Firstmate task {current['id']} is secondmate {mate}'s own, "
+                                          f"in its home {after['crews'][mate]['fm_home']}",
+                              "observed_at": when}
     return {"schema": SCHEMA, "fleet_id": fleet_id, "label": title or LABEL,
             "observed_at": when, "sessions": list(sessions.values()),
             "tasks": list(attempts.values()), "links": list(links.values()),
@@ -378,29 +436,62 @@ def find_no_mistakes(environ=None):
                   "no validation run is attributed or read, so no card shows one")
 
 
-def collect(home, herdr, previous, captain_target):
-    """One observation: the joined manifest and the snapshot it was built from."""
-    no_mistakes, missing = find_no_mistakes()
+def snapshot_of(home, herdr, no_mistakes):
+    """One fm-fleet-snapshot.sh --json of `home`, run from that home."""
     env = snapshot_env(home, herdr, no_mistakes)
-    command = [str(home / "bin" / "fm-fleet-snapshot.sh"), "--json"]
-    before = run_json(command, env)
-    check_snapshot(before)
+    snapshot = run_json([str(Path(home) / "bin" / "fm-fleet-snapshot.sh"), "--json"], env)
+    check_snapshot(snapshot)
+    return snapshot
+
+
+def read_crews(homes, herdr, no_mistakes, primary=None):
+    """Snapshot each secondmate's home (and `primary`'s, first, when given) at
+    once: ({mate: snapshot, or None when it could not be read}, diagnostics,
+    the primary's snapshot). The primary's failure fails the collection; a
+    secondmate's only leaves its crew unread for this poll."""
+    jobs = ({None: primary} if primary else {}) | homes
+    with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
+        futures = {mate: pool.submit(snapshot_of, home, herdr, no_mistakes) for mate, home in jobs.items()}
+    crews, notes = {}, []
+    for mate, future in futures.items():
+        try:
+            crew = future.result()
+            if mate is not None and os.path.realpath(crew["fm_home"]) != os.path.realpath(homes[mate]):
+                raise ValueError(f"its snapshot is of {crew['fm_home']}")
+            crews[mate] = crew
+        except (RuntimeError, ValueError, KeyError, OSError) as error:
+            if mate is None:
+                raise
+            crews[mate] = None
+            notes.append(f"secondmate {mate}: its own crew is unread this poll: {error}")
+    return crews, notes, crews.pop(None, None)
+
+
+def collect(home, herdr, previous, captain_target):
+    """One observation: the joined manifest and the snapshot it was built from,
+    which carries each local secondmate's home snapshot as its `crews`."""
+    no_mistakes, missing = find_no_mistakes()
+    before = snapshot_of(home, herdr, no_mistakes)
+    homes, errors = mate_homes(before)
+    before["crews"] = read_crews(homes, herdr, no_mistakes)[0]
     panes = {}
-    errors = []
-    for task in before["tasks"]:
+    for task in rows(before):
         target = (task.get("endpoint") or {}).get("target")
         if target and not task.get("remote") and task.get("backend") == "herdr":
             try:
                 panes[target] = pane_get(herdr, target)
             except (RuntimeError, ValueError, KeyError) as error:
-                errors.append(f"{task['id']}: {error}")
+                name = f"{task['mate']}/{task['id']}" if task.get("mate") else task["id"]
+                errors.append(f"{name}: {error}")
     captain = None
     if captain_target:
         try:
             captain = pane_get(herdr, captain_target)
         except (RuntimeError, ValueError, KeyError) as error:
             errors.append(f"Captain: {error}")
-    after = run_json(command, env)
+    crews, unread, after = read_crews(homes, herdr, no_mistakes, primary=home)
+    after["crews"] = crews
+    errors += unread
     cache = {}
 
     def names(kind, ident):
@@ -523,7 +614,7 @@ class Bridge:
         now = snapshot_epoch(snapshot)
         lines = []
         present = set()
-        for task in snapshot["tasks"]:
+        for task in rows(snapshot):
             gen = task.get("spawn_gen")
             if not gen or task.get("remote"):
                 continue  # No attempt identity, or a remote home: out of reach.
@@ -571,8 +662,10 @@ class Bridge:
                 lines.append(self.line("bound", f"{key[0]}/{key[1]}/{session['session_id']}", now,
                                        "observed", key, session=session))
                 state["session"] = session
+        # A crew that could not be read this poll proves no worker left.
+        unread = any(crew is None for crew in (snapshot.get("crews") or {}).values())
         for key, state in self.attempts.items():
-            if key not in present and not state["down"]:
+            if key not in present and not state["down"] and not unread:
                 line = self.line("torn_down", f"{key[0]}/{key[1]}", now, "observed", key)
                 if not self.reach.holds(line["event"]):
                     lines.append(line)
@@ -1353,7 +1446,7 @@ class Validation:
     def observe(self, snapshot):
         """Journal lines and manifest diagnostics for one poll."""
         lines, notes = [], []
-        for task in snapshot["tasks"]:
+        for task in rows(snapshot):
             found, gen = task.get("validation_run"), task.get("spawn_gen")
             if found is None or not gen or task.get("remote"):
                 continue  # Nothing attributed, or an attempt out of reach.

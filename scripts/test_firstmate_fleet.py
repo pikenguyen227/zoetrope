@@ -551,6 +551,129 @@ class CaptainRenameTests(unittest.TestCase):
         self.assertTrue(RENAMED >= {manifest["label"], *(s["label"] for s in manifest["sessions"])})
 
 
+UIUX_HOME = "/synthetic/uiux"
+TYPO_GEN = "s1790290775.24438.2775"
+TYPO_RUN = "01M3ATJR83R4GS96TS5RGBH85X"
+
+
+def mate_homes(mate_gen="s1790290557.20516.10209", crew=True):
+    """The primary home's snapshot, with its secondmate uiux (and a remote
+    one), and uiux's own home's, where uiux dispatched acceptance-docs-typo."""
+    primary = {"schema": "fm-fleet-snapshot.v1", "fm_home": "/synthetic/firstmate", "generated": WHEN,
+               "tasks": [{"id": "uiux", "kind": "secondmate", "harness": "claude", "spawn_gen": mate_gen,
+                          "backend": "herdr", "remote": None, "project": UIUX_HOME,
+                          "endpoint": {"target": "default:w25:p2"},
+                          "current_state": {"state": "working", "source": "status"}}],
+               "backlog": {"records": []},
+               "secondmate_current": {"records": [
+                   {"id": "uiux", "home": UIUX_HOME, "host": None, "remote": False, "registered": True},
+                   {"id": "far", "home": "/far/firstmate", "host": "far", "remote": True, "registered": True}]}}
+    mate = {"schema": "fm-fleet-snapshot.v1", "fm_home": UIUX_HOME, "generated": WHEN,
+            "tasks": [{"id": "acceptance-docs-typo", "kind": "ship", "harness": "claude", "spawn_gen": TYPO_GEN,
+                       "backend": "herdr", "remote": None, "project": UIUX_HOME,
+                       "endpoint": {"target": "default:w26:p2"},
+                       "current_state": {"state": "parked", "source": "run-step"},
+                       "validation_run": {"id": TYPO_RUN}}] if crew else [],
+            "backlog": {"records": [{"id": "acceptance-docs-typo", "blocked_by_ids": ["docs-first"]}]}}
+    return primary, mate
+
+
+class MateCrewTests(unittest.TestCase):
+    """A secondmate's own workers live in its own Firstmate home, which the
+    primary's snapshot names but whose tasks it does not hold: Herdr's sidebar
+    nests acceptance-docs-typo under 2ndmate-uiux, and so must the Team tab."""
+
+    SESSIONS = {"wA:p5": "captain-general", "w25:p2": "sm-uiux", "w26:p2": "crew-typo"}
+
+    def collect(self, previous=None, captain="wA:p5", homes=None, sessions=None):
+        primary, mate = homes or mate_homes()
+        sessions = sessions or self.SESSIONS
+
+        def herdr(argv, env=None, timeout=45):
+            if argv[0].endswith("fm-fleet-snapshot.sh"):
+                self.assertEqual(argv[0], env["FM_HOME"] + "/bin/fm-fleet-snapshot.sh")
+                home = {primary["fm_home"]: primary, UIUX_HOME: mate}[env["FM_HOME"]]
+                if isinstance(home, Exception):
+                    raise home
+                return copy.deepcopy(home)
+            if argv[1:3] == ["pane", "get"]:
+                return {"result": {"pane": {"pane_id": argv[3], "agent_status": "working",
+                                            "agent_session": {"agent": "claude", "kind": "id",
+                                                              "value": sessions[argv[3]]}}}}
+            return {"result": {}}
+
+        with mock.patch.object(adapter, "run_json", side_effect=herdr), \
+                mock.patch.dict(os.environ, {"ZOE_NO_MISTAKES_BIN": sys.executable}):
+            return adapter.collect(Path(primary["fm_home"]), "herdr", previous, captain)
+
+    def delegations(self, manifest):
+        return [(l["from"]["session_id"], l["to"]["session_id"]) for l in manifest["links"]
+                if l["kind"] == "delegates"]
+
+    def test_a_secondmates_own_worker_hangs_under_it(self):
+        manifest, snap = self.collect()
+        tasks = {t["id"]: t for t in manifest["tasks"]}
+        self.assertEqual(sorted(tasks), ["acceptance-docs-typo", "uiux"])
+        worker = tasks["acceptance-docs-typo"]
+        self.assertEqual(worker["spawn_gen"], TYPO_GEN)
+        self.assertEqual(worker["session"], {"provider": "claude", "session_id": "crew-typo"})
+        self.assertEqual(worker["state"]["value"], "parked")
+        self.assertEqual(worker["runtime"]["value"], "working")
+        self.assertEqual(worker["depends_on"], ["docs-first"])  # from uiux's own backlog
+        self.assertEqual(labels(manifest), {"captain-general": "Captain · claude", "sm-uiux": "uiux",
+                                            "crew-typo": "acceptance-docs-typo"})
+        # Hung under uiux, the Captain's crew is still uiux alone.
+        self.assertEqual(self.delegations(manifest), [("sm-uiux", "crew-typo")])
+        self.assertEqual([s["key"]["session_id"] for s in standing(manifest)], ["captain-general"])
+        self.assertEqual(manifest["diagnostics"],
+                         ["secondmate far: its home is remote; its own crew is not read"])
+        # Its timeline: the bridge sees it spawn and bind, and its validation
+        # run is read like any direct report's.
+        bridge = adapter.Bridge(manifest["fleet_id"], "run")
+        lines = bridge.observe(snap, manifest)
+        self.assertEqual([(e["attempt"]["task"], e["type"]) for e in events(lines) if e.get("attempt")],
+                         [("uiux", "spawned"), ("acceptance-docs-typo", "spawned"),
+                          ("uiux", "bound"), ("acceptance-docs-typo", "bound")])
+        validation = adapter.Validation(manifest["fleet_id"], "run", reader=FakeNoMistakes(lambda: B, down=lambda t: "unanswered"),
+                                        clock=lambda: adapter.run_epoch(TYPO_RUN) + 60)
+        started = events(validation.observe(snap)[0], "validation")[0]
+        self.assertEqual((started["attempt"]["task"], started["validation"]["run"]),
+                         ("acceptance-docs-typo", TYPO_RUN))
+        # Again, nothing new: the link is kept as first observed.
+        again, _ = self.collect(manifest)
+        self.assertEqual(again["links"], manifest["links"])
+
+    def test_a_crew_workers_pane_is_never_the_captain(self):
+        manifest, _ = self.collect(self.collect()[0], captain="w26:p2")
+        self.assertEqual([s["key"]["session_id"] for s in standing(manifest)], ["captain-general"])
+        self.assertIn("Captain pane w26:p2 is task acceptance-docs-typo's pane, not a Captain; "
+                      "showing the last Captain registered", manifest["diagnostics"])
+
+    def test_a_relaunched_secondmate_carries_its_crew(self):
+        first, _ = self.collect()
+        relaunched, _ = self.collect(first, homes=mate_homes("s1790299999.1.1"),
+                                     sessions=dict(self.SESSIONS, **{"w25:p2": "sm-uiux-2"}))
+        self.assertEqual(self.delegations(relaunched), [("sm-uiux-2", "crew-typo")])
+        self.assertIn(("sm-uiux", "sm-uiux-2"), [(l["from"]["session_id"], l["to"]["session_id"])
+                                                 for l in relaunched["links"] if l["kind"] == "continues"])
+
+    def test_an_unread_crew_is_not_torn_down(self):
+        manifest, snap = self.collect()
+        bridge = adapter.Bridge(manifest["fleet_id"], "run")
+        bridge.observe(snap, manifest)
+        primary, _ = mate_homes()
+        unread, snap = self.collect(manifest, homes=(primary, RuntimeError("snapshot timed out")))
+        self.assertIn("secondmate uiux: its own crew is unread this poll: snapshot timed out",
+                      unread["diagnostics"])
+        worker = next(t for t in unread["tasks"] if t["id"] == "acceptance-docs-typo")
+        self.assertEqual(worker["runtime"]["value"], "not observed")
+        self.assertEqual(self.delegations(unread), [("sm-uiux", "crew-typo")])
+        self.assertEqual(events(bridge.observe(snap, unread), "torn_down"), [])
+        gone, snap = self.collect(unread, homes=mate_homes(crew=False))
+        self.assertEqual([e["attempt"]["task"] for e in events(bridge.observe(snap, gone), "torn_down")],
+                         ["acceptance-docs-typo"])
+
+
 # The crew fixture (assets/fleet/crew): two adapter runs with a gap between
 # them, three attempts. Each task: spawn_gen, pane registration time, status
 # lines, and the window its metadata exists in (present while start <= t < end).
