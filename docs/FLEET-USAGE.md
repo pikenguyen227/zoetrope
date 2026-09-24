@@ -117,7 +117,8 @@ status line, `⊘` torn down) and validation marks (see
 it was then: sessions and attempts that did not exist yet are absent, torn-down
 ones are dimmed, and cards carry the task's status badge at that moment. Hatched
 stretches are times nothing observed Firstmate (before its lifecycle feed began,
-and outside the adapter's polls where it bridges); there badges read
+and outside the adapter's polls where it bridges, though the stretch since
+its newest poll counts as observed while it is still running); there badges read
 `?` and the header says the lifecycle there is unverified. The footer narrates
 the newest lifecycle event at the playhead. Inside a session, its own timeline
 works as before.
