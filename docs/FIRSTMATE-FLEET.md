@@ -69,6 +69,14 @@ Pane, tab, workspace and process IDs are locations, not durable identities. A la
 attempt references its verified native session. Resuming the same native session
 does not create another session node, even if a new launch generation is recorded.
 
+Workspace (space) and tab names are weaker still: the operator renames them at
+will, so they are display, never identity or a match key. The manifest keeps a
+Captain's and a secondmate's location as `herdr` (`pane_id`, `tab_id`,
+`workspace_id`, and the last `workspace` and `tab` names read) only to read
+their current names again. The crew root takes the standing Captain's workspace
+name, and a Captain or secondmate card its tab name. A task's endpoint pane is
+crew, never a Captain, whatever pane the collector is handed.
+
 Relationships have an ID, type, endpoints, evidence source and observation time:
 
 - `delegates`: explicit Captain-to-worker assignment.

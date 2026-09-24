@@ -1,0 +1,101 @@
+{
+  "diagnostics": [
+    "Captain pane w15:p2 is task pma2's pane, not a Captain; showing the last Captain registered"
+  ],
+  "fleet_id": "firstmate:/synthetic/firstmate",
+  "label": "Control Tower",
+  "links": [],
+  "observed_at": "2026-09-22T00:00:00Z",
+  "schema": "zoetrope.fleet.v1",
+  "sessions": [
+    {
+      "file": "sessions/2026/09/24/rollout-2026-09-24T02-00-00-c2c2c2c2-0000-4000-8000-000000000002.jsonl",
+      "herdr": {
+        "pane_id": "w14:p2",
+        "tab": "(Zoe) Captain",
+        "tab_id": "w14:t2",
+        "workspace": "Repo-zoe",
+        "workspace_id": "w14"
+      },
+      "key": {
+        "provider": "codex",
+        "session_id": "c2c2c2c2-0000-4000-8000-000000000002"
+      },
+      "label": "(Zoe) Captain"
+    },
+    {
+      "file": "sessions/2026/09/24/rollout-2026-09-24T02-00-00-c2c2c2c2-0000-4000-8000-000000000003.jsonl",
+      "herdr": {
+        "pane_id": "w15:p2",
+        "tab": "(LMA) Captain",
+        "tab_id": "w15:t2",
+        "workspace": "Repo-pma2.clients",
+        "workspace_id": "w15"
+      },
+      "key": {
+        "provider": "codex",
+        "session_id": "c2c2c2c2-0000-4000-8000-000000000003"
+      },
+      "label": "(LMA) Captain"
+    },
+    {
+      "file": "sessions/2026/09/24/rollout-2026-09-24T02-00-00-c2c2c2c2-0000-4000-8000-000000000001.jsonl",
+      "herdr": {
+        "pane_id": "wA:p5",
+        "tab": "(General) Captain",
+        "tab_id": "wA:t1",
+        "workspace": "Control Tower",
+        "workspace_id": "wA"
+      },
+      "key": {
+        "provider": "codex",
+        "session_id": "c2c2c2c2-0000-4000-8000-000000000001"
+      },
+      "label": "(General) Captain"
+    }
+  ],
+  "tasks": [
+    {
+      "depends_on": [],
+      "id": "zoe",
+      "label": "(Zoe) Captain",
+      "project": "/synthetic/zoe",
+      "runtime": {
+        "observed_at": "2026-09-22T00:00:00Z",
+        "source": "herdr.pane.get",
+        "value": "working"
+      },
+      "session": {
+        "provider": "codex",
+        "session_id": "c2c2c2c2-0000-4000-8000-000000000002"
+      },
+      "spawn_gen": "szoe",
+      "state": {
+        "observed_at": "2026-09-22T00:00:00Z",
+        "source": "status",
+        "value": "working"
+      }
+    },
+    {
+      "depends_on": [],
+      "id": "pma2",
+      "label": "(LMA) Captain",
+      "project": "/synthetic/pma2",
+      "runtime": {
+        "observed_at": "2026-09-22T00:00:00Z",
+        "source": "herdr.pane.get",
+        "value": "working"
+      },
+      "session": {
+        "provider": "codex",
+        "session_id": "c2c2c2c2-0000-4000-8000-000000000003"
+      },
+      "spawn_gen": "spma2",
+      "state": {
+        "observed_at": "2026-09-22T00:00:00Z",
+        "source": "status",
+        "value": "working"
+      }
+    }
+  ]
+}

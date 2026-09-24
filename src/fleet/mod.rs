@@ -61,6 +61,42 @@ pub struct SessionSpec {
     /// Captain: `not observed` once a later Captain took its place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<Observation>,
+    /// Where a Captain or a secondmate sits in Herdr. Display only: the
+    /// session key is the identity, and the label already carries the name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub herdr: Option<Place>,
+}
+
+/// A Herdr pane by Herdr's own IDs, which renaming a tab or a workspace
+/// never changes, with the names they last had.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Place {
+    pub pane_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+}
+
+impl Place {
+    /// `workspace › tab (pane)`, with whichever names are known.
+    fn describe(&self) -> String {
+        let names: Vec<&str> = [&self.workspace, &self.tab]
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        if names.is_empty() {
+            format!("herdr pane {}", self.pane_id)
+        } else {
+            format!("herdr {} ({})", names.join(" › "), self.pane_id)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -591,6 +627,9 @@ impl Fleet {
                         agent.agent_type = Some(format!("{} · unavailable", member.spec.label));
                     }
                     let mut detail = vec![format!("{} · {}", key.provider, key.session_id)];
+                    if let Some(place) = &member.spec.herdr {
+                        detail.push(place.describe());
+                    }
                     if at.is_none() {
                         for task in self
                             .manifest
