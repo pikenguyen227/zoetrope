@@ -72,23 +72,23 @@ def pane_of(target):
     return target.partition(":")[2] if target.count(":") == 2 else target
 
 
-def place(pane, known=None):
-    """Where a pane sits, by Herdr's own IDs, with the last names `known` gave
-    those same IDs. Renaming a tab or a workspace changes none of the IDs, so
-    the names are only ever display."""
+def place(pane, known=None, kinds=("workspace", "tab")):
+    """Where a pane sits, by Herdr's own IDs, with the last names of `kinds`
+    `known` gave those same IDs. Renaming a tab or a workspace changes none of
+    the IDs, so the names are only ever display."""
     where = {k: pane[k] for k in ("pane_id", "tab_id", "workspace_id")
              if isinstance(pane.get(k), str) and pane[k]}
-    for kind in ("workspace", "tab"):
+    for kind in kinds:
         if (known or {}).get(kind) and known.get(kind + "_id") == where.get(kind + "_id"):
             where[kind] = known[kind]
     return where
 
 
-def named(where, names):
-    """`where` with the live names of its tab and workspace, keeping the last
-    ones known when Herdr cannot name them now."""
+def named(where, names, kinds=("workspace", "tab")):
+    """`where` with the live names of `kinds`, keeping the last ones known when
+    Herdr cannot name them now."""
     where = dict(where)
-    for kind in ("workspace", "tab"):
+    for kind in kinds:
         label = names(kind, where[kind + "_id"]) if where.get(kind + "_id") else None
         if label:
             where[kind] = label
@@ -181,7 +181,8 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
             # A secondmate is a supervisor: its card reads its tab's name,
             # else the last one known, else its task ID.
             prior = (sessions.get(identity(task["session"])) or {}) if task["session"] else {}
-            where = (named(place(pane, prior.get("herdr")), names) if pane.get("pane_id")
+            where = (named(place(pane, prior.get("herdr"), ("tab",)), names, ("tab",))
+                     if pane.get("pane_id")
                      else prior.get("herdr") or {})
             task["label"] = where.get("tab") or task_id
         if current.get("remote") or current.get("backend") != "herdr":

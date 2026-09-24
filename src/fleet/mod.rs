@@ -83,22 +83,6 @@ pub struct Place {
     pub workspace: Option<String>,
 }
 
-impl Place {
-    /// `workspace › tab (pane)`, with whichever names are known.
-    fn describe(&self) -> String {
-        let names: Vec<&str> = [&self.workspace, &self.tab]
-            .into_iter()
-            .flatten()
-            .map(String::as_str)
-            .collect();
-        if names.is_empty() {
-            format!("herdr pane {}", self.pane_id)
-        } else {
-            format!("herdr {} ({})", names.join(" › "), self.pane_id)
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Observation {
@@ -627,9 +611,6 @@ impl Fleet {
                         agent.agent_type = Some(format!("{} · unavailable", member.spec.label));
                     }
                     let mut detail = vec![format!("{} · {}", key.provider, key.session_id)];
-                    if let Some(place) = &member.spec.herdr {
-                        detail.push(place.describe());
-                    }
                     if at.is_none() {
                         for task in self
                             .manifest

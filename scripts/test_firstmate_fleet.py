@@ -432,6 +432,9 @@ class CaptainRenameTests(unittest.TestCase):
                 captain = next(s for s in renamed["sessions"] if s["key"]["session_id"] == "captain-general")
                 self.assertEqual(captain["herdr"], {"pane_id": "wA:p5", "tab_id": "wA:t1", "workspace_id": "wA",
                                                     "workspace": "Control Tower", "tab": "(General) Captain"})
+                zoe = next(s for s in renamed["sessions"] if s["key"]["session_id"] == "sm-zoe")
+                self.assertEqual(zoe["herdr"], {"pane_id": "w14:p2", "tab_id": "w14:t2", "workspace_id": "w14",
+                                                "tab": "(Zoe) Captain"})
                 self.assertEqual(renamed["diagnostics"], [])
 
     def test_a_secondmates_pane_is_never_the_captain(self):
@@ -514,7 +517,7 @@ class CaptainRenameTests(unittest.TestCase):
         asked = []
 
         def herdr(argv, env=None, timeout=45):
-            asked.append(argv[1:3])
+            asked.append(argv[1:4])
             if argv[1:3] == ["pane", "get"]:
                 return {"result": {"pane": supervisor_pane(argv[3], sessions[argv[3]], "claude")}}
             if argv[1] in ("workspace", "tab"):
@@ -529,8 +532,10 @@ class CaptainRenameTests(unittest.TestCase):
         self.assertEqual(manifest["label"], "Control Tower")
         self.assertEqual(labels(manifest), {"captain-general": "(General) Captain",
                                             "sm-zoe": "(Zoe) Captain", "sm-pma2": "(LMA) Captain"})
-        # Each name is asked for once per collection, by ID.
-        self.assertEqual(asked.count(["tab", "get"]), 5)
+        # Each name is asked for once per collection, by ID, and a
+        # secondmate's only by its tab.
+        self.assertEqual(sum(a[:2] == ["tab", "get"] for a in asked), 5)
+        self.assertEqual([a for a in asked if a[0] == "workspace"], [["workspace", "get", "wA"]])
 
     def test_captains_fixture_is_adapter_output(self):
         # Regenerate with ZOE_REGENERATE_CREW=1 after changing the scenario.

@@ -1875,8 +1875,7 @@ mod tests {
             let followed = check(&mut fleet, &format!("after {code:?}"));
             assert!(supervisors.iter().any(|name| followed.contains(name)));
         }
-        // Each supervisor is its session, and the Captain's card says where
-        // it sits by Herdr's own IDs.
+        // Each supervisor is its session.
         assert_eq!(fleet.members.len(), 3);
         let captain = SessionKey {
             provider: "codex".into(),
@@ -1885,13 +1884,6 @@ mod tests {
         .node_id(crate::state::session::MAIN_ID);
         let detail = fleet.overview.session.agent(&captain).unwrap();
         assert_eq!(detail.agent_type.as_deref(), Some("(General) Captain"));
-        assert!(
-            detail
-                .description
-                .as_deref()
-                .unwrap()
-                .contains("herdr Control Tower › (General) Captain (wA:p5)")
-        );
     }
 
     fn key(code: KeyCode) -> Event {
