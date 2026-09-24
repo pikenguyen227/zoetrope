@@ -661,15 +661,19 @@ class MateCrewTests(unittest.TestCase):
         manifest, snap = self.collect()
         bridge = adapter.Bridge(manifest["fleet_id"], "run")
         bridge.observe(snap, manifest)
-        primary, _ = mate_homes()
-        unread, snap = self.collect(manifest, homes=(primary, RuntimeError("snapshot timed out")))
+        primary, _ = mate_homes("s1790299999.1.1")
+        unread, snap = self.collect(manifest, homes=(primary, RuntimeError("snapshot timed out")),
+                                    sessions=dict(self.SESSIONS, **{"w25:p2": "sm-uiux-2"}))
         self.assertIn("secondmate uiux: its own crew is unread this poll: snapshot timed out",
                       unread["diagnostics"])
         worker = next(t for t in unread["tasks"] if t["id"] == "acceptance-docs-typo")
         self.assertEqual(worker["runtime"]["value"], "not observed")
         self.assertEqual(self.delegations(unread), [("sm-uiux", "crew-typo")])
-        self.assertEqual(events(bridge.observe(snap, unread), "torn_down"), [])
-        gone, snap = self.collect(unread, homes=mate_homes(crew=False))
+        # Only the unread crew is held: the primary's relaunched uiux still tears down.
+        self.assertEqual([e["attempt"]["spawn_gen"] for e in events(bridge.observe(snap, unread), "torn_down")],
+                         ["s1790290557.20516.10209"])
+        gone, snap = self.collect(unread, homes=mate_homes("s1790299999.1.1", crew=False),
+                                  sessions=dict(self.SESSIONS, **{"w25:p2": "sm-uiux-2"}))
         self.assertEqual([e["attempt"]["task"] for e in events(bridge.observe(snap, gone), "torn_down")],
                          ["acceptance-docs-typo"])
 

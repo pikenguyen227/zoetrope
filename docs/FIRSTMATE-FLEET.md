@@ -342,7 +342,8 @@ the adapter bridges lifecycle from successive `fm-fleet-snapshot.v1` polls
 - `spawned` at the epoch in `spawn_gen` (`derived`); observed time otherwise.
 - `bound` when the Herdr join is first made, `torn_down` when an attempt leaves
   the snapshot (a relaunch tears down the previous generation), both observed;
-  no attempt is torn down in a poll that could not read every secondmate crew.
+  no attempt of a secondmate crew that a poll could not read is torn down in
+  that poll (nor, while any crew is unread, one recovered but not yet seen).
 - `coverage` windows while it polls: a segment at least once a minute and
   whenever it emits anything else, split when polls stop for longer than its
   `max_gap` (60 s, or four poll intervals if longer), which each segment carries.

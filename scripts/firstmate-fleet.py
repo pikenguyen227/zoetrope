@@ -565,7 +565,8 @@ class Bridge:
         self.max_gap = max_gap
         self.checkpoint = checkpoint
         # (task, spawn_gen) -> {"session": key or None, "down": bool,
-        #                       "status": (digest, stamp, feed key) of the last line, or None}
+        #                       "status": (digest, stamp, feed key) of the last line, or None,
+        #                       "mate": its secondmate or None, once seen this run}
         self.attempts = {}
         self.window = None  # [first, last] poll epochs of the open coverage window
         self.written = None  # how far that window's coverage lines reach
@@ -629,6 +630,7 @@ class Bridge:
                 if not self.reach.holds(line["event"]):
                     lines.append(line)
             state = self.state(key)
+            state["mate"] = task.get("mate")
             last = ((task.get("paths") or {}).get("status_log") or {}).get("last_event") or {}
             raw, verb = last.get("raw") or "", last.get("state") or ""
             if raw and verb:
@@ -662,10 +664,12 @@ class Bridge:
                 lines.append(self.line("bound", f"{key[0]}/{key[1]}/{session['session_id']}", now,
                                        "observed", key, session=session))
                 state["session"] = session
-        # A crew that could not be read this poll proves no worker left.
-        unread = any(crew is None for crew in (snapshot.get("crews") or {}).values())
+        # A crew that could not be read this poll proves none of its workers
+        # left; an attempt recovered but not yet seen has no known mate.
+        unread = {mate for mate, crew in (snapshot.get("crews") or {}).items() if crew is None}
         for key, state in self.attempts.items():
-            if key not in present and not state["down"] and not unread:
+            held = state["mate"] in unread if "mate" in state else bool(unread)
+            if key not in present and not state["down"] and not held:
                 line = self.line("torn_down", f"{key[0]}/{key[1]}", now, "observed", key)
                 if not self.reach.holds(line["event"]):
                     lines.append(line)
