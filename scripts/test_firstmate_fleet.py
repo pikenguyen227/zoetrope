@@ -677,6 +677,17 @@ class MateCrewTests(unittest.TestCase):
         self.assertEqual([e["attempt"]["task"] for e in events(bridge.observe(snap, gone), "torn_down")],
                          ["acceptance-docs-typo"])
 
+    def test_a_restarted_bridge_holds_only_the_unread_crew(self):
+        manifest, snap = self.collect()
+        written = adapter.Bridge(manifest["fleet_id"], "run").observe(snap, manifest)
+        bridge = adapter.Bridge(manifest["fleet_id"], "run2")
+        bridge.recover(written)
+        primary, _ = mate_homes("s1790299999.1.1")
+        unread, snap = self.collect(manifest, homes=(primary, RuntimeError("snapshot timed out")),
+                                    sessions=dict(self.SESSIONS, **{"w25:p2": "sm-uiux-2"}))
+        self.assertEqual([e["attempt"]["spawn_gen"] for e in events(bridge.observe(snap, unread), "torn_down")],
+                         ["s1790290557.20516.10209"])
+
 
 # The crew fixture (assets/fleet/crew): two adapter runs with a gap between
 # them, three attempts. Each task: spawn_gen, pane registration time, status

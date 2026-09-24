@@ -133,7 +133,7 @@ a direct report does. Its home's record of it is the evidence of a `delegates`
 link from the secondmate's current session, keyed by the secondmate and the
 crew attempt, so a relaunched secondmate carries its crew along. A crew that
 cannot be read is a diagnostic for that poll: it keeps its members and tears
-down no attempt, since an unread home proves no worker left. A remote
+down none of its attempts, since an unread home proves no worker left. A remote
 secondmate's crew is not read, and neither is a secondmate's own secondmates'.
 Each crew's lifecycle feed is already tailed through the `lifecycle` pointer.
 
@@ -340,10 +340,11 @@ the adapter bridges lifecycle from successive `fm-fleet-snapshot.v1` polls
   `lifecycle_key` when Firstmate publishes one. A repeated last line is not
   re-emitted: the same key, or without one the same text and stamp.
 - `spawned` at the epoch in `spawn_gen` (`derived`); observed time otherwise.
+  A secondmate crew's attempt names its `mate`, so a restart still knows it.
 - `bound` when the Herdr join is first made, `torn_down` when an attempt leaves
   the snapshot (a relaunch tears down the previous generation), both observed;
   no attempt of a secondmate crew that a poll could not read is torn down in
-  that poll (nor, while any crew is unread, one recovered but not yet seen).
+  that poll (nor, while any crew is unread, one whose spawn the bridge did not write).
 - `coverage` windows while it polls: a segment at least once a minute and
   whenever it emits anything else, split when polls stop for longer than its
   `max_gap` (60 s, or four poll intervals if longer), which each segment carries.

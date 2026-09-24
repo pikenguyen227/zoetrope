@@ -566,7 +566,7 @@ class Bridge:
         self.checkpoint = checkpoint
         # (task, spawn_gen) -> {"session": key or None, "down": bool,
         #                       "status": (digest, stamp, feed key) of the last line, or None,
-        #                       "mate": its secondmate or None, once seen this run}
+        #                       "mate": its secondmate or None, once its spawn or itself is seen}
         self.attempts = {}
         self.window = None  # [first, last] poll epochs of the open coverage window
         self.written = None  # how far that window's coverage lines reach
@@ -586,7 +586,9 @@ class Bridge:
                 continue
             state = self.state((attempt.get("task"), attempt.get("spawn_gen")))
             kind = event.get("type")
-            if kind == "bound":
+            if kind == "spawned":
+                state["mate"] = (event.get("spawned") or {}).get("mate")
+            elif kind == "bound":
                 state["session"] = event.get("session")
             elif kind == "status":
                 status = event.get("status") or {}
@@ -625,7 +627,7 @@ class Bridge:
             if key not in self.attempts:
                 epoch = spawn_epoch(gen)
                 at, quality = (epoch, "derived") if epoch is not None and epoch <= now else (now, "observed")
-                spawned = {k: task.get(k) for k in ("kind", "harness", "project") if task.get(k)}
+                spawned = {k: task.get(k) for k in ("kind", "harness", "project", "mate") if task.get(k)}
                 line = self.line("spawned", ident, at, quality, key, spawned=spawned)
                 if not self.reach.holds(line["event"]):
                     lines.append(line)
@@ -665,7 +667,7 @@ class Bridge:
                                        "observed", key, session=session))
                 state["session"] = session
         # A crew that could not be read this poll proves none of its workers
-        # left; an attempt recovered but not yet seen has no known mate.
+        # left; an attempt whose spawn the bridge never saw has no known mate.
         unread = {mate for mate, crew in (snapshot.get("crews") or {}).items() if crew is None}
         for key, state in self.attempts.items():
             held = state["mate"] in unread if "mate" in state else bool(unread)
