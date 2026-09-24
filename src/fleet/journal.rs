@@ -257,8 +257,39 @@ pub struct Validation {
     pub outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Why the run failed, as no-mistakes words it: often several lines.
+    /// Each run of control characters folds to a space ([`fold`]), so a line
+    /// break costs no more than a space, never the fact the error rides on.
+    #[serde(
+        default,
+        deserialize_with = "folded",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub error: Option<String>,
+}
+
+/// `value` with each run of control characters (line breaks, tabs, escapes)
+/// folded to one space and none left at either end.
+fn fold(value: &str) -> String {
+    let mut folded = String::with_capacity(value.len());
+    let mut gap = false;
+    for c in value.chars() {
+        if c.is_control() {
+            gap = true;
+            continue;
+        }
+        if gap && !folded.is_empty() {
+            folded.push(' ');
+        }
+        gap = false;
+        folded.push(c);
+    }
+    folded
+}
+
+fn folded<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let value = Option::<String>::deserialize(d)?;
+    Ok(value.map(|v| fold(&v)).filter(|v| !v.trim().is_empty()))
 }
 
 impl Validation {
@@ -657,6 +688,14 @@ fn fresh(windows: &[Window], now: DateTime<Utc>) -> bool {
     })
 }
 
+/// Whether `windows` hold `t` as of `now`: a window holds it, or it follows
+/// the newest while that is still [`fresh`]. A running adapter's windows
+/// trail the present by a checkpoint, and that tail is being watched, not
+/// missed; a gap between windows stays one.
+fn held(windows: &[Window], t: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    within(windows, t) || (fresh(windows, now) && windows.last().is_some_and(|w| w.to < t))
+}
+
 /// A run's life on the timeline: from its first record until it ended or its
 /// record was gone, and the windows in which it was read.
 #[derive(Debug)]
@@ -887,9 +926,9 @@ impl Lifecycle {
         self.gapped
     }
 
-    /// Whether `t` lies inside a window someone was observing.
-    pub fn covered(&self, t: DateTime<Utc>) -> bool {
-        !self.gapped || within(&self.coverage, t)
+    /// Whether someone was observing lifecycle at `t`, as of `now` ([`held`]).
+    pub fn covered(&self, t: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        !self.gapped || held(&self.coverage, t, now)
     }
 
     /// Whether the adapter is still observing at `now`: its newest segment
@@ -900,24 +939,37 @@ impl Lifecycle {
     }
 
     /// Whether `run`, attributed to `attempt`, was verified at the moment
-    /// shown (`None`: the live edge): parked, whether a window in which the
-    /// adapter read it holds `t`; at the live edge, whether it still reads it.
-    /// Lifecycle coverage says nothing about this.
-    pub fn run_verified(&self, attempt: &Attempt, run: &str, t: Option<DateTime<Utc>>) -> bool {
+    /// shown (`None`: the live edge), as of `now`: parked, whether the
+    /// windows in which the adapter read it hold `t` ([`held`]); at the live
+    /// edge, whether it still reads it. Lifecycle coverage says nothing about
+    /// this.
+    pub fn run_verified(
+        &self,
+        attempt: &Attempt,
+        run: &str,
+        t: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> bool {
         self.readings
             .get(&(attempt.clone(), run.to_owned()))
             .is_some_and(|r| match t {
-                Some(t) => within(&r.windows, t),
-                None => fresh(&r.windows, Utc::now()),
+                Some(t) => held(&r.windows, t, now),
+                None => fresh(&r.windows, now),
             })
     }
 
-    /// Whether any validation run was alive but unread at `t`: begun, not yet
-    /// ended or gone, and outside every window in which it was read.
-    pub fn unread(&self, t: DateTime<Utc>) -> bool {
-        self.readings
-            .values()
-            .any(|r| r.from <= t && r.until.is_none_or(|until| t < until) && !within(&r.windows, t))
+    /// Whether any validation run was alive but unread at `t`, as of `now`:
+    /// begun, not yet ended or gone, and not [`held`] by its read windows.
+    pub fn unread(&self, t: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        self.readings.values().any(|r| {
+            r.from <= t && r.until.is_none_or(|until| t < until) && !held(&r.windows, t, now)
+        })
+    }
+
+    /// Whether the crew state at `t` is known as of `now`: someone observed
+    /// lifecycle then, and every validation run alive then was read.
+    pub fn accounted(&self, t: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        self.covered(t, now) && !self.unread(t, now)
     }
 
     /// Whether the journal holds any validation run.
@@ -1148,6 +1200,11 @@ mod tests {
 
     fn at(s: &str) -> DateTime<Utc> {
         format!("2026-09-22T{s}Z").parse().unwrap()
+    }
+
+    /// A day on: every reader in the fixtures has long stopped.
+    fn stale() -> DateTime<Utc> {
+        "2026-09-23T08:00:00Z".parse().unwrap()
     }
 
     fn bridge() -> Source {
@@ -1451,9 +1508,9 @@ mod tests {
         assert!(live.torn_down.is_some());
         // Touching segments merge; the 08:07-08:08:30 stretch is a gap.
         assert_eq!(store.coverage().len(), 2);
-        assert!(store.covered(at("08:03:00")) && store.covered(at("08:07:00")));
-        assert!(!store.covered(at("08:07:01")) && !store.covered(at("07:58:59")));
-        assert!(store.covered(at("08:09:00")));
+        assert!(store.covered(at("08:03:00"), stale()) && store.covered(at("08:07:00"), stale()));
+        assert!(!store.covered(at("08:07:01"), stale()) && !store.covered(at("07:58:59"), stale()));
+        assert!(store.covered(at("08:09:00"), stale()));
         // At the live edge: a running bridge's newest window trails a little;
         // once it stops reporting, the present is a gap too.
         assert!(store.observing(at("08:11:00")));
@@ -1484,7 +1541,7 @@ mod tests {
         };
         store.insert([e]);
         assert!(!store.has_gaps());
-        assert!(store.covered(at("12:00:00")));
+        assert!(store.covered(at("12:00:00"), stale()));
         assert!(store.observing(at("12:00:00")));
     }
 
@@ -1607,8 +1664,8 @@ mod tests {
         // What was superseded is still held, for a removal to count.
         assert_eq!(store.count_for(&[impl_].into()), 10);
         // The feed covered the bridge's 08:07-08:08:30 gap.
-        assert!(store.covered(at("08:07:30")));
-        assert!(!store.covered(at("07:58:30")));
+        assert!(store.covered(at("08:07:30"), stale()));
+        assert!(!store.covered(at("07:58:30"), stale()));
     }
 
     #[test]
@@ -1734,8 +1791,8 @@ mod tests {
             feed(event("f", "08:05:00", "t", status("working")), 1),
         ]);
         assert!(store.has_gaps());
-        assert!(store.covered(at("08:05:00")));
-        assert!(!store.covered(at("07:59:59")));
+        assert!(store.covered(at("08:05:00"), stale()));
+        assert!(!store.covered(at("07:59:59"), stale()));
         assert!(store.observing(at("08:11:00")));
         assert!(!store.observing(at("08:12:01")));
     }
@@ -1803,9 +1860,9 @@ mod tests {
         assert!(store.state_at(Some(at("08:12:00")))[&relaunched].needs_attention());
         assert!(!live[&relaunched].needs_attention());
         // The feed covers the adapter's downtime; before anyone watched is a gap.
-        assert!(store.covered(at("08:09:30")));
-        assert!(store.covered(at("08:01:30")));
-        assert!(!store.covered(at("08:00:30")));
+        assert!(store.covered(at("08:09:30"), stale()));
+        assert!(store.covered(at("08:01:30"), stale()));
+        assert!(!store.covered(at("08:00:30"), stale()));
     }
 
     fn fixture(name: &str) -> Vec<LifecycleEvent> {
@@ -1894,6 +1951,99 @@ mod tests {
         assert!(parse_line(future.as_bytes()).is_err());
     }
 
+    /// no-mistakes words a failed push over several lines. The run's end
+    /// must still land: dropping it left the run alive and unread forever,
+    /// so every moment after it showed as unknown crew state.
+    #[test]
+    fn a_multiline_error_folds_and_the_run_still_ends() {
+        let events = fixture("validation");
+        let end = events
+            .iter()
+            .find(|e| matches!(&e.change, Change::Validation { validation } if validation.phase == Phase::Ended && validation.run == IMPL_RUN))
+            .unwrap();
+        let mut value = serde_json::to_value(end).unwrap();
+        value["validation"]["error"] =
+            "step push failed: exit status 128: remote: denied.\r\nfatal: 403\n\u{1b}".into();
+        let written = serde_json::json!({
+            "schema": JOURNAL_SCHEMA, "kind": "lifecycle", "event": value,
+        })
+        .to_string();
+        let read = parse_line(written.as_bytes()).unwrap().unwrap();
+        let Change::Validation { validation } = &read.change else {
+            unreachable!()
+        };
+        assert_eq!(
+            validation.error.as_deref(),
+            Some("step push failed: exit status 128: remote: denied. fatal: 403")
+        );
+        assert_eq!(parse_line(line(&read).as_bytes()).unwrap().unwrap(), read);
+        // Only control characters is no error at all.
+        value["validation"]["error"] = "\n\t".into();
+        let written = serde_json::json!({
+            "schema": JOURNAL_SCHEMA, "kind": "lifecycle", "event": value,
+        })
+        .to_string();
+        let blank = parse_line(written.as_bytes()).unwrap().unwrap();
+        assert!(
+            matches!(&blank.change, Change::Validation { validation } if validation.error.is_none())
+        );
+        // The folded end still closes the run: after it is no unread time.
+        let ran = |e: &&LifecycleEvent| match &e.change {
+            Change::Validation { validation } => validation.run == IMPL_RUN,
+            Change::ValidationCoverage {
+                validation_coverage,
+            } => validation_coverage.run == IMPL_RUN,
+            _ => false,
+        };
+        let mut store = Lifecycle::default();
+        store.insert(
+            events
+                .iter()
+                .filter(ran)
+                .filter(|e| e.id != end.id)
+                .cloned(),
+        );
+        let after = end.at.unwrap() + chrono::Duration::hours(12);
+        assert!(
+            store.unread(after, stale()),
+            "without its end the run never closes"
+        );
+        store.insert([read]);
+        assert!(!store.unread(after, stale()));
+    }
+
+    /// At the live edge the newest windows trail the present by a checkpoint.
+    /// While their readers are fresh, that tail is watched, not unknown; once
+    /// they stop, it is.
+    #[test]
+    fn the_tail_a_fresh_reader_trails_is_accounted_for() {
+        let mut store = Lifecycle::default();
+        store.insert(fixture("validation"));
+        store.insert([coverage("c", "08:00:00", "08:17:00")]);
+        let tests = store
+            .readings
+            .get(&(crew_attempt("tests"), TESTS_RUN.to_owned()))
+            .unwrap();
+        assert!(tests.until.is_none(), "the tests run is still alive");
+        let last = tests.windows.last().unwrap().to;
+        let t = last.max(at("08:17:00")) + chrono::Duration::seconds(20);
+        assert!(store.unread(t, stale()) && !store.covered(t, stale()));
+        // Read and observed a moment ago: the tail is accounted for.
+        assert!(store.accounted(t, t + chrono::Duration::seconds(10)));
+        // Both readers stopped long ago: the same moment is unknown.
+        assert!(!store.accounted(t, t + chrono::Duration::minutes(10)));
+        // A gap inside the windows stays a gap however fresh the reader.
+        let impl_ = &store.readings[&(crew_attempt("impl"), IMPL_RUN.to_owned())];
+        let hole = impl_.windows[0].to + chrono::Duration::seconds(1);
+        assert!(
+            hole < impl_.windows[1].from,
+            "the fixture's impl run has a gap"
+        );
+        assert!(!store.accounted(hole, impl_.windows[1].from));
+        // Within every window, it is accounted for regardless of now.
+        assert!(store.accounted(impl_.windows[0].to, t + chrono::Duration::hours(1)));
+    }
+
     #[test]
     fn a_viewer_that_predates_validation_cannot_mistake_it_for_lifecycle() {
         // An older viewer's types, and nothing else: coverage, as it read it.
@@ -1928,7 +2078,7 @@ mod tests {
         // No attempt appears from its runs alone, nor any lifecycle coverage.
         assert!(store.state_at(None).is_empty());
         assert!(!store.has_gaps() && store.coverage().is_empty());
-        assert!(store.covered(at("08:09:00")));
+        assert!(store.covered(at("08:09:00"), stale()));
         assert!(store.has_runs());
         // The footer never narrates a coverage window.
         assert!(!store.latest_at(None).unwrap().change.is_coverage());
@@ -1946,7 +2096,7 @@ mod tests {
         assert_eq!(run.run, IMPL_RUN);
         assert_eq!(run.started, Some((at("08:07:45"), AtQuality::Derived)));
         assert!(run.read.is_none());
-        assert!(!store.run_verified(&impl_, IMPL_RUN, Some(at("08:07:50"))));
+        assert!(!store.run_verified(&impl_, IMPL_RUN, Some(at("08:07:50")), stale()));
         // The first read: every step reached by then, no earlier bound.
         let run = &store.validation_at(Some(at("08:08:00")))[&impl_];
         let (read_at, read) = run.read.as_ref().unwrap();
@@ -1955,12 +2105,12 @@ mod tests {
             (at("08:08:00"), "review")
         );
         assert_eq!(run.reached["intent"], (at("08:08:00"), None));
-        assert!(store.run_verified(&impl_, IMPL_RUN, Some(at("08:08:00"))));
+        assert!(store.run_verified(&impl_, IMPL_RUN, Some(at("08:08:00")), stale()));
         // The adapter stopped: the last read stands, unverified.
         let run = &store.validation_at(Some(at("08:09:00")))[&impl_];
         assert_eq!(run.read.as_ref().unwrap().0, at("08:08:00"));
-        assert!(!store.run_verified(&impl_, IMPL_RUN, Some(at("08:09:00"))));
-        assert!(store.unread(at("08:09:00")));
+        assert!(!store.run_verified(&impl_, IMPL_RUN, Some(at("08:09:00")), stale()));
+        assert!(store.unread(at("08:09:00"), stale()));
         // The next read, across the gap: review ended somewhere in it.
         let run = &store.validation_at(Some(at("08:10:00")))[&impl_];
         assert_eq!(
@@ -1973,8 +2123,8 @@ mod tests {
         let live = store.validation_at(None);
         assert!(live[&impl_].ended());
         // An ended run is no gap; a live one between reads is.
-        assert!(!store.unread(at("08:14:30")));
-        assert!(store.unread(at("08:15:10")));
+        assert!(!store.unread(at("08:14:30"), stale()));
+        assert!(store.unread(at("08:15:10"), stale()));
         // tests: read, then the daemon went down, then its gate parked.
         let run = &store.validation_at(Some(at("08:15:40")))[&tests];
         assert_eq!(run.lost, Some((Phase::DaemonDown, at("08:15:30"))));
@@ -1984,10 +2134,10 @@ mod tests {
             run.read.as_ref().unwrap().1.gate.as_ref().unwrap().ask_user,
             1
         );
-        assert!(store.run_verified(&tests, TESTS_RUN, Some(at("08:16:00"))));
-        assert!(!store.run_verified(&tests, TESTS_RUN, Some(at("08:15:30"))));
+        assert!(store.run_verified(&tests, TESTS_RUN, Some(at("08:16:00")), stale()));
+        assert!(!store.run_verified(&tests, TESTS_RUN, Some(at("08:15:30")), stale()));
         // At the live edge, long after the adapter stopped, it is not read.
-        assert!(!store.run_verified(&tests, TESTS_RUN, None));
+        assert!(!store.run_verified(&tests, TESTS_RUN, None, stale()));
     }
 
     #[test]

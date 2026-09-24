@@ -201,12 +201,13 @@ impl Fleet {
         }
     }
 
-    /// Whether lifecycle was observed at the moment shown: parked, whether a
-    /// coverage window holds it; at the live edge, whether the adapter still is.
-    pub fn covered(&self) -> bool {
+    /// Whether lifecycle was observed at the moment shown, as of `now`:
+    /// parked, whether the coverage windows hold it (`Lifecycle::covered`);
+    /// at the live edge, whether the adapter still is.
+    pub fn covered(&self, now: DateTime<Utc>) -> bool {
         match self.at() {
-            Some(t) => self.lifecycle.covered(t),
-            None => self.lifecycle.observing(Utc::now()),
+            Some(t) => self.lifecycle.covered(t, now),
+            None => self.lifecycle.observing(now),
         }
     }
 
@@ -437,7 +438,9 @@ pub fn draw_overlay(frame: &mut Frame, fleet: &Fleet) {
     if fleet.lifecycle.has_gaps() || fleet.lifecycle.has_runs() {
         // A column is a gap when its moment lies outside every window the
         // bridge or a feed was observing, or a validation run was alive there
-        // but nobody read it: that state is unknown, not steady.
+        // but nobody read it: that state is unknown, not steady. The tail a
+        // still-running reader trails the present by is watched.
+        let now = Utc::now();
         let floor = timeline.floor();
         let reach = len.saturating_sub(floor);
         for c in (0..width).filter(|&c| c != head) {
@@ -445,7 +448,7 @@ pub fn draw_overlay(frame: &mut Frame, fleet: &Fleet) {
             let Some(ts) = timeline.items[index].ts() else {
                 continue;
             };
-            if fleet.lifecycle.covered(ts) && !fleet.lifecycle.unread(ts) {
+            if fleet.lifecycle.accounted(ts, now) {
                 continue;
             }
             // Hatched and dimmed: activity there is real, the crew state is not.
