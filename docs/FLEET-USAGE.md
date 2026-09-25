@@ -105,8 +105,6 @@ seconds; transcript tailing and rendering run independently.
 | x in the fleet | Collapse/expand the selected session's native children |
 | e | Show or hide the graph's edge labels (shown by default) |
 | r in the fleet | Rearrange the graph: re-run the layout so cards return to the arrangement a fresh open gives, and fit them into view |
-| e | Show or hide the graph's edge labels (shown by default) |
-| r in the fleet | Rearrange the graph: re-run the layout so cards return to the arrangement a fresh open gives, and fit them into view |
 | v | Show or hide finished workers (hidden when the fleet opens) |
 | A | Archive the selected finished worker (under a collector) |
 | D | Delete the selected worker, after a confirmation (under a collector) |
