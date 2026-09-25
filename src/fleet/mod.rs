@@ -958,6 +958,7 @@ impl Fleet {
             }
             self.overview.flow.set_edge_animated(&id, running);
         }
+        graph::raise_running(&mut self.overview.flow);
         let after: BTreeSet<_> = self.overview.flow.nodes().map(|n| n.id.clone()).collect();
         structural |= after != before;
         for id in &after {

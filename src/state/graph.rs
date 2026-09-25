@@ -229,10 +229,28 @@ pub fn sync(flow: &mut AgentFlow, model: &SessionModel, relayout: bool) -> bool 
         }
     }
 
+    raise_running(flow);
     if structural && relayout {
         self::relayout(flow);
     }
     structural
+}
+
+/// Draw every running edge after every idle one.
+///
+/// rataflow draws edges in list order, and a later edge restyles every cell it
+/// shares with an earlier one. Sibling edges share their parent's stem and
+/// trunk, so an idle edge drawn late would paint over a running link's green
+/// dashes. The reorder is stable, and the steady state (already ordered) costs
+/// one scan.
+pub fn raise_running(flow: &mut AgentFlow) {
+    if flow.edges().is_sorted_by_key(|e| e.animated) {
+        return;
+    }
+    let mut edges = flow.edges().to_vec();
+    edges.sort_by_key(|e| e.animated);
+    // The same edges in a new order: nothing for validation to reject.
+    let _ = flow.set_edges(edges);
 }
 
 /// Stable id for the (single) parent edge of `child`.
@@ -264,8 +282,23 @@ pub fn remove_agents(flow: &mut AgentFlow, agents: &[String]) {
 ///
 /// Split out so it can be called explicitly and unit-tested independently of
 /// the per-agent diffing in [`sync`].
+///
+/// Sugiyama's first sibling order follows the edge list, which
+/// [`raise_running`] reorders by liveness. The layout therefore sees the edges
+/// in node (spawn) order, so siblings keep their places whoever is working,
+/// and the running edges are raised again afterwards.
 pub fn relayout(flow: &mut AgentFlow) {
+    let index: std::collections::HashMap<&str, usize> = flow
+        .nodes()
+        .enumerate()
+        .map(|(i, n)| (n.id.as_str(), i))
+        .collect();
+    let mut edges = flow.edges().to_vec();
+    edges.sort_by_key(|e| index.get(e.target.as_str()).copied());
+    // The same edges in a new order: nothing for validation to reject.
+    let _ = flow.set_edges(edges);
     flow.apply_layout(Sugiyama::vertical());
+    raise_running(flow);
 }
 
 #[cfg(test)]
@@ -379,6 +412,102 @@ mod tests {
             .map(|e| e.animated);
         assert_eq!(animated, Some(false));
         assert!(!flow.edge_content_mut(&edge_id).unwrap().running);
+    }
+
+    #[test]
+    fn running_edge_is_drawn_over_idle_siblings() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+
+        // The running child spawns first, so without the reorder its idle
+        // sibling is drawn after it over the stem they share.
+        let mut model = model_with_subagent();
+        let meta = SubagentMeta {
+            agent_type: Some("guide".into()),
+            description: Some("idle".into()),
+            tool_use_id: Some("ag2".into()),
+            stopped_by_user: None,
+        };
+        model.apply_meta("def456", None, &meta);
+        model.agents.get_mut("def456").unwrap().status = AgentStatus::Done;
+        let mut flow = new_flow();
+        sync(&mut flow, &model, true);
+        flow.request_fit_view();
+
+        let area = Rect::new(0, 0, 100, 30);
+        let green = flow.theme.palette().success;
+        let cells = |flow: &mut AgentFlow, shown: &[&str], green_only: bool| {
+            for id in ["abc123", "def456"] {
+                flow.set_edge_hidden(&edge_id(id), !shown.contains(&id));
+            }
+            let mut buf = Buffer::empty(area);
+            flow.render(area, &mut buf);
+            let mut drawn = std::collections::HashSet::new();
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    let cell = &buf[(x, y)];
+                    if cell.symbol() != " " && (!green_only || cell.fg == green) {
+                        drawn.insert((x, y));
+                    }
+                }
+            }
+            drawn
+        };
+        let running = cells(&mut flow, &["abc123"], true);
+        let idle = cells(&mut flow, &["def456"], false);
+        let both = cells(&mut flow, &["abc123", "def456"], true);
+
+        assert!(
+            running.iter().any(|c| idle.contains(c)),
+            "the two edges must share cells for this test to mean anything"
+        );
+        let lost: Vec<_> = running.difference(&both).collect();
+        assert!(
+            lost.is_empty(),
+            "idle edge painted over running cells {lost:?}"
+        );
+    }
+
+    #[test]
+    fn relayout_sibling_order_ignores_liveness() {
+        let mut model = model_with_subagent();
+        for (id, tool) in [("def456", "ag2"), ("ghi789", "ag3")] {
+            let meta = SubagentMeta {
+                agent_type: Some("guide".into()),
+                description: Some(id.into()),
+                tool_use_id: Some(tool.into()),
+                stopped_by_user: None,
+            };
+            model.apply_meta(id, None, &meta);
+        }
+        let order = |flow: &AgentFlow| {
+            let mut ids = ["abc123", "def456", "ghi789"];
+            ids.sort_by(|a, b| {
+                let (a, b) = (flow.node(a).unwrap(), flow.node(b).unwrap());
+                a.position.x.total_cmp(&b.position.x)
+            });
+            ids
+        };
+
+        for id in ["abc123", "def456", "ghi789"] {
+            model.agents.get_mut(id).unwrap().status = AgentStatus::Done;
+        }
+        let mut flow = new_flow();
+        sync(&mut flow, &model, true);
+        let idle = order(&flow);
+
+        // Only the middle child starts working.
+        model.agents.get_mut("def456").unwrap().status = AgentStatus::Running;
+        sync(&mut flow, &model, false);
+        relayout(&mut flow);
+        let working = order(&flow);
+
+        assert_eq!(working, idle);
+        assert!(
+            flow.edges().is_sorted_by_key(|e| e.animated),
+            "running edges must still be drawn last"
+        );
     }
 
     #[test]
