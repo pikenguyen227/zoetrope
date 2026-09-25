@@ -109,7 +109,6 @@ seconds; transcript tailing and rendering run independently.
 | A | Archive the selected finished worker (under a collector) |
 | D | Delete the selected worker, after a confirmation (under a collector) |
 | C | Clear everything: `a` archives it all, `D` deletes it all after a confirmation (under a collector) |
-| r | Arrange the graph |
 | o / f | Overview / follow camera |
 | q or Ctrl+C | Quit |
 
