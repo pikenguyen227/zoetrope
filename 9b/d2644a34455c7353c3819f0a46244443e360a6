@@ -1,0 +1,19 @@
+src/fleet/native.rs
+  s_71f821d099838b::t_44c12f90a756af 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9bd2644a34455c7353c3819f0a46244443e360a6",
+  "prompts": {},
+  "sessions": {
+    "s_71f821d099838b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75c3f52f-aea3-434a-8284-1464f3fed36d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
