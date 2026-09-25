@@ -643,3 +643,69 @@ fn a_secondmates_crew_hangs_under_it_while_it_is_shown() {
         "shown secondmate: its crew is off the root"
     );
 }
+
+#[test]
+fn a_member_herdr_saw_stop_reads_idle_at_once() {
+    let now = Utc::now();
+    let recent = now - chrono::Duration::seconds(5);
+    // The worker's pane as Herdr last read it, or no runtime at all.
+    let herdr = |value: Option<&str>, at: DateTime<Utc>| {
+        let mut manifest = manifest();
+        manifest.tasks.push(Task {
+            id: "worker".into(),
+            spawn_gen: "1".into(),
+            label: "Worker".into(),
+            project: None,
+            session: Some(key("worker")),
+            state: Observation {
+                value: "working".into(),
+                source: "fixture".into(),
+                observed_at: at,
+            },
+            runtime: value.map(|value| Observation {
+                value: value.into(),
+                source: HERDR_PANE.into(),
+                observed_at: at,
+            }),
+            depends_on: vec![],
+        });
+        manifest
+    };
+    let worker = |fleet: &Fleet| {
+        let id = key("worker").node_id(MAIN_ID);
+        let status = fleet.overview.session.agent(&id).unwrap().status;
+        let edge = fleet.overview.flow.edges().iter().find(|e| e.target == id);
+        (status, edge.unwrap().animated)
+    };
+    let mut fleet = Fleet::new(herdr(None, now)).unwrap();
+    fleet.event(
+        &key("worker"),
+        live("worker", recent, vec![FactKind::Activity], "main"),
+    );
+    fleet.sync();
+    assert_eq!(
+        worker(&fleet),
+        (AgentStatus::Running, true),
+        "no runtime: a recent entry still reads active"
+    );
+    fleet.update(herdr(Some("working"), now)).unwrap();
+    assert_eq!(worker(&fleet), (AgentStatus::Running, true));
+    for stopped in ["done", "idle"] {
+        fleet.update(herdr(Some(stopped), now)).unwrap();
+        assert_eq!(
+            worker(&fleet),
+            (AgentStatus::Idle, false),
+            "Herdr read {stopped}: idle within the recency window"
+        );
+    }
+    // Anything it records after Herdr saw it stop is recency's again.
+    let later = now + chrono::Duration::seconds(1);
+    fleet.event(
+        &key("worker"),
+        live("worker", later, vec![FactKind::Activity], "main"),
+    );
+    fleet.sync();
+    assert_eq!(worker(&fleet), (AgentStatus::Running, true));
+    fleet.update(herdr(None, now)).unwrap();
+    assert_eq!(worker(&fleet), (AgentStatus::Running, true));
+}

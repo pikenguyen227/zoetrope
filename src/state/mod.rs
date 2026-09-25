@@ -233,6 +233,11 @@ pub struct App {
     /// Fleet overview): its timeline stays empty, so time-derived chrome reads
     /// the wall clock instead of the playhead. See [`chrome_now`](Self::chrome_now).
     pub wall_clock: bool,
+    /// When the main agent was last seen stopped from outside the transcript
+    /// (a fleet member's Herdr pane status), so it settles to idle at once. See
+    /// [`SessionModel::recompute_liveness_stopped`]. Kept here, not in
+    /// `session`, so a reset or seek rebuild does not drop it.
+    pub stopped: Option<chrono::DateTime<chrono::Utc>>,
     /// Wall-time accumulated by [`tick_pulse`](Self::tick_pulse), modulo one
     /// pulse cycle.
     pulse_ms: u64,
@@ -271,6 +276,7 @@ impl App {
             pending_center: None,
             pending_seek: None,
             wall_clock: false,
+            stopped: None,
             pulse_ms: 0,
             snapshots: Vec::new(),
         }
@@ -809,7 +815,7 @@ impl App {
         // "now": wall clock at a live edge, the playhead when replaying or
         // scrubbed back (so the as-of-then state shows, no wall-clock bleed).
         let now = self.timeline.now_reference();
-        self.session.recompute_liveness(now);
+        self.session.recompute_liveness_stopped(now, self.stopped);
         // Layout is user-driven: a Sugiyama pass on every new node reflows the
         // whole graph and reads as "jumpy" as a session grows. So sync NEVER
         // auto-relayouts — new nodes keep their local placement (below parent,
@@ -852,7 +858,7 @@ impl App {
     /// stale centering must not wait for the next batch.
     pub fn status_tick(&mut self) {
         let now = self.timeline.now_reference();
-        if self.session.recompute_liveness(now) {
+        if self.session.recompute_liveness_stopped(now, self.stopped) {
             self.session.recompute_group_status();
             // Status flips never change topology, so this is a content-only sync;
             // layout stays user-driven (no auto-relayout — see `resync`).

@@ -308,6 +308,22 @@ fn left(task: &Task) -> bool {
         .is_some_and(|r| r.value == NOT_OBSERVED)
 }
 
+/// When Herdr last saw this session's pane stopped (`done` or `idle`), by its
+/// newest runtime among the tasks joined to it; `None` while it reads working,
+/// or when no runtime is known, so transcript recency decides as usual.
+fn stopped(key: &SessionKey, tasks: &[Task]) -> Option<DateTime<Utc>> {
+    let runtime = tasks
+        .iter()
+        .filter(|t| t.session.as_ref() == Some(key))
+        .filter_map(|t| t.runtime.as_ref())
+        .filter(|r| r.source == HERDR_PANE)
+        .max_by_key(|r| r.observed_at)?;
+    matches!(runtime.value.as_str(), "done" | "idle").then_some(runtime.observed_at)
+}
+
+/// The adapter's source for a runtime read from a Herdr pane.
+const HERDR_PANE: &str = "herdr.pane.get";
+
 /// Whether a member has finished as of `at` (`None`: the live edge): every
 /// attempt the journal or manifest joins to it was torn down by then, or, at
 /// the live edge, the adapter no longer registers it: its session is gone
@@ -468,6 +484,13 @@ impl Fleet {
                 });
             member.spec = spec.clone();
             member.retained = false;
+        }
+        for (key, member) in &mut self.members {
+            let stopped = stopped(key, &manifest.tasks);
+            if member.app.stopped != stopped {
+                member.app.stopped = stopped;
+                member.app.status_tick();
+            }
         }
         self.manifest = manifest;
         self.manifest_error = None;

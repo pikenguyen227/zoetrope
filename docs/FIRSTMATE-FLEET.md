@@ -144,6 +144,10 @@ Each crew's lifecycle feed is already tailed through the `lifecycle` pointer.
   hidden until shown, as of the playhead; archive and delete remove records,
   through the collector while it runs (see `FLEET-USAGE.md`).
 - Selecting a node opens that session's existing tool and transcript details.
+- A member's main agent reads active by transcript recency, except that its
+  task's Herdr runtime reading `done` or `idle` settles it idle at once, as of
+  that observation: anything it records later, or a playhead before it, falls
+  back to recency (`stopped` in `src/fleet/mod.rs`).
 - Native children can be collapsed. Continuation and dependency edges have explicit
   labels and distinct styles; they must not override native parentage.
 - Incrementally patch graph content. Preserve node positions and camera state;
