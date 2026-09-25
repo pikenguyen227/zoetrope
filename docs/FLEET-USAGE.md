@@ -103,6 +103,7 @@ seconds; transcript tailing and rendering run independently.
 | Esc in a session | Return to the fleet at its moment |
 | p | List the selected card's validation run's pipeline agents; ↑↓ (or `j`/`k`) and Enter opens one read-only, `p` or Esc closes the list (see "Pipeline agents") |
 | x in the fleet | Collapse/expand the selected session's native children |
+| e | Show or hide the graph's edge labels (shown by default) |
 | v | Show or hide finished workers (hidden when the fleet opens) |
 | A | Archive the selected finished worker (under a collector) |
 | D | Delete the selected worker, after a confirmation (under a collector) |

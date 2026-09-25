@@ -277,6 +277,8 @@ pub struct Fleet {
     live_hidden: Option<BTreeSet<String>>,
     /// Re-arrange on the next sync: the visible crew changed on request.
     rearrange: bool,
+    /// Draw the edge labels (`e` toggles); on by default.
+    pub show_labels: bool,
     /// Attempt cards without a session, by node ID, so actions can name them.
     pub(crate) cards: BTreeMap<String, Attempt>,
     /// A question or note the header shows until the next key.
@@ -449,6 +451,7 @@ impl Fleet {
             finished: 0,
             live_hidden: None,
             rearrange: false,
+            show_labels: true,
             cards: BTreeMap::new(),
             prompt: None,
             collector: false,
@@ -882,6 +885,7 @@ impl Fleet {
         });
         let before: BTreeSet<_> = self.overview.flow.nodes().map(|n| n.id.clone()).collect();
         let mut structural = graph::sync(&mut self.overview.flow, &projection, false);
+        let hide_labels = !self.show_labels;
         for (id, target) in member_edges {
             let running = projection
                 .agent(&target)
@@ -906,6 +910,7 @@ impl Fleet {
             // A working member reads on its edge, as a native child does.
             if let Some(content) = self.overview.flow.edge_content_mut(&id) {
                 content.running = running;
+                content.hide_label = hide_labels;
             }
             self.overview.flow.set_edge_animated(&id, running);
         }
@@ -949,6 +954,7 @@ impl Fleet {
                 .is_some_and(|a| a.status == AgentStatus::Running);
             if let Some(content) = self.overview.flow.edge_content_mut(&id) {
                 content.running = running;
+                content.hide_label = hide_labels;
             }
             self.overview.flow.set_edge_animated(&id, running);
         }

@@ -19,6 +19,9 @@ use super::{Fleet, Manifest, SessionKey, SessionSpec};
 use crate::provider::{Provider, Session, Target};
 use crate::tailer::{TailRequest, UiEvent};
 
+/// The fleet key legend shown when no status note replaces it.
+const KEY_HINT: &str = "FLEET · space: play/pause · drag, [ ]: seek · g: live · Enter: session · p: pipeline agents · x: children · v: finished · e: edge labels · A/D: archive/delete worker · C: clear · q: quit";
+
 const RETRY: Duration = Duration::from_secs(3);
 /// The exit status that tells the collector a request is waiting in the file
 /// it named in `ZOE_FLEET_REQUEST` (`REQUEST_EXIT` in the adapter).
@@ -413,6 +416,7 @@ fn route(fleet: &mut Fleet, event: &Event) -> bool {
                 KeyCode::Char(']') => fleet.step(true),
                 KeyCode::Char('g' | 'G') | KeyCode::End => fleet.go_live(),
                 KeyCode::Char('v') => fleet.toggle_finished(),
+                KeyCode::Char('e') => fleet.toggle_labels(),
                 KeyCode::Char('A') => return fleet.archive_selected(),
                 KeyCode::Char('D') => fleet.delete_selected(),
                 KeyCode::Char('C') => fleet.ask_clear(),
@@ -727,9 +731,7 @@ pub fn draw(frame: &mut ratatui::Frame, fleet: &mut Fleet) {
             unavailable,
             age,
             crate::build::Build::current().commit,
-            note.unwrap_or(
-                "FLEET · space: play/pause · drag, [ ]: seek · g: live · Enter: session · p: pipeline agents · x: children · v: finished · A/D: archive/delete worker · C: clear · q: quit"
-            )
+            note.unwrap_or(KEY_HINT)
         )
     };
     // A prompt stands out from the status it replaces.
@@ -1333,6 +1335,37 @@ mod tests {
         fleet.sync();
         assert_eq!(fleet.at(), None);
         assert!(fleet.members.values().all(|m| m.app.timeline.follow_head));
+    }
+
+    #[test]
+    fn e_toggles_the_edge_labels() {
+        let (_fixture, mut fleet) = crew();
+        let key = |code| Event::Key(crossterm::event::KeyEvent::from(code));
+        let shown = |fleet: &mut Fleet| {
+            let ids: Vec<_> = fleet
+                .overview
+                .flow
+                .edges()
+                .iter()
+                .filter(|e| e.label.is_some())
+                .map(|e| e.id.clone())
+                .collect();
+            ids.iter()
+                .filter_map(|id| {
+                    fleet
+                        .overview
+                        .flow
+                        .edge_content_mut(id)
+                        .map(|c| !c.hide_label)
+                })
+                .collect::<Vec<_>>()
+        };
+        let on = shown(&mut fleet);
+        assert!(!on.is_empty() && on.iter().all(|s| *s));
+        route(&mut fleet, &key(KeyCode::Char('e')));
+        assert!(shown(&mut fleet).iter().all(|s| !*s));
+        route(&mut fleet, &key(KeyCode::Char('e')));
+        assert!(shown(&mut fleet).iter().all(|s| *s));
     }
 
     #[test]

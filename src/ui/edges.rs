@@ -20,6 +20,8 @@ pub struct AgentEdge {
     /// Mirrored from the target agent's status by the graph sync; switches the
     /// edge chars to the palette's success green ("alive").
     pub running: bool,
+    /// Fleet edge labels are drawn unless the viewer turned them off.
+    pub hide_label: bool,
 }
 
 impl EdgeContent for AgentEdge {
@@ -40,7 +42,10 @@ impl EdgeContent for AgentEdge {
         };
         // Native parent edges remain unlabelled; Fleet relationships carry
         // explicit labels so delegation cannot be mistaken for native spawning.
-        let label = ctx.label.map(ratatui::text::Text::raw);
+        let label = ctx
+            .label
+            .filter(|_| !self.hide_label)
+            .map(ratatui::text::Text::raw);
         ctx.render_path(&style, label.as_ref(), buf);
     }
 }
