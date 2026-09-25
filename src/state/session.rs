@@ -724,6 +724,20 @@ impl SessionModel {
     /// Returns whether any status changed (lets callers skip graph work on the
     /// common nothing-happened tick).
     pub fn recompute_liveness(&mut self, now: Option<DateTime<Utc>>) -> bool {
+        self.recompute_liveness_stopped(now, None)
+    }
+
+    /// [`recompute_liveness`](Self::recompute_liveness), given when the main
+    /// agent was last seen stopped from outside the transcript (Herdr's pane
+    /// status in a fleet). Such a sighting settles `main` to `Idle` at once
+    /// instead of after `INTERACTIVE_IDLE_SECS`, as of that moment only: before
+    /// it (`reference` scrubbed back) or once `main` records anything after it,
+    /// recency decides as without one.
+    pub fn recompute_liveness_stopped(
+        &mut self,
+        now: Option<DateTime<Utc>>,
+        stopped: Option<DateTime<Utc>>,
+    ) -> bool {
         let Some(reference) = now.or(self.last_activity) else {
             return false;
         };
@@ -746,11 +760,13 @@ impl SessionModel {
                 // quiet and settles to Done/Idle mid-tool, then snaps back when
                 // the result lands. A reliably-terminal agent short-circuits
                 // below, so this can't revive a genuinely finished one.
-                let active = (reference - ts).num_seconds() <= INTERACTIVE_IDLE_SECS
-                    || agent
-                        .tool_calls
-                        .iter()
-                        .any(|c| c.state == ToolState::Pending);
+                let halted = id == MAIN_ID && stopped.is_some_and(|at| ts <= at && at <= reference);
+                let active = !halted
+                    && ((reference - ts).num_seconds() <= INTERACTIVE_IDLE_SECS
+                        || agent
+                            .tool_calls
+                            .iter()
+                            .any(|c| c.state == ToolState::Pending));
                 let next = if agent.is_interactive() {
                     if active {
                         AgentStatus::Running

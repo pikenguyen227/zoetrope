@@ -250,7 +250,10 @@ past recording unrelated to wall time; a live session by wall-clock at its edge.
 See §6.)
 
 For each agent with a `last_ts`, "active" means **within `INTERACTIVE_IDLE_SECS`
-(~120s) of `now`, OR holding a pending tool_call** (§2.2). Then:
+(~120s) of `now`, OR holding a pending tool_call** (§2.2) — unless an outside
+stop sighting (`App::stopped`, a fleet member's Herdr pane; see
+`FIRSTMATE-FLEET.md`) falls between `main`'s `last_ts` and `now`, which makes
+`main` inactive at once. Then:
 
 - **Interactive** (main, forks): `Running` if active, else `Idle`. Never
   `Done`/`Failed` — interactive completion is unclaimable. Reversible.
