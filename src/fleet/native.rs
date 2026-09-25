@@ -19,9 +19,6 @@ use super::{Fleet, Manifest, SessionKey, SessionSpec};
 use crate::provider::{Provider, Session, Target};
 use crate::tailer::{TailRequest, UiEvent};
 
-/// The fleet key legend shown when no status note replaces it.
-const KEY_HINT: &str = "FLEET · space: play/pause · drag, [ ]: seek · g: live · Enter: session · p: pipeline agents · x: children · v: finished · e: edge labels · A/D: archive/delete worker · C: clear · q: quit";
-
 const RETRY: Duration = Duration::from_secs(3);
 /// The exit status that tells the collector a request is waiting in the file
 /// it named in `ZOE_FLEET_REQUEST` (`REQUEST_EXIT` in the adapter).
@@ -346,7 +343,7 @@ fn deliver(
 }
 
 /// The overview's key legend.
-const KEY_HINT: &str = "FLEET · space: play/pause · drag, [ ]: seek · g: live · r: rearrange · Enter: session · p: pipeline agents · x: children · v: finished · A/D: archive/delete worker · C: clear · q: quit";
+const KEY_HINT: &str = "FLEET · space: play/pause · drag, [ ]: seek · g: live · r: rearrange · Enter: session · p: pipeline agents · x: children · v: finished · e: edge labels · A/D: archive/delete worker · C: clear · q: quit";
 
 fn route(fleet: &mut Fleet, event: &Event) -> bool {
     if let Event::Key(key) = event {
