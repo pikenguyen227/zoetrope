@@ -19,9 +19,6 @@ use super::{Fleet, Manifest, SessionKey, SessionSpec};
 use crate::provider::{Provider, Session, Target};
 use crate::tailer::{TailRequest, UiEvent};
 
-/// The fleet key legend shown when no status note replaces it.
-const KEY_HINT: &str = "FLEET · space: play/pause · drag, [ ]: seek · g: live · Enter: session · p: pipeline agents · x: children · v: finished · e: edge labels · A/D: archive/delete worker · C: clear · q: quit";
-
 const RETRY: Duration = Duration::from_secs(3);
 /// The exit status that tells the collector a request is waiting in the file
 /// it named in `ZOE_FLEET_REQUEST` (`REQUEST_EXIT` in the adapter).
@@ -345,6 +342,9 @@ fn deliver(
     }
 }
 
+/// The overview's key legend.
+const KEY_HINT: &str = "FLEET · space: play/pause · drag, [ ]: seek · g: live · r: rearrange · Enter: session · p: pipeline agents · x: children · v: finished · e: edge labels · A/D: archive/delete worker · C: clear · q: quit";
+
 fn route(fleet: &mut Fleet, event: &Event) -> bool {
     if let Event::Key(key) = event {
         if key.kind == KeyEventKind::Release {
@@ -420,6 +420,14 @@ fn route(fleet: &mut Fleet, event: &Event) -> bool {
                 KeyCode::Char('A') => return fleet.archive_selected(),
                 KeyCode::Char('D') => fleet.delete_selected(),
                 KeyCode::Char('C') => fleet.ask_clear(),
+                // Rearrange also brings the tidied cards back into view: a
+                // drag leaves the camera Manual, where a relayout alone would
+                // land them off-screen.
+                KeyCode::Char('r' | 'R') => {
+                    fleet.overview.camera = crate::state::Camera::Overview;
+                    fleet.overview.camera_glide = None;
+                    fleet.overview.relayout_now();
+                }
                 _ => return crate::handler::handle_event(event, fleet.active()),
             }
             return false;
@@ -1956,6 +1964,50 @@ mod tests {
 
     fn key(code: KeyCode) -> Event {
         Event::Key(crossterm::event::KeyEvent::from(code))
+    }
+
+    fn positions(fleet: &Fleet) -> Vec<(String, i64, i64)> {
+        let mut all: Vec<_> = fleet
+            .overview
+            .flow
+            .nodes()
+            .map(|n| {
+                (
+                    n.id.clone(),
+                    n.position.x.round() as i64,
+                    n.position.y.round() as i64,
+                )
+            })
+            .collect();
+        all.sort();
+        all
+    }
+
+    #[test]
+    fn r_restores_the_layout_a_fresh_open_produces() {
+        let (_fixture, mut fleet) = captains();
+        let fresh = positions(&fleet);
+        // Scatter the cards, as dragging or drift would.
+        let ids = ids(&fleet);
+        for (i, id) in ids.iter().enumerate() {
+            fleet
+                .overview
+                .flow
+                .set_node_position(id, (i as f64 * 7.0 + 300.0, (i * i) as f64 * 3.0));
+        }
+        fleet.sync();
+        assert_ne!(positions(&fleet), fresh, "the cards were scattered");
+        // A drag leaves the camera Manual; r must still frame the result.
+        fleet.overview.camera = crate::state::Camera::Manual;
+        assert!(!route(&mut fleet, &key(KeyCode::Char('r'))));
+        assert_eq!(fleet.overview.camera, crate::state::Camera::Overview);
+        fleet.sync();
+        assert_eq!(positions(&fleet), fresh, "r is the fresh-open arrangement");
+        // A second press changes nothing: the arrangement is predictable.
+        route(&mut fleet, &key(KeyCode::Char('r')));
+        fleet.sync();
+        assert_eq!(positions(&fleet), fresh);
+        assert!(KEY_HINT.contains("r: rearrange"));
     }
 
     fn ids(fleet: &Fleet) -> Vec<String> {

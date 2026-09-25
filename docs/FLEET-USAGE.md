@@ -104,11 +104,11 @@ seconds; transcript tailing and rendering run independently.
 | p | List the selected card's validation run's pipeline agents; ↑↓ (or `j`/`k`) and Enter opens one read-only, `p` or Esc closes the list (see "Pipeline agents") |
 | x in the fleet | Collapse/expand the selected session's native children |
 | e | Show or hide the graph's edge labels (shown by default) |
+| r in the fleet | Rearrange the graph: re-run the layout so cards return to the arrangement a fresh open gives, and fit them into view |
 | v | Show or hide finished workers (hidden when the fleet opens) |
 | A | Archive the selected finished worker (under a collector) |
 | D | Delete the selected worker, after a confirmation (under a collector) |
 | C | Clear everything: `a` archives it all, `D` deletes it all after a confirmation (under a collector) |
-| r | Arrange the graph |
 | o / f | Overview / follow camera |
 | q or Ctrl+C | Quit |
 
