@@ -1,0 +1,25 @@
+docs/FLEET-USAGE.md
+  s_0ce88b8bfa94a1::t_7b320cafe3be58 92-93,108-154
+  s_0ce88b8bfa94a1::t_e2399e7a3862ce 155
+AGENTS.md
+  s_0ce88b8bfa94a1::t_715f9786071232 18
+docs/FIRSTMATE-FLEET.md
+  s_0ce88b8bfa94a1::t_60faf078102f3e 135-138,140-142
+  s_0ce88b8bfa94a1::t_04ae6e4198b730 39,214-277,317-321,323-324,348-352
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b47478f25e6b098734eaefd912ab847b07ecf427",
+  "prompts": {},
+  "sessions": {
+    "s_0ce88b8bfa94a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fb8c2a-af0a-475a-9f9a-9bcade249113",
+        "model": "unknown"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

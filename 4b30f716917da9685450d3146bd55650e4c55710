@@ -1,0 +1,45 @@
+assets/fleet/validation/status/impl-passed.toon
+  s_0ce88b8bfa94a1::t_ff7e9935a57038 1-21
+assets/fleet/validation/status/impl-ci.toon
+  s_0ce88b8bfa94a1::t_ff7e9935a57038 1-21
+  s_0ce88b8bfa94a1::t_db056592e32853 22
+assets/fleet/validation/status/tests-review.toon
+  s_0ce88b8bfa94a1::t_ff7e9935a57038 1-19
+scripts/test_firstmate_fleet.py
+  s_0ce88b8bfa94a1::t_db056592e32853 1513-1515,1673
+  s_0ce88b8bfa94a1::t_f1f396466b0ad3 1275-1512,1516-1672,1674-1677
+assets/fleet/validation/status/tests-parked.toon
+  s_0ce88b8bfa94a1::t_ff7e9935a57038 1-25
+scripts/firstmate-fleet.py
+  s_0ce88b8bfa94a1::t_04f2086e0ef6b8 208-212,214,224-238
+  s_0ce88b8bfa94a1::t_1efc31cba01f2f 11-13
+  s_0ce88b8bfa94a1::t_0deb5e36e48fba 1743,1754-1755,1758-1761,1769,1772,1814,1827
+  s_0ce88b8bfa94a1::t_316fc67858ceea 853-1342,1344-1345,1350-1355
+assets/fleet/validation/status/cancelled.toon
+  s_0ce88b8bfa94a1::t_ff7e9935a57038 1-19
+assets/fleet/validation/status/not-found.toon
+  s_0ce88b8bfa94a1::t_ff7e9935a57038 1
+assets/fleet/validation/fleet.events.jsonl
+  s_0ce88b8bfa94a1::t_db056592e32853 1-16
+assets/fleet/validation/status/impl-test.toon
+  s_0ce88b8bfa94a1::t_db056592e32853 19
+  s_0ce88b8bfa94a1::t_ff7e9935a57038 1-18
+assets/fleet/validation/status/impl-review.toon
+  s_0ce88b8bfa94a1::t_ff7e9935a57038 1-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "4b30f716917da9685450d3146bd55650e4c55710",
+  "prompts": {},
+  "sessions": {
+    "s_0ce88b8bfa94a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fb8c2a-af0a-475a-9f9a-9bcade249113",
+        "model": "unknown"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

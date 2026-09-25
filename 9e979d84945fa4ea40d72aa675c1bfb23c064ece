@@ -1,0 +1,27 @@
+src/fleet/mod.rs
+  s_5f3de99c995010::t_9083562f259b3a 259-261,302-304
+  s_5f3de99c995010::t_1901187f7fabec 254-258,262-263,266-269,276,283-287,289-301,533-540,667
+src/fleet/native.rs
+  s_5f3de99c995010::t_9083562f259b3a 961-965,970-973,1285-1304
+  s_5f3de99c995010::t_4dff790e995bfe 1305
+docs/FLEET-USAGE.md
+  s_5f3de99c995010::t_9083562f259b3a 102-107
+src/fleet/actions.rs
+  s_5f3de99c995010::t_1901187f7fabec 163-170,175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9e979d84945fa4ea40d72aa675c1bfb23c064ece",
+  "prompts": {},
+  "sessions": {
+    "s_5f3de99c995010": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "73f1045b-fd53-4f6a-8364-3d08a9b8af3d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

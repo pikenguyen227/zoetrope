@@ -1,0 +1,29 @@
+src/fleet/journal.rs
+  s_0ce88b8bfa94a1::t_2e320535a633a9 1811-1843,1849-1952,1957-1965,1970-1974,1978-1982,1987-2010,2015-2016
+  s_0ce88b8bfa94a1::t_5dc25aebbcedc8 270-273,303-308,618-619,918-920,938-939,973-976,1844-1848,1953-1956,1966-1969,1983-1986,2011-2014
+  s_0ce88b8bfa94a1::t_702647e357862c 1975-1977
+  s_0ce88b8bfa94a1::t_9f15496bec314a 589-614,621-668,677-678,731-779,782-788,892,895-897,899-911,915-917,921-937,940-972,977-982,995-1001,1061
+  s_0ce88b8bfa94a1::t_1ee44a1ff3b9d2 615-617,620
+  s_0ce88b8bfa94a1::t_af4784bd8bd01e 20-25,81-82,177-269,274-302,309-322,372-380,406-407,410-417,483-491
+  s_0ce88b8bfa94a1::t_2df8e5cbedc65a 2017
+src/fleet/timeline.rs
+  s_0ce88b8bfa94a1::t_03ae8f6a7db4cd 92-93,96,98
+  s_0ce88b8bfa94a1::t_f822a1bcc65521 20,35-46,62-66,70-79,94-95,97,99,259,440,442-443,451
+  s_0ce88b8bfa94a1::t_5dc25aebbcedc8 67-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "feb34186e805893cd53158f626898a7a262f4408",
+  "prompts": {},
+  "sessions": {
+    "s_0ce88b8bfa94a1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fb8c2a-af0a-475a-9f9a-9bcade249113",
+        "model": "unknown"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+fleet-plugin/herdr-plugin.toml
+  s_770e6168064eef::t_c700db5ad7a5e8 10
+fleet-plugin/open.sh
+  s_770e6168064eef::t_c700db5ad7a5e8 9-14
+docs/FLEET-USAGE.md
+  s_770e6168064eef::t_c700db5ad7a5e8 38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9cb866cb1de9bb8f0ebefa896c7e540142ea2748",
+  "prompts": {},
+  "sessions": {
+    "s_770e6168064eef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c37e-e597-7843-a358-ef1f584020f9",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}

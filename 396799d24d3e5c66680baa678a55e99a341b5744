@@ -1,0 +1,21 @@
+src/usage.rs
+  s_3d47258591ccd6::t_e2600cd912c18c 175,196,363,371-373,375
+docs/FLEET-USAGE.md
+  s_3d47258591ccd6::t_e2600cd912c18c 160,166-167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "396799d24d3e5c66680baa678a55e99a341b5744",
+  "prompts": {},
+  "sessions": {
+    "s_3d47258591ccd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "77e8832e-6880-45ce-b449-a786314c024c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
