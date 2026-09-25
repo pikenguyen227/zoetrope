@@ -345,6 +345,10 @@ fn deliver(
     }
 }
 
+/// The overview's key legend. `r` is not routed here: it falls through to
+/// the graph's own relayout.
+const KEY_HINT: &str = "FLEET · space: play/pause · drag, [ ]: seek · g: live · r: rearrange · Enter: session · p: pipeline agents · x: children · v: finished · A/D: archive/delete worker · C: clear · q: quit";
+
 fn route(fleet: &mut Fleet, event: &Event) -> bool {
     if let Event::Key(key) = event {
         if key.kind == KeyEventKind::Release {
@@ -1956,6 +1960,47 @@ mod tests {
 
     fn key(code: KeyCode) -> Event {
         Event::Key(crossterm::event::KeyEvent::from(code))
+    }
+
+    fn positions(fleet: &Fleet) -> Vec<(String, i64, i64)> {
+        let mut all: Vec<_> = fleet
+            .overview
+            .flow
+            .nodes()
+            .map(|n| {
+                (
+                    n.id.clone(),
+                    n.position.x.round() as i64,
+                    n.position.y.round() as i64,
+                )
+            })
+            .collect();
+        all.sort();
+        all
+    }
+
+    #[test]
+    fn r_restores_the_layout_a_fresh_open_produces() {
+        let (_fixture, mut fleet) = captains();
+        let fresh = positions(&fleet);
+        // Scatter the cards, as dragging or drift would.
+        let ids = ids(&fleet);
+        for (i, id) in ids.iter().enumerate() {
+            fleet
+                .overview
+                .flow
+                .set_node_position(id, (i as f64 * 7.0 + 300.0, (i * i) as f64 * 3.0));
+        }
+        fleet.sync();
+        assert_ne!(positions(&fleet), fresh, "the cards were scattered");
+        assert!(!route(&mut fleet, &key(KeyCode::Char('r'))));
+        fleet.sync();
+        assert_eq!(positions(&fleet), fresh, "r is the fresh-open arrangement");
+        // A second press changes nothing: the arrangement is predictable.
+        route(&mut fleet, &key(KeyCode::Char('r')));
+        fleet.sync();
+        assert_eq!(positions(&fleet), fresh);
+        assert!(KEY_HINT.contains("r: rearrange"));
     }
 
     fn ids(fleet: &Fleet) -> Vec<String> {
