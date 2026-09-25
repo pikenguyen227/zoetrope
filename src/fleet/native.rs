@@ -345,8 +345,7 @@ fn deliver(
     }
 }
 
-/// The overview's key legend. `r` is not routed here: it falls through to
-/// the graph's own relayout.
+/// The overview's key legend.
 const KEY_HINT: &str = "FLEET · space: play/pause · drag, [ ]: seek · g: live · r: rearrange · Enter: session · p: pipeline agents · x: children · v: finished · A/D: archive/delete worker · C: clear · q: quit";
 
 fn route(fleet: &mut Fleet, event: &Event) -> bool {
@@ -424,6 +423,14 @@ fn route(fleet: &mut Fleet, event: &Event) -> bool {
                 KeyCode::Char('A') => return fleet.archive_selected(),
                 KeyCode::Char('D') => fleet.delete_selected(),
                 KeyCode::Char('C') => fleet.ask_clear(),
+                // Rearrange also brings the tidied cards back into view: a
+                // drag leaves the camera Manual, where a relayout alone would
+                // land them off-screen.
+                KeyCode::Char('r' | 'R') => {
+                    fleet.overview.camera = crate::state::Camera::Overview;
+                    fleet.overview.camera_glide = None;
+                    fleet.overview.relayout_now();
+                }
                 _ => return crate::handler::handle_event(event, fleet.active()),
             }
             return false;
@@ -1993,7 +2000,10 @@ mod tests {
         }
         fleet.sync();
         assert_ne!(positions(&fleet), fresh, "the cards were scattered");
+        // A drag leaves the camera Manual; r must still frame the result.
+        fleet.overview.camera = crate::state::Camera::Manual;
         assert!(!route(&mut fleet, &key(KeyCode::Char('r'))));
+        assert_eq!(fleet.overview.camera, crate::state::Camera::Overview);
         fleet.sync();
         assert_eq!(positions(&fleet), fresh, "r is the fresh-open arrangement");
         // A second press changes nothing: the arrangement is predictable.
