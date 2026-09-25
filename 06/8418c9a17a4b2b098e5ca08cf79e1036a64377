@@ -1,0 +1,21 @@
+docs/FLEET-USAGE.md
+  s_bdf694e5da84dd::t_21c6a43709b975 107
+src/fleet/native.rs
+  s_bdf694e5da84dd::t_180194b7b87451 348,426-433,2003-2004,2006
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "068418c9a17a4b2b098e5ca08cf79e1036a64377",
+  "prompts": {},
+  "sessions": {
+    "s_bdf694e5da84dd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f11056ab-c030-4745-bc55-2da20e845b27",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
