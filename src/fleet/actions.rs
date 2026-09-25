@@ -140,6 +140,12 @@ const NO_COLLECTOR: &str = "No collector runs this viewer: archive or delete wit
     scripts/firstmate-fleet.py --archive / --delete (see docs/FLEET-USAGE.md)";
 
 impl Fleet {
+    /// Show or hide the graph's edge labels.
+    pub fn toggle_labels(&mut self) {
+        self.show_labels = !self.show_labels;
+        self.sync();
+    }
+
     /// Show or hide finished members and cards, and re-arrange what remains.
     pub fn toggle_finished(&mut self) {
         self.show_finished = !self.show_finished;
