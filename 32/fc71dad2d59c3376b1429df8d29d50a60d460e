@@ -1,0 +1,19 @@
+docs/DESIGN.md
+  s_70790ef2fcdf81::t_21a20207e98495 205,310
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "32fc71dad2d59c3376b1429df8d29d50a60d460e",
+  "prompts": {},
+  "sessions": {
+    "s_70790ef2fcdf81": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1b7c2db7-4fac-4633-8593-1bce21dc0f34",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
