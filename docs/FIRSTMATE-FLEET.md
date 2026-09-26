@@ -153,10 +153,13 @@ Each crew's lifecycle feed is already tailed through the `lifecycle` pointer.
   `done` or `idle` settles it idle at once, until it records anything later. A
   playhead before the observation falls back to recency (`sighting` in
   `src/fleet/mod.rs`).
-- Herdr registers a pane's session when its agent starts, and can keep that
-  registration when the pane's agent is relaunched in place into a new session:
-  the member then reads the old, quiet transcript, and only its runtime shows
-  it working.
+- Herdr registers a pane's session when its agent starts. When the pane's
+  agent is relaunched in place into a new session, Herdr can keep that
+  registration or re-register the pane to the new session under the same
+  launch generation (a `session changed` diagnostic). Either way the member
+  stays joined to the old, quiet transcript, and the adapter still records the
+  task's own pane's runtime for it, as it does while the join is deferred, so
+  only that runtime shows it working.
 - Native children can be collapsed. Continuation and dependency edges have explicit
   labels and distinct styles; they must not override native parentage.
 - Incrementally patch graph content. Preserve node positions and camera state;

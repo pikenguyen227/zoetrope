@@ -69,6 +69,31 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(changed["tasks"][0]["session"]["session_id"], "native-one")
         self.assertTrue(changed["diagnostics"])
 
+    def test_pane_relaunched_into_a_new_session_still_reports_its_runtime(self):
+        # Herdr re-registers the task's own pane to a relaunched session under
+        # the same launch generation: the join and its diagnostic stand, and
+        # the pane's reading still reaches the task's joined session.
+        first = self.build()
+        for status in ("working", "done", "idle"):
+            relaunched = dict(pane("relaunched"), agent_status=status)
+            changed = self.build(previous=first, member=relaunched)
+            task = changed["tasks"][0]
+            self.assertEqual(task["session"]["session_id"], "native-one")
+            self.assertTrue(any("session changed" in d for d in changed["diagnostics"]))
+            self.assertEqual(task["runtime"]["value"], status)
+            self.assertEqual(task["runtime"]["source"], "herdr.pane.get")
+
+    def test_unstable_pane_still_reports_its_runtime_for_the_joined_session(self):
+        first = self.build()
+        moved = snapshot(target="main:w2:p2")
+        changed = adapter.build_manifest(snapshot(), moved,
+                                         {"main:w2:p2": dict(pane("relaunched"), agent_status="working")},
+                                         first, observed=WHEN)
+        task = changed["tasks"][0]
+        self.assertEqual(task["session"]["session_id"], "native-one")
+        self.assertTrue(any("join deferred" in d for d in changed["diagnostics"]))
+        self.assertEqual(task["runtime"]["value"], "working")
+
     def test_reused_task_in_another_project_is_not_a_continuation(self):
         second = snapshot("two")
         second["tasks"][0]["project"] = "/synthetic/other-project"
