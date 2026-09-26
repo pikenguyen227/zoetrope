@@ -147,8 +147,9 @@ Each crew's lifecycle feed is already tailed through the `lifecycle` pointer.
 - A member's main agent reads active by transcript recency, except where its
   task's Herdr runtime says otherwise, at every level of the crew (primary
   worker, secondmate, secondmate's worker). Reading `working` keeps it active
-  however quiet its transcript, through a long tool call or a transcript that
-  has gone stale, for the recency window after that observation; reading
+  however quiet its joined transcript, as when the turn's tool call runs in a
+  transcript the collector has not joined, for the recency window after that
+  observation; reading
   `done` or `idle` settles it idle at once, until it records anything later. A
   playhead before the observation falls back to recency (`sighting` in
   `src/fleet/mod.rs`).

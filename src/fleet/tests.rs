@@ -712,12 +712,11 @@ fn a_member_herdr_saw_stop_reads_idle_at_once() {
 
 #[test]
 fn a_member_herdr_sees_working_reads_active_however_quiet_its_transcript() {
-    // Reproduction: a secondmate's worker relaunched in its Herdr pane runs in
-    // a new transcript while Herdr still registers the pane's first session,
-    // so the one it is joined to has been quiet for hours; a long tool call
-    // leaves even the right transcript quiet past the recency window. Herdr
-    // reads the pane working either way, and so must its card, at every level
-    // of the crew: a primary worker, a secondmate and the secondmate's worker.
+    // Reproduction: a worker relaunched in its Herdr pane runs in a new
+    // transcript while Herdr still registers the pane's first session, so the
+    // one it is joined to has gone quiet past the recency window. Herdr reads
+    // the pane working, and so must its card, at every level of the crew: a
+    // primary worker, a secondmate and the secondmate's worker.
     let now = Utc::now();
     let quiet = now - chrono::Duration::seconds(600);
     let task = |id: &str, spawn: &str, runtime: Option<Observation>| Task {
@@ -836,4 +835,91 @@ fn a_member_herdr_sees_working_reads_active_however_quiet_its_transcript() {
             "{id}: Herdr last read working past the window: recency decides"
         );
     }
+}
+
+#[test]
+fn a_member_herdr_sees_working_through_a_long_tool_call_in_an_unjoined_transcript() {
+    // The reported case: a secondmate's worker 18m40s into a turn, inside a
+    // shell command already running past 30s. The command's tool call is in
+    // the pane's relaunched transcript, which the collector has not joined;
+    // the joined one ended its last call long before the recency window.
+    let now = Utc::now();
+    let turn = now - chrono::Duration::seconds(18 * 60 + 40);
+    let crew = |runtime: Option<&str>| {
+        let mut manifest = manifest();
+        for id in ["mate", "crew"] {
+            manifest.sessions.push(SessionSpec {
+                key: key(id),
+                label: id.into(),
+                file: None,
+                runtime: None,
+                herdr: None,
+            });
+        }
+        manifest.links.push(Link {
+            id: "own".into(),
+            from: key("mate"),
+            to: key("crew"),
+            kind: Relation::Delegates,
+            evidence: "secondmate mate's own task".into(),
+            observed_at: turn,
+        });
+        manifest.tasks.push(Task {
+            id: "crew".into(),
+            spawn_gen: "1".into(),
+            label: "crew".into(),
+            project: None,
+            session: Some(key("crew")),
+            state: Observation {
+                value: "working".into(),
+                source: "status-log".into(),
+                observed_at: turn,
+            },
+            runtime: runtime.map(|value| Observation {
+                value: value.into(),
+                source: HERDR_PANE.into(),
+                observed_at: now,
+            }),
+            depends_on: vec![],
+        });
+        manifest
+    };
+    let crew_main = key("crew").node_id(MAIN_ID);
+    let crew_card = |fleet: &Fleet| {
+        let status = fleet.overview.session.agent(&crew_main).unwrap().status;
+        let edge = fleet
+            .overview
+            .flow
+            .edges()
+            .iter()
+            .find(|e| e.target == crew_main);
+        (status, edge.unwrap().animated)
+    };
+    let mut fleet = Fleet::new(crew(None)).unwrap();
+    fleet.event(
+        &key("crew"),
+        live("crew", turn, call("read").to_vec(), "main"),
+    );
+    let command = FactKind::ToolStart {
+        call: "command".into(),
+        name: "Bash".into(),
+        summary: None,
+    };
+    let running = now - chrono::Duration::seconds(31);
+    fleet.event(
+        &key("relaunch"),
+        live("relaunch", running, vec![command], "main"),
+    );
+    fleet.sync();
+    assert_eq!(
+        crew_card(&fleet),
+        (AgentStatus::Idle, false),
+        "no runtime: the joined transcript is quiet and holds no pending call"
+    );
+    fleet.update(crew(Some("working"))).unwrap();
+    assert_eq!(
+        crew_card(&fleet),
+        (AgentStatus::Running, true),
+        "Herdr reads the pane working mid-command: active"
+    );
 }

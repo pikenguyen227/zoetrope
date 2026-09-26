@@ -150,7 +150,8 @@ pub fn status_word(status: AgentStatus, interactive: bool) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sighting {
     /// Seen at work: counts as `main` activity at that moment, so a transcript
-    /// that goes quiet (a long tool call, or a stale session) stays active.
+    /// that goes quiet (a stale session, or one whose tool call runs elsewhere)
+    /// stays active.
     Working(DateTime<Utc>),
     /// Seen stopped: settles `main` to `Idle` at once.
     Stopped(DateTime<Utc>),
