@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use rataflow::{Edge, Reconnectable};
 use serde::{Deserialize, Serialize};
 
-use crate::state::session::{AgentInfo, AgentKind, AgentStatus, MAIN_ID, SessionModel};
+use crate::state::session::{AgentInfo, AgentKind, AgentStatus, MAIN_ID, SessionModel, Sighting};
 use crate::state::{App, Camera, Mode, graph};
 use crate::tailer::UiEvent;
 use crate::ui::nodes::{CrewMark, CrewTone, ValidationBand};
@@ -310,17 +310,24 @@ fn left(task: &Task) -> bool {
         .is_some_and(|r| r.value == NOT_OBSERVED)
 }
 
-/// When Herdr last saw this session's pane stopped (`done` or `idle`), by its
-/// newest runtime among the tasks joined to it; `None` while it reads working,
-/// or when no runtime is known, so transcript recency decides as usual.
-fn stopped(key: &SessionKey, tasks: &[Task]) -> Option<DateTime<Utc>> {
+/// What Herdr last saw of this session's pane, by its newest runtime among
+/// the tasks joined to it, at every level of the crew: a primary worker, a
+/// secondmate, or a secondmate's worker. `working` keeps the member active
+/// however quiet its transcript, `done` or `idle` settles it idle at once;
+/// `None` for any other reading, or when no runtime is known, so transcript
+/// recency decides as usual.
+fn sighting(key: &SessionKey, tasks: &[Task]) -> Option<Sighting> {
     let runtime = tasks
         .iter()
         .filter(|t| t.session.as_ref() == Some(key))
         .filter_map(|t| t.runtime.as_ref())
         .filter(|r| r.source == HERDR_PANE)
         .max_by_key(|r| r.observed_at)?;
-    matches!(runtime.value.as_str(), "done" | "idle").then_some(runtime.observed_at)
+    match runtime.value.as_str() {
+        "working" => Some(Sighting::Working(runtime.observed_at)),
+        "done" | "idle" => Some(Sighting::Stopped(runtime.observed_at)),
+        _ => None,
+    }
 }
 
 /// The adapter's source for a runtime read from a Herdr pane.
@@ -489,9 +496,9 @@ impl Fleet {
             member.retained = false;
         }
         for (key, member) in &mut self.members {
-            let stopped = stopped(key, &manifest.tasks);
-            if member.app.stopped != stopped {
-                member.app.stopped = stopped;
+            let seen = sighting(key, &manifest.tasks);
+            if member.app.seen != seen {
+                member.app.seen = seen;
                 member.app.status_tick();
             }
         }
