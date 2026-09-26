@@ -1,0 +1,25 @@
+docs/FIRSTMATE-FLEET.md
+  s_2e08a7e9fc0bdc::t_5a12bf3ccf6b69 150-152
+src/fleet/tests.rs
+  s_2e08a7e9fc0bdc::t_6ec626989af98b 899-902,909-912
+  s_2e08a7e9fc0bdc::t_5a12bf3ccf6b69 715-719,839-898,903-908,913-924
+  s_2e08a7e9fc0bdc::t_aa44db2b35b6e3 925
+src/state/session.rs
+  s_2e08a7e9fc0bdc::t_6ec626989af98b 153-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9120c0861964a5588dcf71cbdd022c0b957f2a1c",
+  "prompts": {},
+  "sessions": {
+    "s_2e08a7e9fc0bdc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0ba3e9bc-62c4-42f1-9f27-e8d5f98fc7ce",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
