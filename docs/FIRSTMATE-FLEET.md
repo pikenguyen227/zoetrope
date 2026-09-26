@@ -158,8 +158,9 @@ Each crew's lifecycle feed is already tailed through the `lifecycle` pointer.
   registration or re-register the pane to the new session under the same
   launch generation (a `session changed` diagnostic). Either way the member
   stays joined to the old, quiet transcript, and the adapter still records the
-  task's own pane's runtime for it, as it does while the join is deferred, so
-  only that runtime shows it working.
+  task's own pane's runtime for it, as it does while the join is deferred at
+  an unchanged endpoint, so only that runtime shows it working. A task whose
+  endpoint moved between snapshots gets no runtime until the move settles.
 - Native children can be collapsed. Continuation and dependency edges have explicit
   labels and distinct styles; they must not override native parentage.
 - Incrementally patch graph content. Preserve node positions and camera state;

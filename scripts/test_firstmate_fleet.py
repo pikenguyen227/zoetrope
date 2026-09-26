@@ -85,14 +85,23 @@ class AdapterTests(unittest.TestCase):
 
     def test_unstable_pane_still_reports_its_runtime_for_the_joined_session(self):
         first = self.build()
-        moved = snapshot(target="main:w2:p2")
-        changed = adapter.build_manifest(snapshot(), moved,
-                                         {"main:w2:p2": dict(pane("relaunched"), agent_status="working")},
-                                         first, observed=WHEN)
+        working = {"main:w1:p2": dict(pane("relaunched"), agent_status="working")}
+        changed = adapter.build_manifest(snapshot(gen=None), snapshot(), working, first, observed=WHEN)
         task = changed["tasks"][0]
         self.assertEqual(task["session"]["session_id"], "native-one")
         self.assertTrue(any("join deferred" in d for d in changed["diagnostics"]))
         self.assertEqual(task["runtime"]["value"], "working")
+
+    def test_moved_endpoint_never_takes_another_task_pane_runtime(self):
+        # Panes are read at the earlier snapshot's targets: after a move, the
+        # reading at the new target is whoever sat there before.
+        first = self.build()
+        vacated = {"main:w2:p2": dict(pane("other"), agent_status="working")}
+        changed = adapter.build_manifest(snapshot(), snapshot(target="main:w2:p2"), vacated,
+                                         first, observed=WHEN)
+        task = changed["tasks"][0]
+        self.assertEqual(task["session"]["session_id"], "native-one")
+        self.assertEqual(task["runtime"]["value"], "unavailable")
 
     def test_reused_task_in_another_project_is_not_a_continuation(self):
         second = snapshot("two")

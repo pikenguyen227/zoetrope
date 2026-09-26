@@ -251,7 +251,8 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
             else:
                 diagnostics.append(f"{name}: waiting for matching native session registration")
         if (task["session"] and pane.get("pane_id") and not current.get("remote")
-                and current.get("backend") == "herdr"):
+                and current.get("backend") == "herdr"
+                and (old.get("endpoint") or {}).get("target") == target):
             # The task's own pane is its runtime whatever session it registers
             # now: a pane relaunched in place still works for this task.
             task["runtime"] = observation(pane.get("agent_status"), "herdr.pane.get", when)
