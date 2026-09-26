@@ -144,10 +144,18 @@ Each crew's lifecycle feed is already tailed through the `lifecycle` pointer.
   hidden until shown, as of the playhead; archive and delete remove records,
   through the collector while it runs (see `FLEET-USAGE.md`).
 - Selecting a node opens that session's existing tool and transcript details.
-- A member's main agent reads active by transcript recency, except that its
-  task's Herdr runtime reading `done` or `idle` settles it idle at once, as of
-  that observation: anything it records later, or a playhead before it, falls
-  back to recency (`stopped` in `src/fleet/mod.rs`).
+- A member's main agent reads active by transcript recency, except where its
+  task's Herdr runtime says otherwise, at every level of the crew (primary
+  worker, secondmate, secondmate's worker). Reading `working` keeps it active
+  however quiet its transcript, through a long tool call or a transcript that
+  has gone stale, for the recency window after that observation; reading
+  `done` or `idle` settles it idle at once, until it records anything later. A
+  playhead before the observation falls back to recency (`sighting` in
+  `src/fleet/mod.rs`).
+- Herdr registers a pane's session when its agent starts, and can keep that
+  registration when the pane's agent is relaunched in place into a new session:
+  the member then reads the old, quiet transcript, and only its runtime shows
+  it working.
 - Native children can be collapsed. Continuation and dependency edges have explicit
   labels and distinct styles; they must not override native parentage.
 - Incrementally patch graph content. Preserve node positions and camera state;

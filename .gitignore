@@ -14,3 +14,9 @@ tmp-*.gif
 /TODO.md
 __pycache__/
 *.pyc
+
+# zoetrope knowledge vault: track only the compiled wiki subtree.
+_vaults/*
+!_vaults/zoetrope
+_vaults/zoetrope/*
+!_vaults/zoetrope/wiki

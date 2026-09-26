@@ -144,6 +144,18 @@ pub fn status_word(status: AgentStatus, interactive: bool) -> &'static str {
     }
 }
 
+/// What was last seen of the main agent from outside its transcript (a fleet
+/// member's Herdr pane status), and when. See
+/// [`SessionModel::recompute_liveness_seen`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sighting {
+    /// Seen at work: counts as `main` activity at that moment, so a transcript
+    /// that goes quiet (a long tool call, or a stale session) stays active.
+    Working(DateTime<Utc>),
+    /// Seen stopped: settles `main` to `Idle` at once.
+    Stopped(DateTime<Utc>),
+}
+
 /// State of a single tool call, paired from `tool_use` + later `tool_result`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolState {
@@ -724,19 +736,24 @@ impl SessionModel {
     /// Returns whether any status changed (lets callers skip graph work on the
     /// common nothing-happened tick).
     pub fn recompute_liveness(&mut self, now: Option<DateTime<Utc>>) -> bool {
-        self.recompute_liveness_stopped(now, None)
+        self.recompute_liveness_seen(now, None)
     }
 
-    /// [`recompute_liveness`](Self::recompute_liveness), given when the main
-    /// agent was last seen stopped from outside the transcript (Herdr's pane
-    /// status in a fleet). Such a sighting settles `main` to `Idle` at once
-    /// instead of after `INTERACTIVE_IDLE_SECS`, as of that moment only: before
-    /// it (`reference` scrubbed back) or once `main` records anything after it,
-    /// recency decides as without one.
-    pub fn recompute_liveness_stopped(
+    /// [`recompute_liveness`](Self::recompute_liveness), given what was last
+    /// seen of the main agent from outside the transcript (Herdr's pane status
+    /// in a fleet), as of that moment only: before it (`reference` scrubbed
+    /// back) recency decides as without one.
+    ///
+    /// - [`Sighting::Stopped`] settles `main` to `Idle` at once instead of after
+    ///   `INTERACTIVE_IDLE_SECS`, until `main` records anything after it.
+    /// - [`Sighting::Working`] counts as `main` activity at that moment, so
+    ///   `main` stays `Running` however quiet its transcript is, for
+    ///   `INTERACTIVE_IDLE_SECS` after the sighting: a pane seen working is
+    ///   working, even when the transcript it names has gone stale.
+    pub fn recompute_liveness_seen(
         &mut self,
         now: Option<DateTime<Utc>>,
-        stopped: Option<DateTime<Utc>>,
+        seen: Option<Sighting>,
     ) -> bool {
         let Some(reference) = now.or(self.last_activity) else {
             return false;
@@ -760,13 +777,20 @@ impl SessionModel {
                 // quiet and settles to Done/Idle mid-tool, then snaps back when
                 // the result lands. A reliably-terminal agent short-circuits
                 // below, so this can't revive a genuinely finished one.
-                let halted = id == MAIN_ID && stopped.is_some_and(|at| ts <= at && at <= reference);
-                let active = !halted
-                    && ((reference - ts).num_seconds() <= INTERACTIVE_IDLE_SECS
-                        || agent
-                            .tool_calls
-                            .iter()
-                            .any(|c| c.state == ToolState::Pending));
+                let recent = |at: DateTime<Utc>| {
+                    at <= reference && (reference - at).num_seconds() <= INTERACTIVE_IDLE_SECS
+                };
+                let seen = seen.filter(|_| id == MAIN_ID);
+                let halted =
+                    matches!(seen, Some(Sighting::Stopped(at)) if ts <= at && at <= reference);
+                let working = matches!(seen, Some(Sighting::Working(at)) if recent(at));
+                let active = working
+                    || (!halted
+                        && ((reference - ts).num_seconds() <= INTERACTIVE_IDLE_SECS
+                            || agent
+                                .tool_calls
+                                .iter()
+                                .any(|c| c.state == ToolState::Pending)));
                 let next = if agent.is_interactive() {
                     if active {
                         AgentStatus::Running

@@ -709,3 +709,131 @@ fn a_member_herdr_saw_stop_reads_idle_at_once() {
     fleet.update(herdr(None, now)).unwrap();
     assert_eq!(worker(&fleet), (AgentStatus::Running, true));
 }
+
+#[test]
+fn a_member_herdr_sees_working_reads_active_however_quiet_its_transcript() {
+    // Reproduction: a secondmate's worker relaunched in its Herdr pane runs in
+    // a new transcript while Herdr still registers the pane's first session,
+    // so the one it is joined to has been quiet for hours; a long tool call
+    // leaves even the right transcript quiet past the recency window. Herdr
+    // reads the pane working either way, and so must its card, at every level
+    // of the crew: a primary worker, a secondmate and the secondmate's worker.
+    let now = Utc::now();
+    let quiet = now - chrono::Duration::seconds(600);
+    let task = |id: &str, spawn: &str, runtime: Option<Observation>| Task {
+        id: id.into(),
+        spawn_gen: spawn.into(),
+        label: id.into(),
+        project: None,
+        session: Some(key(id)),
+        state: Observation {
+            value: "working".into(),
+            source: "status-log".into(),
+            observed_at: quiet,
+        },
+        runtime,
+        depends_on: vec![],
+    };
+    let herdr = |value: &str, at: DateTime<Utc>| {
+        Some(Observation {
+            value: value.into(),
+            source: HERDR_PANE.into(),
+            observed_at: at,
+        })
+    };
+    let members = ["worker", "mate", "crew"];
+    // Every member's pane as Herdr last read it, or no runtime at all.
+    let crew = |value: Option<&str>, at: DateTime<Utc>| {
+        let mut manifest = manifest();
+        for id in ["mate", "crew"] {
+            manifest.sessions.push(SessionSpec {
+                key: key(id),
+                label: id.into(),
+                file: None,
+                runtime: None,
+                herdr: None,
+            });
+        }
+        manifest.links.push(Link {
+            id: "own".into(),
+            from: key("mate"),
+            to: key("crew"),
+            kind: Relation::Delegates,
+            evidence: "secondmate mate's own task".into(),
+            observed_at: quiet,
+        });
+        // The worker's earlier launch, joined to the same session and left
+        // behind by the relaunch: not Herdr's reading, so it never counts.
+        let mut earlier = task(
+            "crew",
+            "0",
+            Some(Observation {
+                value: "not observed".into(),
+                source: "firstmate.snapshot".into(),
+                observed_at: at,
+            }),
+        );
+        earlier.state.observed_at = quiet - chrono::Duration::seconds(600);
+        manifest.tasks.push(earlier);
+        for id in members {
+            manifest
+                .tasks
+                .push(task(id, "1", value.and_then(|v| herdr(v, at))));
+        }
+        manifest
+    };
+    let status = |fleet: &Fleet, id: &str| {
+        let node = key(id).node_id(MAIN_ID);
+        fleet.overview.session.agent(&node).unwrap().status
+    };
+    let mut fleet = Fleet::new(crew(None, now)).unwrap();
+    for id in members {
+        fleet.event(&key(id), live(id, quiet, vec![FactKind::Activity], "main"));
+    }
+    fleet.sync();
+    for id in members {
+        assert_eq!(
+            status(&fleet, id),
+            AgentStatus::Idle,
+            "{id}: no runtime, quiet past the window: idle"
+        );
+    }
+    fleet.update(crew(Some("working"), now)).unwrap();
+    for id in members {
+        assert_eq!(
+            status(&fleet, id),
+            AgentStatus::Running,
+            "{id}: Herdr reads its pane working: active however quiet"
+        );
+    }
+    let crew_edge = fleet
+        .overview
+        .flow
+        .edges()
+        .iter()
+        .find(|e| e.target == key("crew").node_id(MAIN_ID))
+        .unwrap();
+    assert!(
+        crew_edge.animated,
+        "the secondmate's working worker animates"
+    );
+    // PR 23's settle still holds: Herdr seeing the pane stop idles it at once.
+    fleet.update(crew(Some("done"), now)).unwrap();
+    for id in members {
+        assert_eq!(
+            status(&fleet, id),
+            AgentStatus::Idle,
+            "{id}: Herdr read done"
+        );
+    }
+    // A working reading is evidence for the window after it, as a transcript
+    // line is: a collector that stopped observing does not pin a card active.
+    fleet.update(crew(Some("working"), quiet)).unwrap();
+    for id in members {
+        assert_eq!(
+            status(&fleet, id),
+            AgentStatus::Idle,
+            "{id}: Herdr last read working past the window: recency decides"
+        );
+    }
+}
