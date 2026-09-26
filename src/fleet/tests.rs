@@ -841,8 +841,9 @@ fn a_member_herdr_sees_working_reads_active_however_quiet_its_transcript() {
 fn a_member_herdr_sees_working_through_a_long_tool_call_in_an_unjoined_transcript() {
     // The reported case: a secondmate's worker 18m40s into a turn, inside a
     // shell command already running past 30s. The command's tool call is in
-    // the pane's relaunched transcript, which the collector has not joined;
-    // the joined one ended its last call long before the recency window.
+    // the pane's relaunched transcript, which the collector has not joined, so
+    // it never reaches the viewer; the joined one ended its last call long
+    // before the recency window. Only Herdr's runtime shows the member working.
     let now = Utc::now();
     let turn = now - chrono::Duration::seconds(18 * 60 + 40);
     let crew = |runtime: Option<&str>| {
@@ -899,16 +900,6 @@ fn a_member_herdr_sees_working_through_a_long_tool_call_in_an_unjoined_transcrip
     fleet.event(
         &key("crew"),
         live("crew", turn, call("read").to_vec(), "main"),
-    );
-    let command = FactKind::ToolStart {
-        call: "command".into(),
-        name: "Bash".into(),
-        summary: None,
-    };
-    let running = now - chrono::Duration::seconds(31);
-    fleet.event(
-        &key("relaunch"),
-        live("relaunch", running, vec![command], "main"),
     );
     fleet.sync();
     assert_eq!(
