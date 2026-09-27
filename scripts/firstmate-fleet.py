@@ -334,7 +334,8 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
     # A secondmate's own crew hangs under it: its home records the assignment.
     # Ownership precedes session registration. Link attempts so either end
     # can be a waiting card, then resolve to its native session in the viewer.
-    # The current secondmate attempt carries its crew along after relaunch.
+    # Each secondmate attempt keeps its own link and observation time, so a
+    # relaunched secondmate carries its crew along without rewriting history.
     mates = {t["id"]: t for t in after["tasks"]}
     for current in rows(after):
         mate = current.get("mate")
@@ -345,13 +346,11 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
         worker = {"task": current["id"], "spawn_gen": current.get("spawn_gen") or "unresolved"}
         if worker == delegator:
             continue
-        link_id = json.dumps(["delegates", mate, current["id"], worker["spawn_gen"]])
-        known = links.get(link_id) or {}
-        if known.get("from") != delegator or known.get("to") != worker:
-            links[link_id] = {"id": link_id, "from": delegator, "to": worker, "kind": "delegates",
-                              "evidence": f"Firstmate task {current['id']} is secondmate {mate}'s own, "
-                                          f"in its home {after['crews'][mate]['fm_home']}",
-                              "observed_at": when}
+        link_id = json.dumps(["delegates", mate, delegator["spawn_gen"], current["id"], worker["spawn_gen"]])
+        links.setdefault(link_id, {"id": link_id, "from": delegator, "to": worker, "kind": "delegates",
+                                   "evidence": f"Firstmate task {current['id']} is secondmate {mate}'s own, "
+                                               f"in its home {after['crews'][mate]['fm_home']}",
+                                   "observed_at": when})
     # A provisional unresolved attempt disappears once its generation is
     # known. Its edges must disappear too; historical real attempts remain.
     links = {ident: link for ident, link in links.items()

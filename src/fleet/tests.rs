@@ -1078,3 +1078,83 @@ fn attempt_links_validate_membership_and_respect_observation_time() {
             .any(|e| e.label.as_deref() == Some("delegates"))
     );
 }
+
+#[test]
+fn replay_draws_the_delegator_observed_by_the_playhead() {
+    // A session-endpoint link from before attempt endpoints, the same
+    // assignment re-recorded between attempts, then a relaunched secondmate.
+    let manifest = Manifest::parse(
+        &serde_json::json!({
+            "schema": SCHEMA, "fleet_id": "history", "label": "History",
+            "observed_at": "2026-09-22T00:08:00Z",
+            "sessions": [
+                {"key": {"provider": "codex", "session_id": "mate-1"}, "label": "Mate"},
+                {"key": {"provider": "codex", "session_id": "mate-2"}, "label": "Mate"},
+                {"key": {"provider": "codex", "session_id": "worker"}, "label": "Worker"}
+            ],
+            "tasks": [
+                {"id": "mate", "spawn_gen": "1", "label": "Mate",
+                 "session": {"provider": "codex", "session_id": "mate-1"},
+                 "state": {"value": "working", "source": "snapshot", "observed_at": "2026-09-22T00:00:00Z"}},
+                {"id": "mate", "spawn_gen": "2", "label": "Mate",
+                 "session": {"provider": "codex", "session_id": "mate-2"},
+                 "state": {"value": "working", "source": "snapshot", "observed_at": "2026-09-22T00:08:00Z"}},
+                {"id": "worker", "spawn_gen": "1", "label": "Worker",
+                 "session": {"provider": "codex", "session_id": "worker"},
+                 "state": {"value": "working", "source": "snapshot", "observed_at": "2026-09-22T00:00:00Z"}}
+            ],
+            "links": [
+                {"id": "legacy", "kind": "delegates",
+                 "from": {"provider": "codex", "session_id": "mate-1"},
+                 "to": {"provider": "codex", "session_id": "worker"},
+                 "evidence": "worker listed in mate's home", "observed_at": "2026-09-22T00:00:00Z"},
+                {"id": "first", "kind": "delegates",
+                 "from": {"task": "mate", "spawn_gen": "1"}, "to": {"task": "worker", "spawn_gen": "1"},
+                 "evidence": "worker listed in mate's home", "observed_at": "2026-09-22T00:05:00Z"},
+                {"id": "relaunch", "kind": "delegates",
+                 "from": {"task": "mate", "spawn_gen": "2"}, "to": {"task": "worker", "spawn_gen": "1"},
+                 "evidence": "worker listed in mate's home", "observed_at": "2026-09-22T00:08:00Z"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut fleet = Fleet::new(manifest).unwrap();
+    for id in ["mate-1", "mate-2", "worker"] {
+        fleet.event(&key(id), activity(id));
+    }
+    fleet.event(
+        &key("mate-2"),
+        live(
+            "mate-2",
+            "2026-09-22T00:10:00Z".parse().unwrap(),
+            vec![FactKind::Activity],
+            MAIN_ID,
+        ),
+    );
+    fleet.sync();
+    let worker = key("worker").node_id(MAIN_ID);
+    let delegators = |fleet: &Fleet| -> Vec<String> {
+        fleet
+            .overview
+            .flow
+            .edges()
+            .iter()
+            .filter(|e| e.target == worker)
+            .map(|e| e.source.clone())
+            .collect()
+    };
+    for (t, mate) in [
+        ("2026-09-22T00:03:00Z", "mate-1"),
+        ("2026-09-22T00:06:00Z", "mate-1"),
+        ("2026-09-22T00:09:00Z", "mate-2"),
+    ] {
+        fleet.seek(t.parse().unwrap());
+        fleet.sync();
+        assert!(fleet.at().is_some());
+        assert_eq!(delegators(&fleet), [key(mate).node_id(MAIN_ID)], "at {t}");
+    }
+    fleet.go_live();
+    fleet.sync();
+    assert_eq!(delegators(&fleet), [key("mate-2").node_id(MAIN_ID)]);
+}

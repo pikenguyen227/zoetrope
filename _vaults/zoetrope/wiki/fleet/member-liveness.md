@@ -48,10 +48,11 @@ session. The collector records `delegates` between `(task, spawn_gen)` attempts;
 the viewer accepts both these and older session endpoints
 (`scripts/firstmate-fleet.py:334`, `src/fleet/mod.rs:140`). It resolves endpoints
 to visible waiting or session cards, and gives unbound direct reports a home
-root membership edge (`src/fleet/mod.rs:922`, `src/fleet/mod.rs:957`). A session
-join changes the displayed endpoint without changing the assignment; missing
+root membership edge (`src/fleet/mod.rs:922`, `src/fleet/mod.rs:971`). A member
+draws only the delegator latest observed by the playhead, so each secondmate
+attempt keeps its own link and time (`src/fleet/mod.rs:939`). A session join changes the displayed endpoint without changing the assignment; missing
 provisional generations and their edges are replaced together
-(`scripts/firstmate-fleet.py:355`, `scripts/test_firstmate_fleet.py:653`).
+(`scripts/firstmate-fleet.py:354`, `scripts/test_firstmate_fleet.py:653`).
 
 A card awaiting a session or transcript uses its own pane's runtime with the
 same working window; done/idle settles idle, and replay never borrows today's

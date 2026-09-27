@@ -929,17 +929,35 @@ impl Fleet {
             }
             endpoint.node_id(&joins)
         };
-        let links: Vec<_> = self
+        let resolved: Vec<_> = self
             .manifest
             .links
             .iter()
             .filter(|link| at.is_none_or(|at| link.observed_at <= at))
-            .filter_map(|link| {
-                let from = endpoint_node(&link.from);
-                let to = endpoint_node(&link.to);
-                (from != to && projection.agent(&from).is_some() && projection.agent(&to).is_some())
-                    .then_some((link, from, to))
+            .map(|link| (link, endpoint_node(&link.from), endpoint_node(&link.to)))
+            .collect();
+        // A member has one delegator at a time: the latest observed by the
+        // playhead. Earlier assignments stay as history for earlier replay.
+        let mut delegator = BTreeMap::new();
+        for (index, (link, _, to)) in resolved.iter().enumerate() {
+            if link.kind == Relation::Delegates {
+                let latest = delegator
+                    .entry(to.as_str())
+                    .or_insert((link.observed_at, index));
+                *latest = (*latest).max((link.observed_at, index));
+            }
+        }
+        let current: BTreeSet<_> = delegator.into_values().map(|(_, index)| index).collect();
+        let links: Vec<_> = resolved
+            .into_iter()
+            .enumerate()
+            .filter(|(index, (link, from, to))| {
+                (link.kind != Relation::Delegates || current.contains(index))
+                    && from != to
+                    && projection.agent(from).is_some()
+                    && projection.agent(to).is_some()
             })
+            .map(|(_, link)| link)
             .collect();
         edges.extend(
             links

@@ -736,13 +736,36 @@ class MateCrewTests(unittest.TestCase):
         self.assertIn("Captain pane w26:p2 is task acceptance-docs-typo's pane, not a Captain; "
                       "showing the last Captain registered", manifest["diagnostics"])
 
+    def later(self, gen="s1790290557.20516.10209", at="2026-09-23T00:00:00Z"):
+        primary, mate = mate_homes(gen)
+        primary["generated"] = at
+        return primary, mate
+
     def test_a_relaunched_secondmate_carries_its_crew(self):
         first, _ = self.collect()
-        relaunched, _ = self.collect(first, homes=mate_homes("s1790299999.1.1"),
+        relaunched, _ = self.collect(first, homes=self.later("s1790299999.1.1"),
                                      sessions=dict(self.SESSIONS, **{"w25:p2": "sm-uiux-2"}))
-        self.assertEqual(self.delegations(relaunched), [("sm-uiux-2", "crew-typo")])
+        # The earlier assignment keeps its time; the relaunch adds its own.
+        self.assertEqual(self.delegations(relaunched), [("sm-uiux", "crew-typo"), ("sm-uiux-2", "crew-typo")])
+        self.assertEqual([l["observed_at"] for l in relaunched["links"] if l["kind"] == "delegates"],
+                         [WHEN, "2026-09-23T00:00:00Z"])
         self.assertIn(("sm-uiux", "sm-uiux-2"), [(l["from"]["session_id"], l["to"]["session_id"])
                                                  for l in relaunched["links"] if l["kind"] == "continues"])
+
+    def test_session_endpoint_delegation_keeps_its_replay_evidence(self):
+        first, _ = self.collect()
+        legacy = next(l for l in first["links"] if l["kind"] == "delegates")
+        legacy.update(id=json.dumps(["delegates", "uiux", "acceptance-docs-typo", TYPO_GEN]),
+                      observed_at="2026-09-21T00:00:00Z",
+                      **{"from": {"provider": "claude", "session_id": "sm-uiux"},
+                         "to": {"provider": "claude", "session_id": "crew-typo"}})
+        upgraded, _ = self.collect(first, homes=self.later())
+        self.assertIn(legacy, upgraded["links"])
+        attempt = next(l for l in upgraded["links"] if l["kind"] == "delegates" and l is not legacy
+                       and "task" in l["from"])
+        self.assertEqual(attempt["observed_at"], "2026-09-23T00:00:00Z")
+        again, _ = self.collect(upgraded, homes=self.later(at="2026-09-24T00:00:00Z"))
+        self.assertEqual(again["links"], upgraded["links"])
 
     def test_an_unread_crew_is_not_torn_down(self):
         manifest, snap = self.collect()

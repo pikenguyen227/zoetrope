@@ -138,8 +138,10 @@ a crew without the launch generations, endpoints, status lines and validation
 runs a join needs (`mate_homes`, `read_crews` and `rows` in
 `scripts/firstmate-fleet.py`). A crew task then joins, bridges and validates as
 a direct report does. Its home's record of it is the evidence of a `delegates`
-link from the secondmate's current attempt, keyed by the secondmate and the
-crew attempt, so a relaunched secondmate carries its crew along. Neither the
+link from the secondmate's current attempt, keyed by both attempts. A
+relaunched secondmate adds its own link and carries its crew along; earlier
+links keep their observation times, and the viewer draws only the delegator
+latest observed by the playhead, so replay never borrows a later parent. Neither the
 mate nor the worker needs a session registration or transcript for this edge.
 A provisional `unresolved` generation is replaced with its edges when the
 snapshot supplies a real launch generation. A crew that
