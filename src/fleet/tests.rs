@@ -193,8 +193,8 @@ fn resume_reuses_node_continuation_is_an_explicit_new_node() {
     });
     next.links.push(Link {
         id: "handoff".into(),
-        from: key("worker"),
-        to: key("worker-next"),
+        from: key("worker").into(),
+        to: key("worker-next").into(),
         kind: Relation::Continues,
         evidence: "explicit handoff fixture".into(),
         observed_at: next.observed_at,
@@ -755,8 +755,8 @@ fn a_member_herdr_sees_working_reads_active_however_quiet_its_transcript() {
         }
         manifest.links.push(Link {
             id: "own".into(),
-            from: key("mate"),
-            to: key("crew"),
+            from: key("mate").into(),
+            to: key("crew").into(),
             kind: Relation::Delegates,
             evidence: "secondmate mate's own task".into(),
             observed_at: quiet,
@@ -859,8 +859,8 @@ fn a_member_herdr_sees_working_through_a_long_tool_call_in_an_unjoined_transcrip
         }
         manifest.links.push(Link {
             id: "own".into(),
-            from: key("mate"),
-            to: key("crew"),
+            from: key("mate").into(),
+            to: key("crew").into(),
             kind: Relation::Delegates,
             evidence: "secondmate mate's own task".into(),
             observed_at: turn,
@@ -912,5 +912,169 @@ fn a_member_herdr_sees_working_through_a_long_tool_call_in_an_unjoined_transcrip
         crew_card(&fleet),
         (AgentStatus::Running, true),
         "Herdr reads the pane working mid-command: active"
+    );
+}
+
+#[test]
+fn waiting_crew_keeps_ownership_through_session_binding() {
+    // Both ends start without sessions, just as hookless workers do. The
+    // primary's direct report still belongs to the fleet root.
+    let initial = serde_json::json!({
+        "schema": SCHEMA, "fleet_id": "waiting", "label": "Waiting crew",
+        "observed_at": "2026-09-27T06:00:00Z", "sessions": [],
+        "tasks": [
+            {"id": "mate", "spawn_gen": "1", "label": "Mate",
+             "state": {"value": "working", "source": "snapshot", "observed_at": "2026-09-27T06:00:00Z"}},
+            {"id": "worker", "spawn_gen": "1", "label": "Worker",
+             "state": {"value": "working", "source": "snapshot", "observed_at": "2026-09-27T06:00:00Z"},
+             "runtime": {"value": "working", "source": HERDR_PANE, "observed_at": "2026-09-27T06:00:00Z"}}
+        ],
+        "links": [{"id": "own", "kind": "delegates",
+            "from": {"task": "mate", "spawn_gen": "1"},
+            "to": {"task": "worker", "spawn_gen": "1"},
+            "evidence": "worker listed in mate's snapshot", "observed_at": "2026-09-27T06:00:00Z"}]
+    });
+    for provider in ["claude", "codex"] {
+        let mut manifest = Manifest::parse(&initial.to_string()).unwrap();
+        let mut fleet = Fleet::new(manifest.clone()).unwrap();
+        let now = manifest.observed_at + chrono::Duration::seconds(5);
+        let placeholder = |task: &str| {
+            attempt_node_id(&Attempt {
+                task: task.into(),
+                spawn_gen: "1".into(),
+            })
+        };
+        let mut parent = placeholder("mate");
+        let mut child = placeholder("worker");
+        for stage in 0..3 {
+            if stage > 0 {
+                let index = stage - 1;
+                let id = if index == 0 { "mate" } else { "worker" };
+                let key = SessionKey {
+                    provider: provider.into(),
+                    session_id: id.into(),
+                };
+                manifest.tasks[index].session = Some(key.clone());
+                manifest.sessions.push(SessionSpec {
+                    key: key.clone(),
+                    label: id.into(),
+                    file: None,
+                    runtime: None,
+                    herdr: None,
+                });
+                if index == 0 {
+                    parent = key.node_id(MAIN_ID);
+                } else {
+                    child = key.node_id(MAIN_ID);
+                }
+                fleet.update(manifest.clone()).unwrap();
+            }
+            fleet.sync_as_of(now);
+            let edges = fleet.overview.flow.edges();
+            assert!(
+                edges
+                    .iter()
+                    .any(|e| e.source == FLEET_ROOT && e.target == parent)
+            );
+            assert_eq!(edges.iter().filter(|e| e.target == child).count(), 1);
+            assert!(edges.iter().any(|e| e.source == parent
+                && e.target == child
+                && e.label.as_deref() == Some("delegates")));
+            assert_eq!(fleet.overview.flow.nodes().count(), 3);
+            assert_eq!(
+                fleet.overview.session.agent(&child).unwrap().status,
+                AgentStatus::Running
+            );
+            fleet.sync_as_of(now + chrono::Duration::seconds(121));
+            assert_eq!(
+                fleet.overview.session.agent(&child).unwrap().status,
+                AgentStatus::Idle
+            );
+            for value in ["done", "idle"] {
+                let mut stopped = manifest.clone();
+                stopped.tasks[1].runtime.as_mut().unwrap().value = value.into();
+                fleet.update(stopped).unwrap();
+                fleet.sync_as_of(now);
+                assert_eq!(
+                    fleet.overview.session.agent(&child).unwrap().status,
+                    AgentStatus::Idle
+                );
+            }
+            fleet.update(manifest.clone()).unwrap();
+        }
+        // Removing a shown parent gives the worker a root membership edge;
+        // showing it again restores exactly one delegation.
+        manifest.tasks[0].runtime = Some(Observation {
+            value: NOT_OBSERVED.into(),
+            source: HERDR_PANE.into(),
+            observed_at: now,
+        });
+        fleet.update(manifest).unwrap();
+        assert!(
+            fleet
+                .overview
+                .flow
+                .edges()
+                .iter()
+                .any(|e| e.source == FLEET_ROOT && e.target == child)
+        );
+        fleet.toggle_finished();
+        assert_eq!(
+            fleet
+                .overview
+                .flow
+                .edges()
+                .iter()
+                .filter(|e| e.target == child)
+                .count(),
+            1
+        );
+        assert!(
+            fleet
+                .overview
+                .flow
+                .edges()
+                .iter()
+                .any(|e| e.source == parent && e.target == child)
+        );
+    }
+}
+
+#[test]
+fn attempt_links_validate_membership_and_respect_observation_time() {
+    let mut invalid = manifest();
+    invalid.links[0].to = LinkEndpoint::Attempt(Attempt {
+        task: "missing".into(),
+        spawn_gen: "1".into(),
+    });
+    assert!(invalid.validate().unwrap_err().contains("unregistered"));
+    let mut fleet = Fleet::new(manifest()).unwrap();
+    for id in ["captain", "worker"] {
+        fleet.event(&key(id), activity(id));
+    }
+    // A relationship observed after this transcript's playhead is not past evidence.
+    let mut future = manifest();
+    future.links[0].observed_at += chrono::Duration::days(1);
+    fleet.update(future).unwrap();
+    fleet.event(
+        &key("captain"),
+        live(
+            "captain",
+            "2026-09-22T00:10:00Z".parse().unwrap(),
+            vec![FactKind::Activity],
+            MAIN_ID,
+        ),
+    );
+    fleet.sync();
+    fleet.seek("2026-09-22T00:00:01Z".parse().unwrap());
+    fleet.sync();
+    assert!(fleet.at().is_some());
+    assert!(
+        !fleet
+            .overview
+            .flow
+            .edges()
+            .iter()
+            .any(|e| e.label.as_deref() == Some("delegates"))
     );
 }

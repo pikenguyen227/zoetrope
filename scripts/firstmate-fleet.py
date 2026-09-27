@@ -166,8 +166,8 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
     name; a Captain's and a secondmate's card, its tab's name.
 
     A secondmate's own crew (`crews`, see rows) joins as any worker does, and
-    its home's record of it is the evidence of a `delegates` link from the
-    secondmate's current session, so it hangs under that secondmate.
+    its home's record of it is the evidence of a `delegates` link between
+    launch attempts, independent of native session registration.
     """
     names = names or (lambda kind, ident: None)
     check_snapshot(before)
@@ -250,7 +250,7 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                         spec.pop("herdr", None)
             else:
                 diagnostics.append(f"{name}: waiting for matching native session registration")
-        if (task["session"] and pane.get("pane_id") and not current.get("remote")
+        if (pane.get("pane_id") and not current.get("remote")
                 and current.get("backend") == "herdr"
                 and (old.get("endpoint") or {}).get("target") == target):
             # The task's own pane is its runtime whatever session it registers
@@ -332,22 +332,31 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                     "evidence": f"Firstmate task {current['id']}: observed launch generation {last['spawn_gen']} -> {attempt['spawn_gen']}",
                     "observed_at": when})
     # A secondmate's own crew hangs under it: its home records the assignment.
-    # The link names the secondmate's current session, so a relaunched
-    # secondmate carries its crew along.
-    mates = {t["id"]: attempts.get((t["id"], t.get("spawn_gen"))) or {} for t in after["tasks"]}
+    # Ownership precedes session registration. Link attempts so either end
+    # can be a waiting card, then resolve to its native session in the viewer.
+    # The current secondmate attempt carries its crew along after relaunch.
+    mates = {t["id"]: t for t in after["tasks"]}
     for current in rows(after):
         mate = current.get("mate")
-        delegator = (mates.get(mate) or {}).get("session") if mate else None
-        worker = (attempts.get((current["id"], current.get("spawn_gen"))) or {}).get("session")
-        if not delegator or not worker or worker == delegator:
+        parent = mates.get(mate)
+        if not parent:
             continue
-        link_id = json.dumps(["delegates", mate, current["id"], current["spawn_gen"]])
+        delegator = {"task": mate, "spawn_gen": parent.get("spawn_gen") or "unresolved"}
+        worker = {"task": current["id"], "spawn_gen": current.get("spawn_gen") or "unresolved"}
+        if worker == delegator:
+            continue
+        link_id = json.dumps(["delegates", mate, current["id"], worker["spawn_gen"]])
         known = links.get(link_id) or {}
         if known.get("from") != delegator or known.get("to") != worker:
             links[link_id] = {"id": link_id, "from": delegator, "to": worker, "kind": "delegates",
                               "evidence": f"Firstmate task {current['id']} is secondmate {mate}'s own, "
                                           f"in its home {after['crews'][mate]['fm_home']}",
                               "observed_at": when}
+    # A provisional unresolved attempt disappears once its generation is
+    # known. Its edges must disappear too; historical real attempts remain.
+    links = {ident: link for ident, link in links.items()
+             if all("task" not in endpoint or (endpoint["task"], endpoint["spawn_gen"]) in attempts
+                    for endpoint in (link["from"], link["to"]))}
     return {"schema": SCHEMA, "fleet_id": fleet_id, "label": title or LABEL,
             "observed_at": when, "sessions": list(sessions.values()),
             "tasks": list(attempts.values()), "links": list(links.values()),
@@ -1766,10 +1775,14 @@ def attempt_of(event):
 def split(manifest, session, attempts):
     """A manifest without one worker, and the worker's own part of it."""
     own = lambda task: (task["id"], task["spawn_gen"]) in attempts
+    def removed_endpoint(endpoint):
+        return ((session is not None and endpoint == session)
+                or (endpoint.get("task"), endpoint.get("spawn_gen")) in attempts)
     sessions, tasks = manifest.get("sessions", []), manifest.get("tasks", [])
     kept = dict(manifest, sessions=[s for s in sessions if s.get("key") != session],
                 tasks=[t for t in tasks if not own(t)],
-                links=[l for l in manifest.get("links", []) if session not in (l.get("from"), l.get("to"))])
+                links=[l for l in manifest.get("links", [])
+                       if not any(removed_endpoint(l[end]) for end in ("from", "to"))])
     removed = dict(manifest, sessions=[s for s in sessions if session and s.get("key") == session],
                    tasks=[t for t in tasks if own(t)], links=[], diagnostics=[])
     return kept, removed

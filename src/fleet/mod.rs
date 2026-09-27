@@ -130,11 +130,41 @@ impl Relation {
 #[serde(deny_unknown_fields)]
 pub struct Link {
     pub id: String,
-    pub from: SessionKey,
-    pub to: SessionKey,
+    pub from: LinkEndpoint,
+    pub to: LinkEndpoint,
     pub kind: Relation,
     pub evidence: String,
     pub observed_at: DateTime<Utc>,
+}
+
+/// Ownership is known before either agent registers a native session. Keep
+/// accepting session endpoints in older manifests and continuation links.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LinkEndpoint {
+    Session(SessionKey),
+    Attempt(Attempt),
+}
+
+impl From<SessionKey> for LinkEndpoint {
+    fn from(key: SessionKey) -> Self {
+        Self::Session(key)
+    }
+}
+
+fn attempt_node_id(attempt: &Attempt) -> String {
+    serde_json::to_string(&("task", &attempt.task, &attempt.spawn_gen)).unwrap()
+}
+
+impl LinkEndpoint {
+    fn node_id(&self, joins: &BTreeMap<Attempt, SessionKey>) -> String {
+        match self {
+            Self::Session(key) => key.node_id(MAIN_ID),
+            Self::Attempt(attempt) => joins
+                .get(attempt)
+                .map_or_else(|| attempt_node_id(attempt), |key| key.node_id(MAIN_ID)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,9 +240,15 @@ impl Manifest {
             if !links.insert(&link.id) || link.from == link.to {
                 return Err("duplicate link ID or self-link".into());
             }
-            if !keys.contains(&link.from) || !keys.contains(&link.to) {
+            let registered = |endpoint: &LinkEndpoint| match endpoint {
+                LinkEndpoint::Session(key) => keys.contains(key),
+                LinkEndpoint::Attempt(attempt) => {
+                    attempts.contains(&(&attempt.task, &attempt.spawn_gen))
+                }
+            };
+            if !registered(&link.from) || !registered(&link.to) {
                 return Err(format!(
-                    "link {} refers to an unregistered session",
+                    "link {} refers to an unregistered session or attempt",
                     link.id
                 ));
             }
@@ -323,6 +359,13 @@ fn sighting(key: &SessionKey, tasks: &[Task]) -> Option<Sighting> {
         .filter_map(|t| t.runtime.as_ref())
         .filter(|r| r.source == HERDR_PANE)
         .max_by_key(|r| r.observed_at)?;
+    runtime_sighting(runtime)
+}
+
+fn runtime_sighting(runtime: &Observation) -> Option<Sighting> {
+    if runtime.source != HERDR_PANE {
+        return None;
+    }
     match runtime.value.as_str() {
         "working" => Some(Sighting::Working(runtime.observed_at)),
         "done" | "idle" => Some(Sighting::Stopped(runtime.observed_at)),
@@ -703,7 +746,14 @@ impl Fleet {
                     agent.description = Some(detail.join("\n"));
                     if !member.loaded || member.error.is_some() {
                         // This is a display placeholder, not an Ended fact.
-                        agent.status = AgentStatus::Idle;
+                        agent.status = if at.is_none()
+                            && sighting(key, &self.manifest.tasks)
+                                .is_some_and(|seen| seen.working_at(clock))
+                        {
+                            AgentStatus::Running
+                        } else {
+                            AgentStatus::Idle
+                        };
                     }
                     let joined = joins.iter().filter(|(_, k)| *k == key).map(|(a, _)| a);
                     if let Some(band) =
@@ -776,7 +826,7 @@ impl Fleet {
                 .collect()
         };
         for (attempt, label, detail) in unbound {
-            let id = serde_json::to_string(&("task", &attempt.task, &attempt.spawn_gen)).unwrap();
+            let id = attempt_node_id(&attempt);
             if card_finished(&attempt, at, &crew, &self.manifest.tasks) {
                 done.insert(id.clone());
                 if !self.show_finished {
@@ -786,7 +836,22 @@ impl Fleet {
             self.cards.insert(id.clone(), attempt.clone());
             let mut agent = AgentInfo::new(AgentKind::Main);
             agent.agent_type = Some(label);
-            agent.status = AgentStatus::Idle;
+            let seen = at
+                .is_none()
+                .then(|| {
+                    self.manifest
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == attempt.task && t.spawn_gen == attempt.spawn_gen)
+                        .and_then(|t| t.runtime.as_ref())
+                        .and_then(runtime_sighting)
+                })
+                .flatten();
+            agent.status = if seen.is_some_and(|seen| seen.working_at(clock)) {
+                AgentStatus::Running
+            } else {
+                AgentStatus::Idle
+            };
             agent.description = Some(detail);
             if let Some(state) = crew.get(&attempt) {
                 marks.insert(id.clone(), crew_mark(state, covered));
@@ -854,11 +919,32 @@ impl Fleet {
                 edges.insert(format!("e-{id}"));
             }
         }
+        let endpoint_node = |endpoint: &LinkEndpoint| {
+            // During replay, a not-yet-bound attempt is still a waiting
+            // card even if today's manifest already knows its session.
+            if let LinkEndpoint::Attempt(attempt) = endpoint
+                && self.cards.contains_key(&attempt_node_id(attempt))
+            {
+                return attempt_node_id(attempt);
+            }
+            endpoint.node_id(&joins)
+        };
+        let links: Vec<_> = self
+            .manifest
+            .links
+            .iter()
+            .filter(|link| at.is_none_or(|at| link.observed_at <= at))
+            .filter_map(|link| {
+                let from = endpoint_node(&link.from);
+                let to = endpoint_node(&link.to);
+                (from != to && projection.agent(&from).is_some() && projection.agent(&to).is_some())
+                    .then_some((link, from, to))
+            })
+            .collect();
         edges.extend(
-            self.manifest
-                .links
+            links
                 .iter()
-                .map(|l| format!("fleet-link:{}", l.id)),
+                .map(|(link, _, _)| format!("fleet-link:{}", link.id)),
         );
         // A delegated member hangs off its delegator instead of the root,
         // while that delegator is shown. A dependency or a continuation is
@@ -867,19 +953,14 @@ impl Fleet {
         let member_edges: BTreeMap<_, _> = self
             .members
             .keys()
-            .filter(|key| {
-                !self.manifest.links.iter().any(|l| {
-                    &l.to == *key
-                        && l.kind == Relation::Delegates
-                        && projection.agent(&l.from.node_id(MAIN_ID)).is_some()
-                })
+            .map(|key| key.node_id(MAIN_ID))
+            .chain(self.cards.keys().cloned())
+            .filter(|id| {
+                !links
+                    .iter()
+                    .any(|(link, _, to)| to == id && link.kind == Relation::Delegates)
             })
-            .map(|key| {
-                (
-                    format!("member:{}", key.node_id(MAIN_ID)),
-                    key.node_id(MAIN_ID),
-                )
-            })
+            .map(|id| (format!("member:{id}"), id))
             .collect();
         edges.extend(member_edges.keys().cloned());
         self.overview.flow.retain_edges(|e| {
@@ -936,11 +1017,9 @@ impl Fleet {
                     .set_node_position(id, ((index % 3) as f64 * 68.0, (index / 3) as f64 * 25.0));
             }
         }
-        for link in &self.manifest.links {
+        for (link, from, to) in links {
             let id = format!("fleet-link:{}", link.id);
             // Reconcile endpoints as well as label; unchanged edges stay put.
-            let from = link.from.node_id(MAIN_ID);
-            let to = link.to.node_id(MAIN_ID);
             let same = self.overview.flow.edges().iter().any(|e| {
                 e.id == id
                     && e.source == from

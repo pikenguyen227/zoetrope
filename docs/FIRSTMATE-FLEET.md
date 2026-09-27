@@ -85,6 +85,14 @@ Relationships have an ID, type, endpoints, evidence source and observation time:
 - `continues`: an explicitly recorded new session taking over the same work.
 - `depends_on`: a task prerequisite, separate from parentage.
 
+Link endpoints accept either a native session (`provider`, `session_id`) or a
+launch attempt (`task`, `spawn_gen`). Delegation uses attempts: the snapshot
+already establishes ownership before either endpoint has a registered session.
+The viewer resolves an attempt to its session card when joined, otherwise to
+its waiting card. A primary worker without a known session has a `member` edge
+from the home root, just like a joined primary worker; it does not imply an
+unverified Captain assignment. Older session-based links remain readable.
+
 Do not infer these from timestamps, working directories or similar titles (the
 on-demand pipeline agents below are an inference labelled as one, never an
 edge or a member). Until
@@ -130,8 +138,11 @@ a crew without the launch generations, endpoints, status lines and validation
 runs a join needs (`mate_homes`, `read_crews` and `rows` in
 `scripts/firstmate-fleet.py`). A crew task then joins, bridges and validates as
 a direct report does. Its home's record of it is the evidence of a `delegates`
-link from the secondmate's current session, keyed by the secondmate and the
-crew attempt, so a relaunched secondmate carries its crew along. A crew that
+link from the secondmate's current attempt, keyed by the secondmate and the
+crew attempt, so a relaunched secondmate carries its crew along. Neither the
+mate nor the worker needs a session registration or transcript for this edge.
+A provisional `unresolved` generation is replaced with its edges when the
+snapshot supplies a real launch generation. A crew that
 cannot be read is a diagnostic for that poll: it keeps its members and tears
 down none of its attempts, since an unread home proves no worker left. A remote
 secondmate's crew is not read, and neither is a secondmate's own secondmates'.
@@ -161,6 +172,10 @@ Each crew's lifecycle feed is already tailed through the `lifecycle` pointer.
   task's own pane's runtime for it, as it does while the join is deferred at
   an unchanged endpoint, so only that runtime shows it working. A task whose
   endpoint moved between snapshots gets no runtime until the move settles.
+- A waiting session or transcript card also reads `working` from its own pane,
+  with the same 120-second recency window, and settles idle on `done` or `idle`.
+  A missing native session remains explicitly unknown; ownership and pane
+  activity require no Codex hook, but do not fabricate a session registration.
 - Native children can be collapsed. Continuation and dependency edges have explicit
   labels and distinct styles; they must not override native parentage.
 - Incrementally patch graph content. Preserve node positions and camera state;

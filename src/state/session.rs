@@ -157,6 +157,15 @@ pub enum Sighting {
     Stopped(DateTime<Utc>),
 }
 
+impl Sighting {
+    /// A pane observation can keep a waiting fleet card active even before
+    /// a transcript exists. Use the same window as transcript-backed main.
+    pub(crate) fn working_at(self, reference: DateTime<Utc>) -> bool {
+        matches!(self, Self::Working(at)
+            if at <= reference && (reference - at).num_seconds() <= INTERACTIVE_IDLE_SECS)
+    }
+}
+
 /// State of a single tool call, paired from `tool_use` + later `tool_result`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolState {
@@ -778,13 +787,10 @@ impl SessionModel {
                 // quiet and settles to Done/Idle mid-tool, then snaps back when
                 // the result lands. A reliably-terminal agent short-circuits
                 // below, so this can't revive a genuinely finished one.
-                let recent = |at: DateTime<Utc>| {
-                    at <= reference && (reference - at).num_seconds() <= INTERACTIVE_IDLE_SECS
-                };
                 let seen = seen.filter(|_| id == MAIN_ID);
                 let halted =
                     matches!(seen, Some(Sighting::Stopped(at)) if ts <= at && at <= reference);
-                let working = matches!(seen, Some(Sighting::Working(at)) if recent(at));
+                let working = seen.is_some_and(|seen| seen.working_at(reference));
                 let active = working
                     || (!halted
                         && ((reference - ts).num_seconds() <= INTERACTIVE_IDLE_SECS
