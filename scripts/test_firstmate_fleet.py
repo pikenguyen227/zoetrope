@@ -641,8 +641,61 @@ class MateCrewTests(unittest.TestCase):
             return adapter.collect(Path(primary["fm_home"]), "herdr", previous, captain)
 
     def delegations(self, manifest):
-        return [(l["from"]["session_id"], l["to"]["session_id"]) for l in manifest["links"]
+        def session(endpoint):
+            if "session_id" in endpoint:
+                return endpoint["session_id"]
+            task = next(t for t in manifest["tasks"]
+                        if (t["id"], t["spawn_gen"]) == (endpoint["task"], endpoint["spawn_gen"]))
+            return (task["session"] or {}).get("session_id")
+        return [(session(l["from"]), session(l["to"])) for l in manifest["links"]
                 if l["kind"] == "delegates"]
+
+    def test_secondmate_ownership_does_not_wait_for_either_session(self):
+        for harness in ("claude", "codex"):
+            for generation in (TYPO_GEN, None):
+                with self.subTest(harness=harness, generation=generation):
+                    primary, mate = mate_homes()
+                    mate["tasks"][0].update(harness=harness, spawn_gen=generation)
+                    primary["crews"] = {"uiux": mate}
+                    panes = {"default:w26:p2": {"pane_id": "w26:p2", "agent_status": "working"}}
+                    manifest = adapter.build_manifest(primary, primary, panes)
+                    self.assertTrue(all(t["session"] is None for t in manifest["tasks"]))
+                    self.assertEqual(len(manifest["links"]), 1)
+                    link = manifest["links"][0]
+                    self.assertEqual(link["from"], {"task": "uiux", "spawn_gen": primary["tasks"][0]["spawn_gen"]})
+                    self.assertEqual(link["to"], {"task": "acceptance-docs-typo", "spawn_gen": generation or "unresolved"})
+                    self.assertEqual(link["kind"], "delegates")
+                    self.assertIn(UIUX_HOME, link["evidence"])
+                    worker = manifest["tasks"][1]
+                    self.assertEqual(worker["runtime"]["value"], "working")
+                    # Learning a native identity changes the join, never ownership.
+                    panes["default:w26:p2"]["agent_session"] = {
+                        "agent": harness, "kind": "id", "value": "registered-later"}
+                    joined = adapter.build_manifest(primary, primary, panes, manifest)
+                    self.assertEqual(joined["links"], manifest["links"])
+
+    def test_provisional_ownership_is_replaced_when_generations_arrive(self):
+        primary, mate = mate_homes(mate_gen=None)
+        mate["tasks"][0]["spawn_gen"] = None
+        primary["crews"] = {"uiux": mate}
+        provisional = adapter.build_manifest(primary, primary, {})
+        self.assertEqual(provisional["links"][0]["from"]["spawn_gen"], "unresolved")
+        self.assertEqual(provisional["links"][0]["to"]["spawn_gen"], "unresolved")
+        primary, mate = mate_homes()
+        primary["crews"] = {"uiux": mate}
+        known = adapter.build_manifest(primary, primary, {}, provisional)
+        self.assertEqual(len(known["links"]), 1)
+        self.assertEqual(known["links"][0]["to"]["spawn_gen"], TYPO_GEN)
+        self.assertTrue(all(t["spawn_gen"] != "unresolved" for t in known["tasks"]))
+
+    def test_removing_a_waiting_worker_removes_its_attempt_links(self):
+        primary, mate = mate_homes()
+        primary["crews"] = {"uiux": mate}
+        manifest = adapter.build_manifest(primary, primary, {})
+        kept, removed = adapter.split(manifest, None, {("acceptance-docs-typo", TYPO_GEN)})
+        self.assertEqual([t["id"] for t in kept["tasks"]], ["uiux"])
+        self.assertEqual([t["id"] for t in removed["tasks"]], ["acceptance-docs-typo"])
+        self.assertEqual(kept["links"], [])
 
     def test_a_secondmates_own_worker_hangs_under_it(self):
         manifest, snap = self.collect()
@@ -683,13 +736,36 @@ class MateCrewTests(unittest.TestCase):
         self.assertIn("Captain pane w26:p2 is task acceptance-docs-typo's pane, not a Captain; "
                       "showing the last Captain registered", manifest["diagnostics"])
 
+    def later(self, gen="s1790290557.20516.10209", at="2026-09-23T00:00:00Z"):
+        primary, mate = mate_homes(gen)
+        primary["generated"] = at
+        return primary, mate
+
     def test_a_relaunched_secondmate_carries_its_crew(self):
         first, _ = self.collect()
-        relaunched, _ = self.collect(first, homes=mate_homes("s1790299999.1.1"),
+        relaunched, _ = self.collect(first, homes=self.later("s1790299999.1.1"),
                                      sessions=dict(self.SESSIONS, **{"w25:p2": "sm-uiux-2"}))
-        self.assertEqual(self.delegations(relaunched), [("sm-uiux-2", "crew-typo")])
+        # The earlier assignment keeps its time; the relaunch adds its own.
+        self.assertEqual(self.delegations(relaunched), [("sm-uiux", "crew-typo"), ("sm-uiux-2", "crew-typo")])
+        self.assertEqual([l["observed_at"] for l in relaunched["links"] if l["kind"] == "delegates"],
+                         [WHEN, "2026-09-23T00:00:00Z"])
         self.assertIn(("sm-uiux", "sm-uiux-2"), [(l["from"]["session_id"], l["to"]["session_id"])
                                                  for l in relaunched["links"] if l["kind"] == "continues"])
+
+    def test_session_endpoint_delegation_keeps_its_replay_evidence(self):
+        first, _ = self.collect()
+        legacy = next(l for l in first["links"] if l["kind"] == "delegates")
+        legacy.update(id=json.dumps(["delegates", "uiux", "acceptance-docs-typo", TYPO_GEN]),
+                      observed_at="2026-09-21T00:00:00Z",
+                      **{"from": {"provider": "claude", "session_id": "sm-uiux"},
+                         "to": {"provider": "claude", "session_id": "crew-typo"}})
+        upgraded, _ = self.collect(first, homes=self.later())
+        self.assertIn(legacy, upgraded["links"])
+        attempt = next(l for l in upgraded["links"] if l["kind"] == "delegates" and l is not legacy
+                       and "task" in l["from"])
+        self.assertEqual(attempt["observed_at"], "2026-09-23T00:00:00Z")
+        again, _ = self.collect(upgraded, homes=self.later(at="2026-09-24T00:00:00Z"))
+        self.assertEqual(again["links"], upgraded["links"])
 
     def test_an_unread_crew_is_not_torn_down(self):
         manifest, snap = self.collect()
