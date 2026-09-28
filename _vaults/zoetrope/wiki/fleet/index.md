@@ -9,3 +9,5 @@ date: 2026-09-26
 - [Member liveness and Herdr runtime](member-liveness.md): how a fleet card
   decides active or idle, and why Herdr's pane status overrides a quiet or stale
   transcript.
+- [Quota sources and empty Codex buckets](quota-sources.md): why a historical
+  bucket-only record produced an extra stale footer row and where it is rejected.

@@ -398,8 +398,10 @@ Snapshots older than five minutes are labeled stale. A passed reset time means
 “refresh pending”, not an assumed full allowance. Missing windows show `—`.
 These current account snapshots stay separate from session replay.
 
-Codex supplies rate-limit snapshots in its `token_count` records. Claude supplies
-them through its documented [status-line JSON](https://code.claude.com/docs/en/statusline),
+Codex supplies rate-limit snapshots in its `token_count` records. Bucket/credits-only
+records without a complete quota window do not create or replace a snapshot;
+distinct buckets with reported windows remain separate, including stale ones.
+Claude supplies them through its documented [status-line JSON](https://code.claude.com/docs/en/statusline),
 which normally appears after the first API response on a supported subscription.
 The optional `scripts/claude-telemetry.py` launcher adds a status-line bridge while
 preserving existing status-line output and explicit `--settings` overlays:

@@ -243,25 +243,34 @@ impl Stream {
                         if let Some(rate) = rate_limits
                             && let Some(ts) = line.timestamp
                         {
-                            out.push(Fact {
-                                agent: None,
-                                ts: None,
-                                kind: FactKind::Quota(crate::usage::Quota {
-                                    bucket: rate.limit_id.clone().unwrap_or_else(|| "codex".into()),
-                                    observed_at: ts,
-                                    windows: [&rate.primary, &rate.secondary]
-                                        .into_iter()
-                                        .flatten()
-                                        .filter_map(|w| {
-                                            Some(crate::usage::Window {
-                                                minutes: w.window_minutes?,
-                                                used_percent: w.used_percent?,
-                                                resets_at: w.resets_at,
-                                            })
-                                        })
-                                        .collect(),
-                                }),
-                            });
+                            let windows: Vec<_> = [&rate.primary, &rate.secondary]
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|w| {
+                                    Some(crate::usage::Window {
+                                        minutes: w.window_minutes?,
+                                        used_percent: w.used_percent?,
+                                        resets_at: w.resets_at,
+                                    })
+                                })
+                                .collect();
+                            // Codex also emits bucket/credits-only records. They
+                            // report no quota, and must not create a persistent
+                            // empty bucket or replace an actual observation.
+                            if !windows.is_empty() {
+                                out.push(Fact {
+                                    agent: None,
+                                    ts: None,
+                                    kind: FactKind::Quota(crate::usage::Quota {
+                                        bucket: rate
+                                            .limit_id
+                                            .clone()
+                                            .unwrap_or_else(|| "codex".into()),
+                                        observed_at: ts,
+                                        windows,
+                                    }),
+                                });
+                            }
                         }
                         if let Some(info) = info {
                             let usage = if let Some(total) = &info.total_token_usage {
@@ -578,16 +587,68 @@ mod usage_tests {
     use super::*;
     #[test]
     fn incomplete_quota_fields_do_not_discard_token_records() {
+        for rate in [
+            serde_json::json!({"limit_id": "premium", "primary": null, "secondary": null}),
+            serde_json::json!({"limit_id": "other-bucket"}),
+            serde_json::json!({"primary": {"used_percent": null, "window_minutes": null}}),
+            serde_json::json!({"primary": {"used_percent": 25}}),
+            serde_json::json!({"secondary": {"window_minutes": 300}}),
+        ] {
+            let mut stream = Stream::new();
+            stream
+                .push(r#"{"type":"session_meta","payload":{"id":"root","source":"cli"}}"#)
+                .unwrap();
+            let statement = stream
+                .push(
+                    &serde_json::json!({
+                        "timestamp": "2026-09-22T01:00:00Z",
+                        "type": "event_msg",
+                        "payload": {"type": "token_count", "info": {
+                            "total_token_usage": {"input_tokens": 100, "output_tokens": 20}
+                        }, "rate_limits": rate}
+                    })
+                    .to_string(),
+                )
+                .unwrap();
+            assert!(
+                statement
+                    .facts
+                    .iter()
+                    .any(|f| matches!(&f.kind, FactKind::Usage(u) if u.tokens.total() == 120))
+            );
+            assert!(
+                !statement
+                    .facts
+                    .iter()
+                    .any(|f| matches!(&f.kind, FactKind::Quota(_)))
+            );
+        }
+    }
+
+    #[test]
+    fn empty_quota_record_does_not_replace_a_reported_window() {
         let mut stream = Stream::new();
         stream
             .push(r#"{"type":"session_meta","payload":{"id":"root","source":"cli"}}"#)
             .unwrap();
-        let statement=stream.push(r#"{"timestamp":"2026-09-22T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":20}},"rate_limits":{"primary":{"used_percent":null,"window_minutes":null}}}}"#).unwrap();
-        assert!(
-            statement
-                .facts
-                .iter()
-                .any(|f| matches!(&f.kind, FactKind::Usage(u) if u.tokens.total()==120))
+        let mut info = crate::state::SessionInfo::default();
+        for line in [
+            r#"{"timestamp":"2026-09-22T01:00:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":25,"window_minutes":300},"secondary":{"used_percent":null}}}}"#,
+            r#"{"timestamp":"2026-09-28T01:00:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":null,"secondary":null}}}"#,
+        ] {
+            for fact in stream.push(line).unwrap().take_session_meta() {
+                info.apply(&fact);
+            }
+        }
+        assert_eq!(info.quotas.len(), 1);
+        let quota = &info.quotas["codex"];
+        assert_eq!(quota.windows.len(), 1);
+        assert_eq!(quota.windows[0].used_percent, 25.0);
+        assert_eq!(
+            quota.observed_at,
+            "2026-09-22T01:00:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
         );
     }
 
