@@ -1097,6 +1097,63 @@ mod tests {
     }
 
     #[test]
+    fn empty_codex_bucket_does_not_survive_replay_as_a_stale_quota_row() {
+        let fixture = Fixture::new();
+        let manifest = fixture.manifest();
+        let old = &manifest.sessions[0];
+        let live = &manifest.sessions[1];
+        // Reduced from the reported September 22 record: a bucket ID and
+        // credits metadata, but no actual rate-limit windows.
+        let empty = r#"{"timestamp":"2026-09-22T11:18:30.262Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"premium","primary":null,"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"}}}}"#;
+        let current = r#"{"timestamp":"2026-09-28T08:16:30.262Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","primary":{"used_percent":43,"window_minutes":10080,"resets_at":null},"secondary":null}}}"#;
+        let append = |spec: &SessionSpec, line: &str| {
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(spec.file.as_ref().unwrap())
+                    .unwrap(),
+                "{line}"
+            )
+            .unwrap();
+        };
+        append(old, empty);
+        append(live, current);
+        let replay = || {
+            let mut fleet = Fleet::new(manifest.clone()).unwrap();
+            for spec in &manifest.sessions {
+                let session = resolve(spec).unwrap();
+                let (items, info, _) = crate::tailer::replay::build_replay(&session);
+                fleet.event(
+                    &spec.key,
+                    UiEvent::ReplayLoaded {
+                        session_id: session.id,
+                        items,
+                        info,
+                        speed: 1.0,
+                    },
+                );
+            }
+            fleet
+        };
+        let now = "2026-09-28T08:16:30.262Z".parse().unwrap();
+        assert_eq!(
+            quota_lines(&replay(), now),
+            [" codex shared · 5h — · week 57% left · 0m ago"]
+        );
+
+        // Disproof control: premium is not an alias or a forbidden name.
+        // If it reports a real window, it must remain a distinct quota row.
+        append(old, &current.replace("codex", "premium"));
+        assert_eq!(
+            quota_lines(&replay(), now),
+            [
+                " codex shared · 5h — · week 57% left · 0m ago",
+                " codex/premium shared · 5h — · week 57% left · 0m ago",
+            ]
+        );
+    }
+
+    #[test]
     fn limits_are_shared_not_summed_and_snapshots_require_exact_session() {
         let fixture = Fixture::new();
         let mut fleet = Fleet::new(fixture.manifest()).unwrap();
