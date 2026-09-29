@@ -1,0 +1,21 @@
+_vaults/zoetrope/wiki/fleet/journal-retention.md
+  s_b498d40782c82f::t_3731bb80a71c56 29
+docs/FLEET-USAGE.md
+  s_b498d40782c82f::t_7515a7637512ad 258-259
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "8f05cdd4e666104f64cc181d79410f27c465f7aa",
+  "prompts": {},
+  "sessions": {
+    "s_b498d40782c82f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "89f7e68c-3b8d-48d3-bd04-f428e16c9b4b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
