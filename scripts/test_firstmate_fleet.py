@@ -4,10 +4,13 @@ import importlib.util
 import itertools
 import json
 import os
+import signal
+import subprocess
 import sys
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -1626,6 +1629,76 @@ class SlowRefreshTests(unittest.TestCase):
         self.assertEqual(result, "fresh snapshot")
         self.assertEqual(calls, ["started"])
         self.assertGreaterEqual(len(beats), 3)
+
+    def test_an_interrupted_refresh_stops_only_its_observations_at_once(self):
+        bystander = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(bystander.wait)
+        self.addCleanup(bystander.kill)
+        results = []
+
+        def slow():
+            results.append(adapter.run_text(["sh", "-c", "sleep 30 & wait"]))
+
+        def interrupt():
+            if adapter.OBSERVATIONS:
+                raise KeyboardInterrupt
+
+        began = time.monotonic()
+        with self.assertRaises(KeyboardInterrupt):
+            adapter.while_refreshing(slow, interrupt, interval=0.01)
+        self.assertLess(time.monotonic() - began, 5)
+        self.assertEqual(results[0][0], -signal.SIGKILL)
+        self.assertIsNone(bystander.poll())
+        # The next refresh observes again.
+        self.assertEqual(adapter.run_text(["true"])[0], 0)
+
+    def test_a_failed_refresh_keeps_the_coverage_it_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            writer = FeedWriter(root / "lifecycle")
+            output = root / "fleet.json"
+            clock = [B + 200]
+            rounds = iter([B + 200, None, B + 600])
+
+            def collect(home, herdr, previous, captain):
+                try:
+                    at = next(rounds)
+                except StopIteration:
+                    raise KeyboardInterrupt
+                if at is None:
+                    raise RuntimeError("observation timed out: slow snapshot")
+                clock[0] = at
+                writer.advance(at)
+                snap = fm_snapshot(at, [])
+                snap["lifecycle"] = writer.pointer()
+                return adapter.build_manifest(snap, snap, {}, previous,
+                                              observed=adapter.iso(at)), snap
+
+            count = [0]
+
+            def waiting(operation, heartbeat):
+                count[0] += 1
+                if count[0] == 2:
+                    clock[0] = B + 220  # Before a checkpoint: read, but no segment yet.
+                    heartbeat()
+                return operation()
+
+            ticks = itertools.count(step=10)
+            arguments = ["firstmate-fleet.py", "--home", str(root), "--output", str(output),
+                         "--watch", "--interval", "1"]
+            with mock.patch("sys.argv", arguments), \
+                    mock.patch.dict(os.environ, {"HERDR_ENV": "1"}), \
+                    mock.patch.object(adapter, "collect", collect), \
+                    mock.patch.object(adapter, "while_refreshing", waiting), \
+                    mock.patch.object(adapter.time, "time", lambda: clock[0]), \
+                    mock.patch.object(adapter.time, "monotonic", lambda: next(ticks)):
+                self.assertEqual(adapter.main(), 0)
+            windows = sorted((e["coverage"]["from"], e["coverage"]["to"])
+                             for e in events(adapter.journal_records(output), "coverage")
+                             if e["source"]["kind"] == "firstmate")
+            self.assertIn(adapter.iso(B + 220), {to for _, to in windows})
+            for (_, before), (after, _) in zip(windows, windows[1:]):
+                self.assertLessEqual(before, after)
 
     def test_late_failed_and_recovered_refresh_only_extends_read_feed(self):
         with tempfile.TemporaryDirectory() as tmp:

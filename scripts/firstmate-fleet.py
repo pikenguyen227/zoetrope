@@ -37,6 +37,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 SCHEMA = "zoetrope.fleet.v1"
@@ -423,13 +424,23 @@ def retire(attempts, sessions, links, unread, when,
         sessions.pop(ident, None)
 
 
+OBSERVING = threading.Lock()
+OBSERVATIONS = set()  # This collector's running observation commands.
+STOPPING = threading.Event()
+
+
 def run_text(argv, env=None, timeout=45, cwd=None):
     """(exit status, stdout, stderr) of one observation command.
 
     All arguments are separate argv entries. Stop only this observation's
     process group on timeout, including any shell children it started."""
-    with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          text=True, env=env, cwd=cwd, start_new_session=True) as process:
+    with OBSERVING:
+        if STOPPING.is_set():
+            raise TimeoutError(f"observation stopped: {argv[0]}")
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, env=env, cwd=cwd, start_new_session=True)
+        OBSERVATIONS.add(process)
+    with process:
         try:
             out, err = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -440,7 +451,20 @@ def run_text(argv, env=None, timeout=45, cwd=None):
                 os.killpg(process.pid, signal.SIGKILL)
                 process.communicate()
             raise TimeoutError(f"observation timed out: {argv[0]}")
+        finally:
+            with OBSERVING:
+                OBSERVATIONS.discard(process)
         return process.returncode, out, err
+
+
+def stop_observations():
+    """Kill every running observation's process group and refuse new ones
+    until STOPPING is cleared."""
+    with OBSERVING:
+        STOPPING.set()
+        for process in OBSERVATIONS:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
 
 
 def run_json(argv, env=None, timeout=45):
@@ -1667,11 +1691,18 @@ def while_refreshing(operation, heartbeat, interval=5):
     Only the snapshot/pane join runs in the worker. The calling thread still
     owns the journal and feed cursors; no refresh overlaps the next one.
     """
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(operation)
-        while not wait([future], timeout=interval).done:
-            heartbeat()
-        return future.result()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(operation)
+            try:
+                while not wait([future], timeout=interval).done:
+                    heartbeat()
+            except BaseException:
+                stop_observations()
+                raise
+            return future.result()
+    finally:
+        STOPPING.clear()
 
 
 def read_feeds(snapshot, feeds, bridge=None, at=None):
@@ -2133,8 +2164,12 @@ def main():
                 last_snapshot = snapshot
             except (OSError, RuntimeError, ValueError, KeyError) as error:
                 if bridge:
+                    journaled = not feeds.dirty
                     try:
-                        append_journal(output, bridge.close() + feeds.close() + validation.close())
+                        append_journal(output, bridge.close()
+                                       + (feeds.close() if journaled else []) + validation.close())
+                        if journaled:
+                            feeds.save()
                     except OSError:
                         pass
                 bridge = feeds = validation = None
