@@ -255,10 +255,8 @@ scrubber either way. At the live edge, a worker finishing re-arranges the
 crew once; scrubbing never does.
 
 The journal needs no trimming by hand: the collector drops superseded manifest
-checkpoints from it, keeping every lifecycle record. It checks when it starts
-and after every poll, and compacts once the journal is past 16 MiB and twice
-what its last compaction left; at start nothing is left yet, so it compacts
-then only when the journal is past 16 MiB (see `FIRSTMATE-FLEET.md`, "Retention").
+checkpoints from it on its own, keeping every lifecycle record (when and how:
+`FIRSTMATE-FLEET.md`, "Retention").
 
 Archive and delete remove records rather than hiding them, from the adapter's
 state directory only: the manifest `fleet.json` and its journal

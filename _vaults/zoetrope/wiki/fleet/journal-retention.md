@@ -26,7 +26,7 @@ unchanged.
 
 `retain` (`:1892`) checks when the collector starts (`:2196`) and after every
 poll (`:2258`), and runs it once the journal is past `COMPACT_BYTES` (16 MiB,
-`:60`) and twice what the last compaction left, so rewrite cost stays
+`:64`) and twice what the last compaction left, so rewrite cost stays
 proportional to what was appended. The startup check passes `compacted = 0`
 (nothing left yet), so at start it compacts only past 16 MiB. The rewrite goes
 through `write_atomic` (`:1840`): temp file beside the journal, fsync, rename,
