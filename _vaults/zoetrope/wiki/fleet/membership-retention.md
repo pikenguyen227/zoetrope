@@ -46,5 +46,5 @@ state, with the standing Captain first. It then drops dangling tasks, sessions
 and links, and adds a first diagnostic that the header shows. `validate` still
 refuses an over-limit manifest by itself (`src/fleet/tests.rs:1217`).
 
-The journal (`fleet.events.jsonl`) has no retention. It grows without bound
-(139 MB on 2026-09-29). UNVERIFIED whether that slows `recover`.
+The journal (`fleet.events.jsonl`) grew to 139 MB by 2026-09-29; its retention
+is in [Journal retention](journal-retention.md).
