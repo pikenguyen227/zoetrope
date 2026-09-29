@@ -264,10 +264,11 @@ lines are the timeline's history and the collector's restart state (`Bridge`
 and `Validation` recover from them), so compaction keeps them byte for byte and
 in order, with any line the adapter does not know, and removes no event.
 
-- **When.** The collector compacts when it starts and after any poll once the
-  journal is past 16 MiB (`COMPACT_BYTES`) and twice the size its last
-  compaction left (`retain`), so each rewrite costs in proportion to what was
-  appended since. A journal with nothing superseded is not rewritten.
+- **When.** The collector checks when it starts and after every poll, and
+  compacts once the journal is past 16 MiB (`COMPACT_BYTES`) and twice the size
+  its last compaction left (`retain`), so each rewrite costs in proportion to
+  what was appended since. A startup check counts as nothing left yet, so it
+  compacts at start only when the journal is past 16 MiB. A journal with nothing superseded is not rewritten.
 - **Crash-safe.** `compact_journal` writes the kept lines to a temporary file
   beside the journal, syncs it and renames it over the journal, under the
   collector's lock: a crash leaves the old journal or the new one, never a torn
