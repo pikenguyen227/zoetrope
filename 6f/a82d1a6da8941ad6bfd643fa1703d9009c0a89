@@ -1,0 +1,31 @@
+scripts/test_firstmate_fleet.py
+  s_7bb6b7914afe88::t_18b4010c299030 1407-1542
+_vaults/zoetrope/wiki/fleet/index.md
+  s_7bb6b7914afe88::t_18b4010c299030 17-18
+src/fleet/journal.rs
+  s_7bb6b7914afe88::t_18b4010c299030 1133-1147,1167,1188-1190,1193,1195-1196,1205,2233-2260
+docs/FIRSTMATE-FLEET.md
+  s_7bb6b7914afe88::t_18b4010c299030 237-265
+_vaults/zoetrope/wiki/fleet/journal-retention.md
+  s_7bb6b7914afe88::t_18b4010c299030 1-44
+docs/FLEET-USAGE.md
+  s_7bb6b7914afe88::t_18b4010c299030 257-260,263
+scripts/firstmate-fleet.py
+  s_7bb6b7914afe88::t_18b4010c299030 13-15,59-60,1701-1721,1727-1728,1736,1738,1787-1843,2130,2173
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6fa82d1a6da8941ad6bfd643fa1703d9009c0a89",
+  "prompts": {},
+  "sessions": {
+    "s_7bb6b7914afe88": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1b6bf885-4dbf-4276-957d-9b92861d3e97",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
