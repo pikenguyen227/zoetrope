@@ -1,0 +1,21 @@
+_vaults/zoetrope/wiki/fleet/journal-retention.md
+  s_8677d488463a8b::t_70d16a52096d43 31-33
+docs/FIRSTMATE-FLEET.md
+  s_8677d488463a8b::t_c34336e44ee51b 232-233
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2d6e46e46636550b383a66e0111f64b4c5256d04",
+  "prompts": {},
+  "sessions": {
+    "s_8677d488463a8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "76d33a3e-603c-4033-9938-aaf9056b5139",
+        "model": "unknown"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
