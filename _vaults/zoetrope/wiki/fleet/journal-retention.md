@@ -8,28 +8,28 @@ date: 2026-09-29
 
 `fleet.events.jsonl` held two kinds of line, and only one of them is history.
 A manifest checkpoint repeats the whole manifest each time it changes
-(`publish`, `scripts/firstmate-fleet.py:1844`), so on a real fleet checkpoints were
+(`publish`, `scripts/firstmate-fleet.py:1910`), so on a real fleet checkpoints were
 127 of 139 MB after a week, about 64 KB each, while every lifecycle line
 together was 9 MB. Yet only the newest checkpoint is ever read: `recover` takes
-the newest recoverable one (`scripts/firstmate-fleet.py:1722`), and the viewer
+the newest recoverable one (`scripts/firstmate-fleet.py:1788`), and the viewer
 parses checkpoints as `Ok(None)` and skips them (`src/fleet/journal.rs:566`).
 Lifecycle lines are the timeline's history and the collector's restart state
-(`Bridge.recover` and `Validation.recover`, `scripts/firstmate-fleet.py:650`
-and `:1482`).
+(`Bridge.recover` and `Validation.recover`, `scripts/firstmate-fleet.py:678`
+and `:1514`).
 
 So retention is compaction, not rotation or an age cut: `compact_journal`
-(`scripts/firstmate-fleet.py:1787`) keeps every lifecycle line and every line it
+(`scripts/firstmate-fleet.py:1853`) keeps every lifecycle line and every line it
 does not know, byte for byte and in order, and of the checkpoints only the one
-`recover` would pick (`recoverable`, `:1701`, shared with `recover`). On a copy
+`recover` would pick (`recoverable`, `:1767`, shared with `recover`). On a copy
 of the live journal this took 139 MB to 9 MB in under a second, with `recover`
 unchanged.
 
-`retain` (`:1826`) checks when the collector starts (`:2130`) and after every
-poll (`:2173`), and runs it once the journal is past `COMPACT_BYTES` (16 MiB,
+`retain` (`:1892`) checks when the collector starts (`:2196`) and after every
+poll (`:2258`), and runs it once the journal is past `COMPACT_BYTES` (16 MiB,
 `:60`) and twice what the last compaction left, so rewrite cost stays
 proportional to what was appended. The startup check passes `compacted = 0`
 (nothing left yet), so at start it compacts only past 16 MiB. The rewrite goes
-through `write_atomic` (`:1774`): temp file beside the journal, fsync, rename,
+through `write_atomic` (`:1840`): temp file beside the journal, fsync, rename,
 under the collector's lock.
 
 ## The viewer across a rewrite
