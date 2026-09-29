@@ -14,3 +14,5 @@ date: 2026-09-26
 - [Membership retention and the viewer's limits](membership-retention.md): why
   the Team tab hit the 128-session limit, how finished members age out, and how
   the viewer shows the most recent past the limits.
+- [Journal retention](journal-retention.md): why the journal is compacted
+  rather than rotated, what stays, and how the viewer follows the rewrite.

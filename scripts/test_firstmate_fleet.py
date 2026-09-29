@@ -1404,6 +1404,142 @@ if not runs:
 
 
 
+class RetentionTests(unittest.TestCase):
+    """The collector compacts its journal: superseded checkpoints go, every
+    lifecycle line stays, and what recovers from it does not change."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.state = Path(self.directory.name)
+        self.output = self.state / "fleet.json"
+        self.journal = self.output.with_suffix(".events.jsonl")
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def grow(self, polls, start=B):
+        """A collector's journal over `polls` polls ten seconds apart. The
+        task's state flips every poll, so each one writes a checkpoint."""
+        bridge = adapter.Bridge(FLEET, f"run-{start}")
+        bridge.recover(adapter.journal_records(self.output))
+        previous = adapter.recover(self.output)
+        for i in range(polls):
+            now = start + 10 * i
+            row = fm_task("t", f"s{B}.1.1", now, [(now - 1, "working", f"step {i}")])
+            row["current_state"]["state"] = ("working", "idle")[i % 2]
+            lines, manifest = observe(bridge, now, [row], {"crew:w1:t": pane()}, previous)
+            adapter.publish(self.output, manifest, previous, lines)
+            previous = manifest
+        adapter.append_journal(self.output, bridge.close())
+        return previous
+
+    def lines(self):
+        return self.journal.read_text().splitlines(keepends=True)
+
+    def checkpoints(self):
+        return [r for r in adapter.journal_records(self.output) if adapter.is_checkpoint(r)]
+
+    def resumed(self):
+        """What a restarted collector's bridge knows."""
+        bridge = adapter.Bridge(FLEET, "run-resumed")
+        bridge.recover(adapter.journal_records(self.output))
+        return bridge.attempts, bridge.reach.__dict__
+
+    def test_compaction_keeps_every_lifecycle_line_and_the_newest_checkpoint(self):
+        older = self.grow(1)
+        legacy = json.dumps({"schema": adapter.LEGACY_JOURNAL, "manifest": older}) + "\n"
+        self.journal.write_text(legacy + self.journal.read_text())
+        latest = self.grow(12, start=B + 100)
+        with self.journal.open("a") as stream:
+            stream.write("not json\n[]\n")
+            stream.write(json.dumps({"schema": adapter.JOURNAL, "kind": "manifest",
+                                     "manifest": dict(latest, observed_at="invalid")}) + "\n")
+            stream.write('{"interrupted":')
+        # The viewer's manifest is gone: the journal's checkpoint is all there is.
+        self.output.unlink()
+        before = self.lines()
+        lifecycle = [line for line in before if '"kind": "lifecycle"' in line]
+        recovered, resumed = adapter.recover(self.output), self.resumed()
+        self.assertEqual(recovered, latest)
+        self.assertGreater(len(self.checkpoints()), 12)
+        size = adapter.compact_journal(self.output)
+        after = self.lines()
+        self.assertEqual(size, self.journal.stat().st_size)
+        self.assertLess(size, sum(map(len, before)))
+        # Byte for byte and in order: the viewer reads nothing else.
+        self.assertEqual([line for line in after if '"kind": "lifecycle"' in line], lifecycle)
+        self.assertEqual([r["manifest"] for r in self.checkpoints()], [latest])
+        self.assertIn("not json\n", after)
+        self.assertIn("[]\n", after)
+        self.assertTrue(after[-1].endswith("\n"))
+        self.assertEqual(adapter.recover(self.output), recovered)
+        self.assertEqual(self.resumed(), resumed)
+        self.assertEqual(sorted(p.name for p in self.state.iterdir()), ["fleet.events.jsonl"])
+        self.assertEqual(self.journal.stat().st_mode & 0o777, 0o600)
+
+    def test_a_journal_with_nothing_superseded_is_left_alone(self):
+        self.grow(1)
+        identity = self.journal.stat().st_ino
+        self.assertEqual(adapter.compact_journal(self.output), self.journal.stat().st_size)
+        self.assertEqual(self.journal.stat().st_ino, identity)
+
+    def test_a_failed_rewrite_leaves_the_journal_whole(self):
+        self.grow(4)
+        before = self.journal.read_bytes()
+        with mock.patch.object(adapter.os, "replace", side_effect=OSError(errno.ENOSPC, "full")):
+            # It waits for the journal to double again rather than retry every poll.
+            self.assertEqual(self.retain_small(0), len(before))
+        self.assertEqual(self.journal.read_bytes(), before)
+        self.assertEqual(sorted(p.name for p in self.state.iterdir()),
+                         ["fleet.events.jsonl", "fleet.json"])
+
+    def retain_small(self, compacted):
+        with mock.patch.object(adapter, "COMPACT_BYTES", 1):
+            return adapter.retain(self.output, compacted)
+
+    def test_it_compacts_past_the_floor_and_again_once_the_journal_doubles(self):
+        self.assertEqual(self.retain_small(0), 0)  # No journal yet.
+        self.grow(2)
+        size = self.journal.stat().st_size
+        self.assertEqual(adapter.retain(self.output, 0), 0)  # Under COMPACT_BYTES.
+        compacted = self.retain_small(0)
+        self.assertEqual(len(self.checkpoints()), 1)
+        self.assertLess(compacted, size)
+        self.grow(1, start=B + 100)
+        self.assertLessEqual(self.journal.stat().st_size, 2 * compacted)
+        self.assertEqual(self.retain_small(compacted), compacted)
+        self.assertEqual(len(self.checkpoints()), 2)
+        self.grow(6, start=B + 200)
+        compacted = self.retain_small(compacted)
+        self.assertEqual(compacted, self.journal.stat().st_size)
+        self.assertEqual(len(self.checkpoints()), 1)
+
+    def test_the_collector_compacts_when_it_starts(self):
+        latest = self.grow(12)
+        lifecycle = [line for line in self.lines() if '"kind": "lifecycle"' in line]
+        home = self.state / "home"
+        home.mkdir()
+
+        def collect(home, herdr, previous, captain):
+            # The collector recovered the newest checkpoint.
+            self.assertEqual(previous, latest)
+            now = B + 500
+            snap = fm_snapshot(now, [fm_task("t", f"s{B}.1.1", now)])
+            return adapter.build_manifest(snap, snap, {"crew:w1:t": pane()}, previous,
+                                          observed=adapter.iso(now)), snap
+
+        arguments = ["firstmate-fleet.py", "--home", str(home), "--output", str(self.output)]
+        with mock.patch("sys.argv", arguments), mock.patch.dict(os.environ, {"HERDR_ENV": "1"}), \
+                mock.patch.object(adapter, "collect", collect), \
+                mock.patch.object(adapter, "COMPACT_BYTES", 1):
+            self.assertEqual(adapter.main(), 0)
+        after = [line for line in self.lines() if '"kind": "lifecycle"' in line]
+        self.assertEqual(after[:len(lifecycle)], lifecycle)
+        # The checkpoint it started from, and the one its poll wrote.
+        self.assertEqual([r["manifest"]["observed_at"] for r in self.checkpoints()],
+                         [latest["observed_at"], adapter.iso(B + 500)])
+
+
 # The feed fixture (assets/fleet/feed): Firstmate writes its fm-lifecycle.v1
 # feed while two adapter runs, with a gap between them, tail it and bridge the
 # same home. `impl` spawned before the feed began and was backfilled; `tests`

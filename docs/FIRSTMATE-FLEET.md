@@ -234,6 +234,35 @@ items, torn_down after), then source order.
 `observed` (when an observer noticed), `backfill`, or `unknown` (no `at`; never
 placed on the timeline).
 
+### Retention
+
+The journal is compacted, never rotated or aged out. The rule: **every
+lifecycle line stays; of the manifest checkpoints, only the newest stays.**
+A checkpoint repeats the whole manifest whenever it changes, so checkpoints are
+nearly all of the file (127 of 139 MB in a week of a real fleet, lifecycle 9 MB),
+yet only the newest is ever read: `recover` in `scripts/firstmate-fleet.py`
+takes the newest to restart from, and the viewer skips them all. Lifecycle
+lines are the timeline's history and the collector's restart state (`Bridge`
+and `Validation` recover from them), so compaction keeps them byte for byte and
+in order, with any line the adapter does not know, and removes no event.
+
+- **When.** The collector compacts when it starts and after any poll once the
+  journal is past 16 MiB (`COMPACT_BYTES`) and twice the size its last
+  compaction left (`retain`), so each rewrite costs in proportion to what was
+  appended since. A journal with nothing superseded is not rewritten.
+- **Crash-safe.** `compact_journal` writes the kept lines to a temporary file
+  beside the journal, syncs it and renames it over the journal, under the
+  collector's lock: a crash leaves the old journal or the new one, never a torn
+  one. It drops an interrupted final append, as the next append would. A
+  rewrite that fails leaves the journal as it was until it doubles again.
+- **The viewer follows.** `JournalTail` (`src/fleet/journal.rs`) opens the
+  journal afresh on every read and starts over when it is another file (its
+  device and inode), shrank, or no longer ends in a newline where it did; it
+  reads the compacted file's same lifecycle lines back, so nothing on screen
+  changes.
+- Archive, delete and the feed cursor are unaffected: compaction removes no
+  lifecycle record for them to count or for a feed to bring back.
+
 ### Firstmate's lifecycle feed
 
 Firstmate appends an `fm-lifecycle.v1` feed per home, whether or not the adapter
