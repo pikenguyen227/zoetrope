@@ -10,7 +10,9 @@ Firstmate's own fm-lifecycle.v1 feeds are the source (see Feeds); where no
 feed speaks, the adapter bridges lifecycle from successive snapshots (see
 Bridge). The no-mistakes validation run Firstmate attributes to a task is
 read through two allow-listed CLI calls and journalled as it changes (see
-Validation); the adapter never drives a run or its daemon.
+Validation); the adapter never drives a run or its daemon. The collector
+keeps the journal compact as it grows: superseded manifest checkpoints go,
+every lifecycle line stays (see retain).
 
 --archive and --delete remove records: the whole fleet, or one worker with
 --worker. Archive moves them into a backup-<time> directory beside the
@@ -58,6 +60,8 @@ RETAIN_SECONDS = 24 * 3600
 # A loaded machine has taken 25–39 s for a single snapshot, before the
 # collector's per-home reads. Leave headroom without changing short probes.
 SNAPSHOT_TIMEOUT = 120
+# A journal past this size is compacted (retain).
+COMPACT_BYTES = 16 << 20
 
 
 def now():
@@ -1760,24 +1764,34 @@ def journal_records(output):
                 yield record
 
 
+def recoverable(candidate):
+    """When a manifest was observed, if it is complete enough to recover; else None."""
+    if (not isinstance(candidate, dict) or candidate.get("schema") != SCHEMA
+            or not isinstance(candidate.get("observed_at"), str)
+            or not candidate.get("fleet_id")
+            or any(not isinstance(candidate.get(field), list)
+                   for field in ("sessions", "tasks", "links"))):
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(candidate["observed_at"].replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo is not None else None
+
+
+def is_checkpoint(record):
+    """A manifest checkpoint, from either journal version."""
+    return (record.get("schema") == LEGACY_JOURNAL
+            or (record.get("schema") == JOURNAL and record.get("kind") == "manifest"))
+
+
 def recover(output):
     latest = None
 
     def accept(candidate):
         nonlocal latest
-        if (not isinstance(candidate, dict) or candidate.get("schema") != SCHEMA
-                or not isinstance(candidate.get("observed_at"), str)
-                or not candidate.get("fleet_id")
-                or any(not isinstance(candidate.get(field), list)
-                       for field in ("sessions", "tasks", "links"))):
-            return
-        try:
-            stamp = dt.datetime.fromisoformat(candidate["observed_at"].replace("Z", "+00:00"))
-            if stamp.tzinfo is None:
-                return
-        except ValueError:
-            return
-        if latest is None or stamp >= latest[0]:
+        stamp = recoverable(candidate)
+        if stamp is not None and (latest is None or stamp >= latest[0]):
             latest = (stamp, candidate)
 
     if output.exists():
@@ -1785,10 +1799,9 @@ def recover(output):
             accept(json.loads(output.read_text()))
         except (ValueError, OSError):
             pass
-    # Replay the latest complete checkpoint, from either journal version.
+    # Replay the latest complete checkpoint.
     for record in journal_records(output):
-        if (record.get("schema") == LEGACY_JOURNAL
-                or (record.get("schema") == JOURNAL and record.get("kind") == "manifest")):
+        if is_checkpoint(record):
             accept(record.get("manifest"))
     return latest[1] if latest else None
 
@@ -1835,6 +1848,63 @@ def write_atomic(path, text):
     finally:
         if os.path.exists(name):
             os.unlink(name)
+
+
+def compact_journal(output):
+    """Rewrite the journal without its superseded manifest checkpoints: every
+    lifecycle line, and any line this adapter does not know, stays in order,
+    beside the one checkpoint recover() would pick. Nothing reads an older one:
+    recover() takes the newest and the viewer skips them all. An interrupted
+    final append goes, as append_journal would drop it. The rewrite replaces
+    the file atomically, so a crash leaves the old journal or the new one, and
+    a viewer tailing it starts over on the new file (JournalTail in
+    src/fleet/journal.rs). The caller holds the lock. Returns the journal's
+    size afterwards; it is rewritten only when that drops something."""
+    journal = output.with_suffix(".events.jsonl")
+    kept, best, dropped = [], None, 0
+    # newline="" keeps each line's bytes as written.
+    with journal.open(newline="") as stream:
+        for line in stream:
+            if not line.endswith("\n"):
+                dropped += 1  # Only the last line can lack one.
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                record = None
+            if not isinstance(record, dict) or not is_checkpoint(record):
+                kept.append(line)
+                continue
+            stamp = recoverable(record.get("manifest"))
+            if stamp is not None and (best is None or stamp >= best[0]):
+                if best is not None:
+                    kept[best[1]] = None
+                    dropped += 1
+                best = (stamp, len(kept))
+                kept.append(line)
+            else:
+                dropped += 1
+    if dropped:
+        write_atomic(journal, "".join(line for line in kept if line is not None))
+    return journal.stat().st_size
+
+
+def retain(output, compacted):
+    """Compact the journal once it is past COMPACT_BYTES and twice the size
+    the last compaction left it (`compacted`), so a rewrite's cost stays in
+    proportion to what was appended since. Returns the new `compacted`. A
+    compaction that fails leaves the journal as it was and waits for the
+    journal to double again."""
+    try:
+        size = output.with_suffix(".events.jsonl").stat().st_size
+    except FileNotFoundError:
+        return 0
+    if size <= max(COMPACT_BYTES, 2 * compacted):
+        return compacted
+    try:
+        return compact_journal(output)
+    except (OSError, ValueError):
+        return size
 
 
 def publish(output, manifest, previous, lifecycle=()):
@@ -2123,6 +2193,7 @@ def main():
     lock = take_lock(output)
     if lock is None:
         parser.error("a collector already owns this fleet; open its existing manifest")
+    compacted = retain(output, 0)
     previous = recover(output)
     bridge = feeds = validation = None
     last_snapshot = None
@@ -2184,6 +2255,7 @@ def main():
                 failed["diagnostics"] = [message] + feed_notes
                 publish(output, failed, previous)
                 previous = failed
+            compacted = retain(output, compacted)
             if args.view and viewer is None:
                 env = dict(os.environ)
                 if args.watch:

@@ -1130,6 +1130,21 @@ fn canonical(event: &LifecycleEvent) -> String {
 pub struct JournalTail {
     path: std::path::PathBuf,
     offset: u64,
+    /// The file read so far, where the platform can tell one from another.
+    identity: Option<(u64, u64)>,
+}
+
+/// Which file this is: the adapter compacts the journal by replacing it, and
+/// a replacement can be as long as the old file and end in a newline there.
+#[cfg(all(feature = "native", unix))]
+fn identity(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(all(feature = "native", not(unix)))]
+fn identity(_: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
 }
 
 /// What one [`JournalTail::poll`] found.
@@ -1149,6 +1164,7 @@ impl JournalTail {
         Self {
             path: path.into(),
             offset: 0,
+            identity: None,
         }
     }
 
@@ -1169,12 +1185,15 @@ impl JournalTail {
             }
             Err(error) => return Err(error),
         };
-        let len = file.metadata()?.len();
+        let metadata = file.metadata()?;
+        let len = metadata.len();
+        let identity = identity(&metadata);
         if self.offset > 0 {
             // Everything read so far ended on a newline; if that byte is gone
-            // or changed, this is a different file.
+            // or changed, or the file was replaced, this is a different file.
             let mut last = [0u8];
-            let same = len >= self.offset
+            let same = identity == self.identity
+                && len >= self.offset
                 && file.seek(SeekFrom::Start(self.offset - 1)).is_ok()
                 && file.read_exact(&mut last).is_ok()
                 && last[0] == b'\n';
@@ -1183,6 +1202,7 @@ impl JournalTail {
                 self.offset = 0;
             }
         }
+        self.identity = identity;
         if len <= self.offset {
             return Ok(poll);
         }
@@ -2208,6 +2228,36 @@ mod tests {
         assert_eq!(replaced.events, vec![events[2].clone()]);
         std::fs::remove_file(&path).unwrap();
         assert!(tail.poll().unwrap().reset);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The adapter compacts the journal by renaming a rewrite over it. Here
+    /// the rewrite drops a checkpoint and gains an event of the same length,
+    /// so it ends on a newline exactly where the old file did: only its
+    /// identity says it is another file.
+    #[cfg(all(feature = "native", unix))]
+    #[test]
+    fn tail_restarts_on_a_compacted_journal_of_the_same_length() {
+        let dir = std::env::temp_dir().join(format!("zoe-compacted-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fleet.events.jsonl");
+        let events = sample();
+        let (kept, appended) = (line(&events[0]), line(&events[1]));
+        let checkpoint = format!(
+            r#"{{"schema":"zoetrope.fleet.journal.v2","kind":"manifest","manifest":{{"pad":"{}"}}}}"#,
+            "x".repeat(appended.len())
+        );
+        std::fs::write(&path, format!("{checkpoint}\n{kept}\n")).unwrap();
+        let mut tail = JournalTail::new(&path);
+        assert_eq!(tail.poll().unwrap().events, vec![events[0].clone()]);
+        let rewrite = dir.join(".fleet-rewrite");
+        let padded = format!("{appended:<width$}", width = checkpoint.len());
+        std::fs::write(&rewrite, format!("{kept}\n{padded}\n")).unwrap();
+        std::fs::rename(&rewrite, &path).unwrap();
+        let replaced = tail.poll().unwrap();
+        assert!(replaced.reset);
+        assert_eq!(replaced.events, events[..2].to_vec());
+        assert_eq!(replaced.rejected, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
