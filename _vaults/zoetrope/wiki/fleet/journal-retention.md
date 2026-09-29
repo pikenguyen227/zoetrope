@@ -24,10 +24,11 @@ does not know, byte for byte and in order, and of the checkpoints only the one
 of the live journal this took 139 MB to 9 MB in under a second, with `recover`
 unchanged.
 
-`retain` (`:1768`) runs it when the collector starts (`:2072`) and after each
-poll (`:2115`) once the journal is past `COMPACT_BYTES` (16 MiB, `:56`) and
-twice what the last compaction left, so rewrite cost stays proportional to what
-was appended. The rewrite goes through `write_atomic` (`:1716`): temp file
+`retain` (`:1768`) checks when the collector starts (`:2072`) and after every
+poll (`:2115`), and runs it once the journal is past `COMPACT_BYTES` (16 MiB,
+`:56`) and twice what the last compaction left, so rewrite cost stays
+proportional to what was appended. The startup check passes `compacted = 0`
+(nothing left yet), so at start it compacts only past 16 MiB. The rewrite goes through `write_atomic` (`:1716`): temp file
 beside the journal, fsync, rename, under the collector's lock.
 
 ## The viewer across a rewrite
