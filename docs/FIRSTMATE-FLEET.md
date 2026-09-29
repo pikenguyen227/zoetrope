@@ -250,7 +250,8 @@ in order, with any line the adapter does not know, and removes no event.
   compacts once the journal is past 16 MiB (`COMPACT_BYTES`) and twice the size
   its last compaction left (`retain`), so each rewrite costs in proportion to
   what was appended since. A startup check counts as nothing left yet, so it
-  compacts at start only when the journal is past 16 MiB. A journal with nothing superseded is not rewritten.
+  compacts at start only when the journal is past 16 MiB. A journal with
+  nothing superseded is not rewritten.
 - **Crash-safe.** `compact_journal` writes the kept lines to a temporary file
   beside the journal, syncs it and renames it over the journal, under the
   collector's lock: a crash leaves the old journal or the new one, never a torn
