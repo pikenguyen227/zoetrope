@@ -17,3 +17,6 @@ date: 2026-09-26
 - [Slow refreshes and lifecycle coverage](slow-refresh.md): keeping durable-feed reads independent of slow snapshots, and distinguishing activity glyphs, ownership layout and quota age.
 - [Journal retention](journal-retention.md): why the journal is compacted
   rather than rotated, what stays, and how the viewer follows the rewrite.
+- [Fleet viewer CPU](viewer-cpu.md): which per-poll and per-frame costs
+  scale with history, and how the Codex rescan and the footer's lifecycle
+  lookup stay bounded.
