@@ -1,0 +1,19 @@
+_vaults/zoetrope/wiki/fleet/membership-retention.md
+  s_3f40a498fe2aa9::t_80208e45a87d44 49-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ce772d0c60070886500bc1f479d2f2dfe08555ec",
+  "prompts": {},
+  "sessions": {
+    "s_3f40a498fe2aa9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef594bb4-d07b-405d-a123-04e33bc11e8b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
