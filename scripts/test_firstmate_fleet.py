@@ -4,9 +4,13 @@ import importlib.util
 import itertools
 import json
 import os
+import signal
+import subprocess
 import sys
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -1589,6 +1593,195 @@ def feed_journal(directory):
     return records, writer
 
 
+class SlowRefreshTests(unittest.TestCase):
+    def test_snapshot_timeout_counterfactual(self):
+        # A real slow subprocess, with scaled deadlines so the regression
+        # need not spend 45 seconds timing out on every run.
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "bin").mkdir()
+            script = home / "bin" / "fm-fleet-snapshot.sh"
+            script.write_text("#!/bin/sh\nsleep 0.2\nprintf '%s\\n' '" +
+                              json.dumps(fm_snapshot(B, [])) + "'\n")
+            script.chmod(0o755)
+            with mock.patch.object(adapter, "SNAPSHOT_TIMEOUT", 0.02):
+                with self.assertRaisesRegex(RuntimeError, "observation timed out"):
+                    adapter.snapshot_of(home, "herdr", None)
+            with mock.patch.object(adapter, "SNAPSHOT_TIMEOUT", 5):
+                self.assertEqual(adapter.snapshot_of(home, "herdr", None)["generated_epoch"], B)
+
+    def test_one_refresh_runs_while_heartbeats_continue(self):
+        released = threading.Event()
+        calls, beats = [], []
+
+        def slow():
+            calls.append("started")
+            if not released.wait(5):
+                raise RuntimeError("heartbeat never released refresh")
+            return "fresh snapshot"
+
+        def heartbeat():
+            beats.append("read")
+            if len(beats) == 3:
+                released.set()
+
+        result = adapter.while_refreshing(slow, heartbeat, interval=0.01)
+        self.assertEqual(result, "fresh snapshot")
+        self.assertEqual(calls, ["started"])
+        self.assertGreaterEqual(len(beats), 3)
+
+    def test_an_interrupted_refresh_stops_only_its_observations_at_once(self):
+        bystander = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(bystander.wait)
+        self.addCleanup(bystander.kill)
+        results = []
+
+        def slow():
+            results.append(adapter.run_text(["sh", "-c", "sleep 30 & wait"]))
+
+        def interrupt():
+            if adapter.OBSERVATIONS:
+                raise KeyboardInterrupt
+
+        began = time.monotonic()
+        with self.assertRaises(KeyboardInterrupt):
+            adapter.while_refreshing(slow, interrupt, interval=0.01)
+        self.assertLess(time.monotonic() - began, 5)
+        self.assertEqual(results[0][0], -signal.SIGKILL)
+        self.assertIsNone(bystander.poll())
+        # The next refresh observes again.
+        self.assertEqual(adapter.run_text(["true"])[0], 0)
+
+    def test_a_failed_refresh_keeps_the_coverage_it_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            writer = FeedWriter(root / "lifecycle")
+            output = root / "fleet.json"
+            clock = [B + 200]
+            rounds = iter([B + 200, None, B + 600])
+
+            def collect(home, herdr, previous, captain):
+                try:
+                    at = next(rounds)
+                except StopIteration:
+                    raise KeyboardInterrupt
+                if at is None:
+                    raise RuntimeError("observation timed out: slow snapshot")
+                clock[0] = at
+                writer.advance(at)
+                snap = fm_snapshot(at, [])
+                snap["lifecycle"] = writer.pointer()
+                return adapter.build_manifest(snap, snap, {}, previous,
+                                              observed=adapter.iso(at)), snap
+
+            count = [0]
+
+            def waiting(operation, heartbeat):
+                count[0] += 1
+                if count[0] == 2:
+                    clock[0] = B + 220  # Before a checkpoint: read, but no segment yet.
+                    heartbeat()
+                return operation()
+
+            ticks = itertools.count(step=10)
+            arguments = ["firstmate-fleet.py", "--home", str(root), "--output", str(output),
+                         "--watch", "--interval", "1"]
+            with mock.patch("sys.argv", arguments), \
+                    mock.patch.dict(os.environ, {"HERDR_ENV": "1"}), \
+                    mock.patch.object(adapter, "collect", collect), \
+                    mock.patch.object(adapter, "while_refreshing", waiting), \
+                    mock.patch.object(adapter.time, "time", lambda: clock[0]), \
+                    mock.patch.object(adapter.time, "monotonic", lambda: next(ticks)):
+                self.assertEqual(adapter.main(), 0)
+            windows = sorted((e["coverage"]["from"], e["coverage"]["to"])
+                             for e in events(adapter.journal_records(output), "coverage")
+                             if e["source"]["kind"] == "firstmate")
+            self.assertIn(adapter.iso(B + 220), {to for _, to in windows})
+            for (_, before), (after, _) in zip(windows, windows[1:]):
+                self.assertLessEqual(before, after)
+
+    def test_late_failed_and_recovered_refresh_only_extends_read_feed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            writer = FeedWriter(root / "lifecycle")
+            output = root / "fleet.json"
+            clock = [B + 200]
+            rounds = iter([B + 200, None, B + 600])
+            stale = []
+
+            def collect(home, herdr, previous, captain):
+                try:
+                    at = next(rounds)
+                except StopIteration:
+                    raise KeyboardInterrupt
+                if at is None:
+                    raise RuntimeError("observation timed out: slow snapshot")
+                clock[0] = at
+                writer.advance(at)
+                snap = fm_snapshot(at, [])
+                snap["lifecycle"] = writer.pointer()
+                return adapter.build_manifest(snap, snap, {}, previous,
+                                              observed=adapter.iso(at)), snap
+
+            count = [0]
+
+            def waiting(operation, heartbeat):
+                count[0] += 1
+                if count[0] in (2, 3):
+                    clock[0] = B + (380 if count[0] == 2 else 500)
+                    writer.advance(clock[0])
+                    heartbeat()
+                    stale.append(json.loads(output.read_text()))
+                return operation()
+
+            ticks = itertools.count(step=10)
+            arguments = ["firstmate-fleet.py", "--home", str(root), "--output", str(output),
+                         "--watch", "--interval", "1"]
+            with mock.patch("sys.argv", arguments), \
+                    mock.patch.dict(os.environ, {"HERDR_ENV": "1"}), \
+                    mock.patch.object(adapter, "collect", collect), \
+                    mock.patch.object(adapter, "while_refreshing", waiting), \
+                    mock.patch.object(adapter.time, "time", lambda: clock[0]), \
+                    mock.patch.object(adapter.time, "monotonic", lambda: next(ticks)):
+                self.assertEqual(adapter.main(), 0)
+            records = list(adapter.journal_records(output))
+            coverage = events(records, "coverage")
+            feed_ends = {e["coverage"]["to"] for e in coverage if e["source"]["kind"] == "firstmate"}
+            self.assertTrue({adapter.iso(B + t) for t in (380, 500, 600)} <= feed_ends)
+            bridge = [e["coverage"] for e in coverage if e["source"]["kind"] == "bridge"]
+            self.assertTrue(all(c["from"] == c["to"] for c in bridge))
+            self.assertEqual([m["observed_at"] for m in stale], [adapter.iso(B + 200)] * 2)
+            self.assertIn("observation timed out", stale[1]["diagnostics"][0])
+            self.assertEqual(json.loads(output.read_text())["observed_at"], adapter.iso(B + 600))
+
+    def test_cached_snapshot_without_a_readable_feed_adds_no_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            feeds = adapter.Feeds(root / "cursors.json")
+            snap = fm_snapshot(B, [])
+            self.assertEqual(adapter.read_feeds(snap, feeds, at=B + 380), ([], []))
+            writer = FeedWriter(root / "feed")
+            writer.advance(B + 200)
+            snap["lifecycle"] = writer.pointer()
+            adapter.read_feeds(snap, feeds, at=B + 200)
+            # A read failure cannot refresh even previously observed coverage.
+            with mock.patch.object(adapter, "read_feed", side_effect=PermissionError("denied")):
+                found, notes = adapter.read_feeds(snap, feeds, at=B + 380)
+            self.assertEqual(found, [])
+            self.assertTrue(notes)
+            self.assertEqual(feeds.read_at[str(writer.active)], B + 200)
+            self.assertEqual(snap["generated_epoch"], B)
+            archive = writer.directory / "events.v1.1.jsonl"
+            writer.active.rename(archive)
+            for archived in (True, False):
+                if not archived:
+                    archive.unlink()
+                found, notes = adapter.read_feeds(snap, feeds, at=B + 400)
+                self.assertEqual(found, [])
+                self.assertTrue(notes)
+                self.assertEqual(feeds.read_at[str(writer.active)], B + 200)
+
+
 class FeedTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -1822,6 +2015,61 @@ class FeedTests(unittest.TestCase):
         # Seqs 7 and 8 were read by the poll that could not write them.
         self.assertEqual(seqs - {None}, {r["seq"] for r in FEED_RECORDS if r["recorded_at"] <= B + 360
                                          and adapter.translate(r, FEED_HOME_ID)})
+
+    def test_an_interrupted_heartbeat_rereads_what_it_did_not_journal(self):
+        writer = FeedWriter(self.root / "lifecycle")
+        output = self.root / "fleet.json"
+        append = adapter.append_journal
+        reading = [False]
+
+        def run(polls, heartbeats):
+            polls, rounds = iter(polls), itertools.count()
+
+            def collect(home, herdr, previous, captain):
+                try:
+                    now = next(polls)
+                except StopIteration:
+                    raise KeyboardInterrupt
+                writer.advance(now)
+                tasks, panes = feed_rows(now)
+                snap = fm_snapshot(now, tasks)
+                snap["lifecycle"] = writer.pointer()
+                return adapter.build_manifest(snap, snap, panes, previous,
+                                              observed=adapter.iso(now)), snap
+
+            def waiting(operation, heartbeat):
+                if next(rounds) in heartbeats:
+                    writer.advance(B + 360)
+                    reading[0] = True
+                    heartbeat()
+                return operation()
+
+            def interrupted(path, records):
+                if reading[0]:
+                    reading[0] = False
+                    raise KeyboardInterrupt
+                append(path, records)
+
+            clock = itertools.count(step=10)
+            arguments = ["firstmate-fleet.py", "--home", str(self.root), "--output", str(output),
+                         "--watch", "--interval", "1"]
+            with mock.patch("sys.argv", arguments), mock.patch.dict(os.environ, {"HERDR_ENV": "1"}), \
+                    mock.patch.object(adapter, "collect", collect), \
+                    mock.patch.object(adapter, "while_refreshing", waiting), \
+                    mock.patch.object(adapter, "append_journal", interrupted), \
+                    mock.patch.object(adapter.time, "monotonic", lambda: next(clock)), \
+                    mock.patch("sys.stdout"):
+                self.assertEqual(adapter.main(), 0)
+
+        # Ctrl-C lands after the second round's heartbeat read, before its append.
+        run([B + 300, B + 330], heartbeats={1})
+        run([B + 400], heartbeats=set())
+        heard = {r["seq"] for r in FEED_RECORDS if B + 300 < r["recorded_at"] <= B + 360
+                 and adapter.translate(r, FEED_HOME_ID)}
+        self.assertTrue(heard)
+        journal = [json.loads(line) for line in output.with_suffix(".events.jsonl").read_text().splitlines()]
+        seqs = {r["event"]["source"].get("seq") for r in journal if r["kind"] == "lifecycle"}
+        self.assertTrue(heard <= seqs, heard - seqs)
 
     def test_a_failed_poll_keeps_the_coverage_the_bridge_watched(self):
         output = self.root / "fleet.json"

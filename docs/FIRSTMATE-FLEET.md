@@ -148,6 +148,24 @@ including unknown/stale values and their provenance. Snapshot observation time i
 not an exact historical transition time. Initial integration is local-only;
 remote snapshot behavior must be explicitly handled before enabling remote crews.
 
+### Slow refreshes
+
+Each snapshot command has a bounded 120-second deadline, separate from the
+short pane and validation probes. Only one full refresh runs at a time. After
+the first successful refresh discovers lifecycle feed paths, the collector
+continues reading those paths every five seconds while the next snapshot/pane
+join is pending, including retries after a timeout. The journal and feed
+cursors have one writer; cursors advance only after their records are written.
+
+These reads extend only durable-feed coverage, using the actual read time
+rather than the potentially much earlier snapshot generation time. A cached
+pointer alone adds no coverage: an absent or unreadable feed cannot refresh
+it. Snapshot-only bridge coverage, pane observations, manifest `observed_at`
+and validation coverage are not advanced by this heartbeat. A failed refresh
+still retains its last manifest with a diagnostic, and bridge-only fleets
+still show real observation gaps. Newly registered feed paths become known
+on the next successful snapshot.
+
 ### Secondmate crews
 
 A home's snapshot `tasks` are its direct reports only: a secondmate's own

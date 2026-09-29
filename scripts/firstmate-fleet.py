@@ -20,7 +20,7 @@ collector would write back anything removed under it. Agent transcripts and
 the Firstmate home are never touched.
 """
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 import contextlib
 import copy
 import datetime as dt
@@ -37,6 +37,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 SCHEMA = "zoetrope.fleet.v1"
@@ -54,6 +55,9 @@ FEED_CURSORS = "zoetrope.fleet.feeds.v1"
 # for this long after it left every home's snapshot.
 RETAIN_FINISHED = 32
 RETAIN_SECONDS = 24 * 3600
+# A loaded machine has taken 25–39 s for a single snapshot, before the
+# collector's per-home reads. Leave headroom without changing short probes.
+SNAPSHOT_TIMEOUT = 120
 
 
 def now():
@@ -420,13 +424,23 @@ def retire(attempts, sessions, links, unread, when,
         sessions.pop(ident, None)
 
 
+OBSERVING = threading.Lock()
+OBSERVATIONS = set()  # This collector's running observation commands.
+STOPPING = threading.Event()
+
+
 def run_text(argv, env=None, timeout=45, cwd=None):
     """(exit status, stdout, stderr) of one observation command.
 
     All arguments are separate argv entries. Stop only this observation's
     process group on timeout, including any shell children it started."""
-    with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          text=True, env=env, cwd=cwd, start_new_session=True) as process:
+    with OBSERVING:
+        if STOPPING.is_set():
+            raise TimeoutError(f"observation stopped: {argv[0]}")
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, env=env, cwd=cwd, start_new_session=True)
+        OBSERVATIONS.add(process)
+    with process:
         try:
             out, err = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -437,7 +451,20 @@ def run_text(argv, env=None, timeout=45, cwd=None):
                 os.killpg(process.pid, signal.SIGKILL)
                 process.communicate()
             raise TimeoutError(f"observation timed out: {argv[0]}")
+        finally:
+            with OBSERVING:
+                OBSERVATIONS.discard(process)
         return process.returncode, out, err
+
+
+def stop_observations():
+    """Kill every running observation's process group and refuse new ones
+    until STOPPING is cleared."""
+    with OBSERVING:
+        STOPPING.set()
+        for process in OBSERVATIONS:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
 
 
 def run_json(argv, env=None, timeout=45):
@@ -510,7 +537,8 @@ def find_no_mistakes(environ=None):
 def snapshot_of(home, herdr, no_mistakes):
     """One fm-fleet-snapshot.sh --json of `home`, run from that home."""
     env = snapshot_env(home, herdr, no_mistakes)
-    snapshot = run_json([str(Path(home) / "bin" / "fm-fleet-snapshot.sh"), "--json"], env)
+    snapshot = run_json([str(Path(home) / "bin" / "fm-fleet-snapshot.sh"), "--json"], env,
+                        timeout=SNAPSHOT_TIMEOUT)
     check_snapshot(snapshot)
     return snapshot
 
@@ -951,6 +979,10 @@ def read_feed(active, cursor):
                           if ident == cursor.get("file") and size >= cursor.get("offset", 0)), None)
             if start is None and cursor.get("file") and attempt == 0:
                 continue  # Perhaps renamed mid-listing: look once more.
+            if not any(first is None for first, *_ in opened) and (opened or cursor.get("file")):
+                if attempt == 0:
+                    continue  # The active file may be between rotation and recreation.
+                raise FileNotFoundError(errno.ENOENT, "active feed is missing", str(active))
             offset = cursor.get("offset", 0) if start is not None else 0
             if start is None:
                 start = max([i for i, (first, *_) in enumerate(opened)
@@ -1653,14 +1685,48 @@ class Validation:
         return [line for key in list(self.runs) for line in self.stop(key)]
 
 
-def lifecycle(snapshot, manifest, bridge, feeds, validation=None):
+def while_refreshing(operation, heartbeat, interval=5):
+    """Run exactly one refresh, reading durable feeds while it is late.
+
+    Only the snapshot/pane join runs in the worker. The calling thread still
+    owns the journal and feed cursors; no refresh overlaps the next one.
+    """
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(operation)
+            try:
+                while not wait([future], timeout=interval).done:
+                    heartbeat()
+            except BaseException:
+                stop_observations()
+                raise
+            return future.result()
+    finally:
+        STOPPING.clear()
+
+
+def read_feeds(snapshot, feeds, bridge=None, at=None):
+    """Read known feed paths now, without re-observing snapshot-only facts.
+
+    A cached pointer is a discovery hint, not evidence of current task state.
+    Only Feeds' successful file reads may extend its coverage. Live callers
+    supply read time: snapshot generation may precede completion by minutes.
+    """
+    if at is not None:
+        snapshot = dict(snapshot, generated_epoch=at)
+    found, notes = feeds.poll(snapshot)
+    if bridge is not None:
+        for line in found:
+            bridge.reach.add(line["event"])
+    return found, notes
+
+
+def lifecycle(snapshot, manifest, bridge, feeds, validation=None, feed_at=None):
     """One poll's lifecycle lines. The feeds are read first, so the bridge
     knows what they already hold; their diagnostics join the manifest's, as
     do validation's."""
-    found, notes = feeds.poll(snapshot)
+    found, notes = read_feeds(snapshot, feeds, bridge, at=feed_at)
     manifest["diagnostics"].extend(notes)
-    for line in found:
-        bridge.reach.add(line["event"])
     lines = found + bridge.observe(snapshot, manifest)
     if validation is not None:
         read, notes = validation.observe(snapshot)
@@ -2059,32 +2125,51 @@ def main():
         parser.error("a collector already owns this fleet; open its existing manifest")
     previous = recover(output)
     bridge = feeds = validation = None
+    last_snapshot = None
+    max_gap = max(60, 4 * args.interval)
     viewer = None
     request = output.with_suffix(".request.json")
     note = None
     try:
         while True:
+            feed_notes = []
+
+            def heartbeat():
+                if last_snapshot is not None:
+                    lines, notes = read_feeds(last_snapshot, feeds, bridge, at=int(time.time()))
+                    append_journal(output, lines)
+                    feeds.save()  # Advance only after the journal holds the read.
+                    feed_notes[:] = notes
+
             try:
-                manifest, snapshot = collect(home, os.environ.get("HERDR_BIN_PATH", "herdr"),
-                                             previous, args.captain)
+                if feeds is None:
+                    feeds = Feeds(output.with_suffix(".feeds.json"), max_gap=max_gap)
+                prior = previous
+                manifest, snapshot = while_refreshing(
+                    lambda: collect(home, os.environ.get("HERDR_BIN_PATH", "herdr"),
+                                    prior, args.captain), heartbeat)
                 if bridge is None:
-                    max_gap = max(60, 4 * args.interval)
                     run = f"{now()}/{os.getpid()}"
                     bridge = Bridge(manifest["fleet_id"], run, max_gap=max_gap)
                     bridge.recover(journal_records(output))
-                    feeds = Feeds(output.with_suffix(".feeds.json"), max_gap=max_gap)
                     validation = Validation(manifest["fleet_id"], run, max_gap=max_gap)
                     validation.recover(journal_records(output))
                 publish(output, manifest, previous,
-                        lifecycle(snapshot, manifest, bridge, feeds, validation))
+                        lifecycle(snapshot, manifest, bridge, feeds, validation,
+                                  feed_at=int(time.time())))
                 # After the journal holds what was read: a crash or failed poll between
                 # the two re-reads it, and the same IDs change nothing.
                 feeds.save()
                 previous = manifest
+                last_snapshot = snapshot
             except (OSError, RuntimeError, ValueError, KeyError) as error:
                 if bridge:
+                    journaled = not feeds.dirty
                     try:
-                        append_journal(output, bridge.close() + validation.close())
+                        append_journal(output, bridge.close()
+                                       + (feeds.close() if journaled else []) + validation.close())
+                        if journaled:
+                            feeds.save()
                     except OSError:
                         pass
                 bridge = feeds = validation = None
@@ -2096,7 +2181,7 @@ def main():
                 # Keep the observation timestamp old and surface the failure in
                 # the manifest banner instead of presenting stale data as fresh.
                 failed = copy.deepcopy(previous)
-                failed["diagnostics"] = [message]
+                failed["diagnostics"] = [message] + feed_notes
                 publish(output, failed, previous)
                 previous = failed
             if args.view and viewer is None:
@@ -2134,16 +2219,22 @@ def main():
                 note = carry_out(output, request)
                 print(f"{note}; collecting a fresh view...", flush=True)
                 previous, bridge, viewer = recover(output), None, None
+                feeds = validation = None
+                last_snapshot = None
     except KeyboardInterrupt:
         return 0
     finally:
         if viewer and viewer.poll() is None:
             viewer.terminate()
             viewer.wait(timeout=5)
-        if bridge:
+        if bridge or feeds:
+            journaled = feeds is not None and not feeds.dirty
             try:
-                append_journal(output, bridge.close() + feeds.close() + validation.close())
-                feeds.save()
+                append_journal(output, (bridge.close() if bridge else [])
+                               + (feeds.close() if journaled else [])
+                               + (validation.close() if validation else []))
+                if journaled:
+                    feeds.save()
             except OSError:
                 pass
         lock.close()
