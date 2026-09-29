@@ -11,3 +11,6 @@ date: 2026-09-26
   transcript.
 - [Quota sources and empty Codex buckets](quota-sources.md): why a historical
   bucket-only record produced an extra stale footer row and where it is rejected.
+- [Membership retention and the viewer's limits](membership-retention.md): why
+  the Team tab hit the 128-session limit, how finished members age out, and how
+  the viewer shows the most recent past the limits.

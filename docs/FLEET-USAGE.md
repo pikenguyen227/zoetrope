@@ -334,9 +334,13 @@ the snapshot points at one, with every transition at its real time, including
 those while no adapter ran (see `FIRSTMATE-FLEET.md`, "Lifecycle journal").
 Without a feed, the adapter bridges from snapshots: a status line keeps its own
 stamp and a spawn its `spawn_gen` time, but lines written between polls or while
-no adapter ran are not recovered. The manifest accepts at most 128 sessions and 4096 task attempts/links;
-start a separately named archive for larger histories. Invalid refreshes retain the
-last usable view and show its age.
+no adapter ran are not recovered. The collector retires finished members on its
+own: each stays in the manifest for 24 hours after it left every home's snapshot,
+and only the 32 most recent stay at all; the journal keeps their history. The
+viewer shows at most 128 sessions and 4096 task attempts/links: past that it shows
+the most recent and says in the header how many older ones it hid (see
+`FIRSTMATE-FLEET.md`, "Adapter contract and durability"). Invalid refreshes retain
+the last usable view and show its age.
 
 `assets/fleet/demo/fleet.json` demonstrates `zoetrope.fleet.v1`. File targets are
 relative to the manifest and must match the declared complete native session ID.

@@ -25,6 +25,11 @@ use journal::{Attempt, AttemptState, Lifecycle};
 pub mod native;
 
 pub const SCHEMA: &str = "zoetrope.fleet.v1";
+/// The most a fleet shows; [`Manifest::fit`] trims a larger one to its most
+/// recent members.
+const MAX_SESSIONS: usize = 128;
+const MAX_TASKS: usize = 4096;
+const MAX_LINKS: usize = 4096;
 const FLEET_ROOT: &str = "@fleet";
 
 /// Exact native identity, never a pane ID, guessed path or session prefix.
@@ -195,9 +200,86 @@ fn nonempty(value: &str, field: &str) -> Result<(), String> {
 
 impl Manifest {
     pub fn parse(text: &str) -> Result<Self, String> {
-        let manifest: Self = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let mut manifest: Self = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        manifest.fit();
         manifest.validate()?;
         Ok(manifest)
+    }
+
+    /// Past the membership limits, keep the most recent members within them
+    /// and say how many older ones are hidden, rather than refuse the fleet.
+    /// Recency: a task still observed first, then the newest to leave, then
+    /// the newest Firstmate state; a session ranks as its most recent task,
+    /// and one no task names (a Captain) as standing unless `not observed`.
+    /// A task, link or session left dangling by the trim goes with it.
+    pub fn fit(&mut self) {
+        let (sessions, tasks, links) = (self.sessions.len(), self.tasks.len(), self.links.len());
+        if sessions <= MAX_SESSIONS && tasks <= MAX_TASKS && links <= MAX_LINKS {
+            return;
+        }
+        let rank = |task: &Task| {
+            let gone = left(task).then(|| task.runtime.as_ref().map(|r| r.observed_at));
+            (
+                gone.is_none(),
+                gone.flatten().unwrap_or(DateTime::<Utc>::MAX_UTC),
+                task.state.observed_at,
+            )
+        };
+        let mut ranks = BTreeMap::new();
+        for task in &self.tasks {
+            if let Some(key) = &task.session {
+                let rank = rank(task);
+                let best = ranks.entry(key.clone()).or_insert(rank);
+                *best = rank.max(*best);
+            }
+        }
+        let mut order: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|spec| {
+                let captain = spec.runtime.as_ref().filter(|r| r.value == NOT_OBSERVED);
+                let rank = ranks.get(&spec.key).copied().unwrap_or(match captain {
+                    Some(r) => (false, r.observed_at, r.observed_at),
+                    None => (true, DateTime::<Utc>::MAX_UTC, DateTime::<Utc>::MAX_UTC),
+                });
+                (rank, spec.key.clone())
+            })
+            .collect();
+        newest(&mut order, MAX_SESSIONS, |(rank, _)| *rank);
+        let kept: BTreeSet<SessionKey> = order.into_iter().map(|(_, key)| key).collect();
+        self.tasks
+            .retain(|t| t.session.as_ref().is_none_or(|k| kept.contains(k)));
+        newest(&mut self.tasks, MAX_TASKS, rank);
+        let joined: BTreeSet<&SessionKey> = self
+            .tasks
+            .iter()
+            .filter_map(|t| t.session.as_ref())
+            .collect();
+        self.sessions.retain(|s| {
+            kept.contains(&s.key) && (joined.contains(&s.key) || !ranks.contains_key(&s.key))
+        });
+        let keys: BTreeSet<&SessionKey> = self.sessions.iter().map(|s| &s.key).collect();
+        let attempts: BTreeSet<(&str, &str)> = self
+            .tasks
+            .iter()
+            .map(|t| (t.id.as_str(), t.spawn_gen.as_str()))
+            .collect();
+        let registered = |endpoint: &LinkEndpoint| match endpoint {
+            LinkEndpoint::Session(key) => keys.contains(key),
+            LinkEndpoint::Attempt(a) => attempts.contains(&(a.task.as_str(), a.spawn_gen.as_str())),
+        };
+        self.links
+            .retain(|l| registered(&l.from) && registered(&l.to));
+        newest(&mut self.links, MAX_LINKS, |l| l.observed_at);
+        self.diagnostics.insert(
+            0,
+            format!(
+                "fleet exceeds supported membership limits: showing the most recent {} of {sessions} sessions, {} of {tasks} tasks, {} of {links} links",
+                self.sessions.len(),
+                self.tasks.len(),
+                self.links.len()
+            ),
+        );
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -206,7 +288,10 @@ impl Manifest {
         }
         nonempty(&self.fleet_id, "fleet_id")?;
         nonempty(&self.label, "label")?;
-        if self.sessions.len() > 128 || self.tasks.len() > 4096 || self.links.len() > 4096 {
+        if self.sessions.len() > MAX_SESSIONS
+            || self.tasks.len() > MAX_TASKS
+            || self.links.len() > MAX_LINKS
+        {
             return Err("fleet exceeds supported membership limits".into());
         }
         let mut keys = BTreeSet::new();
@@ -255,6 +340,21 @@ impl Manifest {
         }
         Ok(())
     }
+}
+
+/// Keep the `max` of `items` that rank highest, in their order.
+fn newest<T, K: Ord>(items: &mut Vec<T>, max: usize, rank: impl Fn(&T) -> K) {
+    if items.len() <= max {
+        return;
+    }
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(rank(&items[i])));
+    let keep: BTreeSet<usize> = order.into_iter().take(max).collect();
+    let mut index = 0;
+    items.retain(|_| {
+        index += 1;
+        keep.contains(&(index - 1))
+    });
 }
 
 pub struct Member {
@@ -481,7 +581,8 @@ fn crew_mark(state: &AttemptState, covered: bool) -> CrewMark {
 }
 
 impl Fleet {
-    pub fn new(manifest: Manifest) -> Result<Self, String> {
+    pub fn new(mut manifest: Manifest) -> Result<Self, String> {
+        manifest.fit();
         manifest.validate()?;
         let mut overview = App::new(manifest.fleet_id.clone(), Mode::Live);
         overview.wall_clock = true;
@@ -516,7 +617,8 @@ impl Fleet {
     }
 
     /// A malformed refresh is rejected before touching any current state.
-    pub fn update(&mut self, manifest: Manifest) -> Result<(), String> {
+    pub fn update(&mut self, mut manifest: Manifest) -> Result<(), String> {
+        manifest.fit();
         manifest.validate()?;
         if manifest.fleet_id != self.manifest.fleet_id {
             return Err("refusing to switch fleet identity during refresh".into());

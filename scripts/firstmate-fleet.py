@@ -50,6 +50,10 @@ JOURNAL = "zoetrope.fleet.journal.v2"
 LEGACY_JOURNAL = "zoetrope.fleet.journal.v1"
 FEED = "fm-lifecycle.v1"
 FEED_CURSORS = "zoetrope.fleet.feeds.v1"
+# Retention of finished members (see retire): the most recent this many, each
+# for this long after it left every home's snapshot.
+RETAIN_FINISHED = 32
+RETAIN_SECONDS = 24 * 3600
 
 
 def now():
@@ -184,7 +188,10 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
     attempts = {(t["id"], t["spawn_gen"]): t for t in previous.get("tasks", [])}
     diagnostics = []
     for task in attempts.values():
-        task["runtime"] = observation("not observed", "firstmate.snapshot", when)
+        # Until it comes back, a task keeps the moment it left: retention ages
+        # it from there (see retire).
+        if (task.get("runtime") or {}).get("value") != NOT_OBSERVED:
+            task["runtime"] = observation(NOT_OBSERVED, "firstmate.snapshot", when)
     # Every local task's pane is crew (a worker or a secondmate), never a
     # Captain, whatever its tab is called.
     crew_panes = {}
@@ -285,9 +292,10 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                                         "label": where.get("tab") or "Captain · " + standing["provider"]}
     captains = [k for k in sessions if k not in joined]
     for k in captains:
-        sessions[k].pop("runtime", None)
+        runtime = sessions[k].pop("runtime", None)
         if k != captains[-1]:
-            sessions[k]["runtime"] = observation(NOT_OBSERVED, "herdr.pane.get", when)
+            retired = (runtime or {}).get("value") == NOT_OBSERVED
+            sessions[k]["runtime"] = runtime if retired else observation(NOT_OBSERVED, "herdr.pane.get", when)
     head = sessions[captains[-1]] if captains else {}
     if head and not standing and head.get("herdr"):
         # The last Captain registered still stands: read its names again.
@@ -351,15 +359,65 @@ def build_manifest(before, after, panes, previous=None, captain=None, observed=N
                                    "evidence": f"Firstmate task {current['id']} is secondmate {mate}'s own, "
                                                f"in its home {after['crews'][mate]['fm_home']}",
                                    "observed_at": when})
+    unread = {mate for mate, crew in (after.get("crews") or {}).items() if crew is None}
+    retire(attempts, sessions, links, unread, when)
     # A provisional unresolved attempt disappears once its generation is
-    # known. Its edges must disappear too; historical real attempts remain.
+    # known, and a finished member once retired. Their edges disappear too.
     links = {ident: link for ident, link in links.items()
-             if all("task" not in endpoint or (endpoint["task"], endpoint["spawn_gen"]) in attempts
+             if all((endpoint["task"], endpoint["spawn_gen"]) in attempts if "task" in endpoint
+                    else identity(endpoint) in sessions
                     for endpoint in (link["from"], link["to"]))}
     return {"schema": SCHEMA, "fleet_id": fleet_id, "label": title or LABEL,
             "observed_at": when, "sessions": list(sessions.values()),
             "tasks": list(attempts.values()), "links": list(links.values()),
             "diagnostics": diagnostics}
+
+
+def retire(attempts, sessions, links, unread, when,
+           keep=RETAIN_FINISHED, window=RETAIN_SECONDS):
+    """Drop finished members from a manifest carried across collections, in
+    place, so it never outgrows the viewer's limits.
+
+    A member is finished when no home's snapshot lists it any more: a task
+    attempt `not observed`, or a Captain another one replaced. It stays for
+    `window` seconds after it left, and only while it is among the `keep` that
+    left most recently. What a snapshot still lists is never finished, however
+    long ago it was done, and a worker of a secondmate whose crew is `unread`
+    this poll is held, since nothing proves it left, with the secondmate
+    attempt that delegated it. A session goes with the
+    last attempt that named it; links are pruned by the caller.
+    """
+    def epoch(stamp):
+        try:
+            return dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    now = epoch(when)
+    horizon = -math.inf if now is None else now - window
+    # With the secondmate attempt that owns it, so it keeps hanging under it.
+    held = {(end["task"], end["spawn_gen"]) for link in links.values()
+            if link.get("kind") == "delegates" and "task" in link["from"] and "task" in link["to"]
+            and link["from"]["task"] in unread for end in (link["from"], link["to"])}
+    joined = {identity(t["session"]) for t in attempts.values() if t.get("session")}
+
+    def left(record):
+        runtime = record.get("runtime") or {}
+        return runtime.get("observed_at") if runtime.get("value") == NOT_OBSERVED else None
+
+    # Newest first by when it left, then by its last Firstmate state: a
+    # manifest from before departures were kept has them all leave at once.
+    finished = [(epoch(left(task)) or 0, epoch(task["state"].get("observed_at")) or 0, "task", key)
+                for key, task in attempts.items() if left(task) and key not in held]
+    finished += [(epoch(left(spec)) or 0, 0, "session", ident)
+                 for ident, spec in sessions.items() if ident not in joined and left(spec)]
+    finished.sort(reverse=True)
+    for rank, (at, _, kind, key) in enumerate(finished):
+        if rank >= keep or at < horizon:
+            (attempts if kind == "task" else sessions).pop(key)
+    named = {identity(t["session"]) for t in attempts.values() if t.get("session")}
+    for ident in joined - named:
+        sessions.pop(ident, None)
 
 
 def run_text(argv, env=None, timeout=45, cwd=None):
