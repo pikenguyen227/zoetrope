@@ -10,8 +10,8 @@ Updated 2026-09-29.
 
 The snapshot join brackets pane reads with two observations; secondmate homes
 are already read concurrently within each phase. The initial primary snapshot
-must finish before it can discover those homes (`scripts/firstmate-fleet.py:513`,
-`scripts/firstmate-fleet.py:522`, `scripts/firstmate-fleet.py:545`). Increasing
+must finish before it can discover those homes (`scripts/firstmate-fleet.py:537`,
+`scripts/firstmate-fleet.py:546`, `scripts/firstmate-fleet.py:569`). Increasing
 parallelism alone does not remove the full-refresh dependency.
 
 `while_refreshing` permits one join in flight while its caller reads previously
@@ -19,14 +19,14 @@ discovered durable feeds. It leaves journal writes on the calling thread. Live
 feed reads use read time, while bridge observations retain the snapshot's own
 time. A failed refresh keeps the previous manifest timestamp and diagnostics;
 its next attempt can still read the known feeds
-(`scripts/firstmate-fleet.py:1664`, `scripts/firstmate-fleet.py:1677`,
-`scripts/firstmate-fleet.py:2095`). Missing previously observed feed files cannot
-extend a saved cursor's coverage (`scripts/firstmate-fleet.py:954`).
+(`scripts/firstmate-fleet.py:1688`, `scripts/firstmate-fleet.py:1708`,
+`scripts/firstmate-fleet.py:2183`). Missing previously observed feed files cannot
+extend a saved cursor's coverage (`scripts/firstmate-fleet.py:985`).
 
 The behavioral regressions run a real subprocess with short and sufficient
 deadlines, hold one refresh while heartbeats continue, exercise timeout and
 recovery through `main`, and verify that missing/unreadable feeds and cached
-snapshot facts gain no coverage (`scripts/test_firstmate_fleet.py:1593`).
+snapshot facts gain no coverage (`scripts/test_firstmate_fleet.py:1596`).
 
 ## Distinguishing the screenshot symptoms
 
