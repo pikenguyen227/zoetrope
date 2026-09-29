@@ -28,8 +28,9 @@ unchanged.
 poll (`:2115`), and runs it once the journal is past `COMPACT_BYTES` (16 MiB,
 `:56`) and twice what the last compaction left, so rewrite cost stays
 proportional to what was appended. The startup check passes `compacted = 0`
-(nothing left yet), so at start it compacts only past 16 MiB. The rewrite goes through `write_atomic` (`:1716`): temp file
-beside the journal, fsync, rename, under the collector's lock.
+(nothing left yet), so at start it compacts only past 16 MiB. The rewrite goes
+through `write_atomic` (`:1716`): temp file beside the journal, fsync, rename,
+under the collector's lock.
 
 ## The viewer across a rewrite
 
