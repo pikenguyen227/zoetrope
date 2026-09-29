@@ -2228,11 +2228,12 @@ def main():
             viewer.terminate()
             viewer.wait(timeout=5)
         if bridge or feeds:
+            journaled = feeds is not None and not feeds.dirty
             try:
                 append_journal(output, (bridge.close() if bridge else [])
-                               + (feeds.close() if feeds else [])
+                               + (feeds.close() if journaled else [])
                                + (validation.close() if validation else []))
-                if feeds:
+                if journaled:
                     feeds.save()
             except OSError:
                 pass

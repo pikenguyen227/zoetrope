@@ -2016,6 +2016,61 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(seqs - {None}, {r["seq"] for r in FEED_RECORDS if r["recorded_at"] <= B + 360
                                          and adapter.translate(r, FEED_HOME_ID)})
 
+    def test_an_interrupted_heartbeat_rereads_what_it_did_not_journal(self):
+        writer = FeedWriter(self.root / "lifecycle")
+        output = self.root / "fleet.json"
+        append = adapter.append_journal
+        reading = [False]
+
+        def run(polls, heartbeats):
+            polls, rounds = iter(polls), itertools.count()
+
+            def collect(home, herdr, previous, captain):
+                try:
+                    now = next(polls)
+                except StopIteration:
+                    raise KeyboardInterrupt
+                writer.advance(now)
+                tasks, panes = feed_rows(now)
+                snap = fm_snapshot(now, tasks)
+                snap["lifecycle"] = writer.pointer()
+                return adapter.build_manifest(snap, snap, panes, previous,
+                                              observed=adapter.iso(now)), snap
+
+            def waiting(operation, heartbeat):
+                if next(rounds) in heartbeats:
+                    writer.advance(B + 360)
+                    reading[0] = True
+                    heartbeat()
+                return operation()
+
+            def interrupted(path, records):
+                if reading[0]:
+                    reading[0] = False
+                    raise KeyboardInterrupt
+                append(path, records)
+
+            clock = itertools.count(step=10)
+            arguments = ["firstmate-fleet.py", "--home", str(self.root), "--output", str(output),
+                         "--watch", "--interval", "1"]
+            with mock.patch("sys.argv", arguments), mock.patch.dict(os.environ, {"HERDR_ENV": "1"}), \
+                    mock.patch.object(adapter, "collect", collect), \
+                    mock.patch.object(adapter, "while_refreshing", waiting), \
+                    mock.patch.object(adapter, "append_journal", interrupted), \
+                    mock.patch.object(adapter.time, "monotonic", lambda: next(clock)), \
+                    mock.patch("sys.stdout"):
+                self.assertEqual(adapter.main(), 0)
+
+        # Ctrl-C lands after the second round's heartbeat read, before its append.
+        run([B + 300, B + 330], heartbeats={1})
+        run([B + 400], heartbeats=set())
+        heard = {r["seq"] for r in FEED_RECORDS if B + 300 < r["recorded_at"] <= B + 360
+                 and adapter.translate(r, FEED_HOME_ID)}
+        self.assertTrue(heard)
+        journal = [json.loads(line) for line in output.with_suffix(".events.jsonl").read_text().splitlines()]
+        seqs = {r["event"]["source"].get("seq") for r in journal if r["kind"] == "lifecycle"}
+        self.assertTrue(heard <= seqs, heard - seqs)
+
     def test_a_failed_poll_keeps_the_coverage_the_bridge_watched(self):
         output = self.root / "fleet.json"
         polls = iter([B, B + 5, B + 10, B + 15, None, B + 100])
