@@ -254,9 +254,13 @@ it is there, since it had not finished yet; its lifecycle marks stay on the
 scrubber either way. At the live edge, a worker finishing re-arranges the
 crew once; scrubbing never does.
 
+The journal needs no trimming by hand: the collector drops superseded manifest
+checkpoints from it when it starts and whenever it has doubled past 16 MiB,
+keeping every lifecycle record (see `FIRSTMATE-FLEET.md`, "Retention").
+
 Archive and delete remove records rather than hiding them, from the adapter's
 state directory only: the manifest `fleet.json` and its journal
-`fleet.events.jsonl`, which holds the lifecycle records and every manifest
+`fleet.events.jsonl`, which holds the lifecycle records and the newest manifest
 checkpoint. Agent transcripts under `~/.claude` or `~/.codex`, the Firstmate
 home, other backups and anything else in the directory are never touched. The
 adapter's feed cursor `fleet.feeds.json` stays too, so the removed history is
