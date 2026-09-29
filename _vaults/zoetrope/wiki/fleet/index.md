@@ -15,3 +15,5 @@ date: 2026-09-26
   the Team tab hit the 128-session limit, how finished members age out, and how
   the viewer shows the most recent past the limits.
 - [Slow refreshes and lifecycle coverage](slow-refresh.md): keeping durable-feed reads independent of slow snapshots, and distinguishing activity glyphs, ownership layout and quota age.
+- [Journal retention](journal-retention.md): why the journal is compacted
+  rather than rotated, what stays, and how the viewer follows the rewrite.
