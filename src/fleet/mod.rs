@@ -640,6 +640,20 @@ impl Fleet {
             member.spec = spec.clone();
             member.retained = false;
         }
+        // Retained history stays within the limits too: past them, the
+        // members that went quiet longest go first.
+        let mut retained: Vec<_> = self
+            .members
+            .iter()
+            .filter(|(_, m)| m.retained)
+            .map(|(key, m)| (m.app.session.last_activity, key.clone()))
+            .collect();
+        retained.sort();
+        let excess = self.members.len().saturating_sub(MAX_SESSIONS);
+        for (_, key) in retained.into_iter().take(excess) {
+            self.members.remove(&key);
+            self.baselined.remove(&key);
+        }
         for (key, member) in &mut self.members {
             let seen = sighting(key, &manifest.tasks);
             if member.app.seen != seen {

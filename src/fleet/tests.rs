@@ -1241,6 +1241,13 @@ fn an_over_limit_fleet_shows_its_most_recent_members() {
     fleet.update(crowded(200)).unwrap();
     assert_eq!(fleet.manifest.sessions.len(), MAX_SESSIONS);
     assert!(fleet.manifest.diagnostics[0].contains("of 202 sessions"));
+    // Members the trim hides do not pile up as retained history.
+    assert_eq!(fleet.members.len(), MAX_SESSIONS);
+    let mut grown = Fleet::new(crowded(10)).unwrap();
+    grown.update(crowded(200)).unwrap();
+    assert_eq!(grown.members.len(), MAX_SESSIONS);
+    assert!(grown.members.contains_key(&key("captain")));
+    assert!(grown.members.contains_key(&key("worker")));
     // Within the limits, nothing changes.
     let fit = crowded(10);
     let mut same = fit.clone();
