@@ -69,18 +69,24 @@ pub fn all_rollouts(sessions: &Path) -> Vec<PathBuf> {
     walk_days(sessions, 0, &mut days);
     days.sort();
     for day in days {
-        let Ok(entries) = std::fs::read_dir(&day) else {
-            continue;
-        };
-        let mut files: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| is_rollout_file(p))
-            .collect();
-        files.sort();
-        out.extend(files);
+        out.extend(day_rollouts(&day));
     }
     out
+}
+
+/// The rollout files in one day directory, in path order; none when it is
+/// missing.
+fn day_rollouts(day: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(day) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| is_rollout_file(p))
+        .collect();
+    files.sort();
+    files
 }
 
 /// The day directories at depth three (`YYYY/MM/DD`) under `root`.
@@ -254,10 +260,12 @@ pub fn related_paths(file: &SessionFile) -> Vec<PathBuf> {
     let paths = match file.role {
         FileRole::Root => {
             let last = day_dir_floor(file.modified);
-            rollouts_from(&file.path)
-                .into_iter()
-                .filter(|p| day_of(p).and_then(day_key).is_none_or(|d| d <= last))
-                .collect()
+            rollouts_through(&file.path, last).unwrap_or_else(|| {
+                rollouts_from(&file.path)
+                    .into_iter()
+                    .filter(|p| day_of(p).and_then(day_key).is_none_or(|d| d <= last))
+                    .collect()
+            })
         }
         _ => file
             .path
@@ -268,6 +276,34 @@ pub fn related_paths(file: &SessionFile) -> Vec<PathBuf> {
     };
     paths.into_iter().filter(|p| *p != file.path).collect()
 }
+
+/// The rollouts in `root`'s day directory and each day after it through
+/// `last`, by naming those directories rather than walking the tree: a live
+/// root is rescanned every poll, and the tree holds every day Codex ever
+/// wrote. `None` when the root's directory is not a `YYYY/MM/DD` day or the
+/// span is too long to name day by day; the walk is the answer then.
+fn rollouts_through(root: &Path, last: (u32, u32, u32)) -> Option<Vec<PathBuf>> {
+    use chrono::NaiveDate;
+    let day = day_of(root)?;
+    let sessions = day.ancestors().nth(3)?;
+    let (y, m, d) = day_key(day)?;
+    let mut date = NaiveDate::from_ymd_opt(i32::try_from(y).ok()?, m, d)?;
+    let end = NaiveDate::from_ymd_opt(i32::try_from(last.0).ok()?, last.1, last.2)?;
+    if (end - date).num_days() > MAX_NAMED_DAYS {
+        return None;
+    }
+    let mut out = Vec::new();
+    while date <= end {
+        out.extend(day_rollouts(
+            &sessions.join(date.format("%Y/%m/%d").to_string()),
+        ));
+        date = date.succ_opt()?;
+    }
+    Some(out)
+}
+
+/// The longest root life, in days, whose directories are named one by one.
+const MAX_NAMED_DAYS: i64 = 366;
 
 /// Codex records the working directory as it is.
 pub fn project_key(cwd: &Path) -> String {
@@ -303,6 +339,51 @@ mod tests {
         // point): nothing after that day is looked at.
         root.modified = std::time::UNIX_EPOCH;
         assert!(related_paths(&root).is_empty());
+    }
+
+    /// A root's days are named, not walked: across a month and a year
+    /// boundary the named days hold exactly what walking the whole tree and
+    /// keeping the root's span holds, and nothing from before or after it.
+    #[test]
+    fn a_roots_span_is_named_day_by_day() {
+        let sessions = std::env::temp_dir().join(format!(
+            "zoetrope-codex-days-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let rollout = |day: &str, n: u32| {
+            let dir = sessions.join(day);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(format!(
+                "rollout-{}T00-00-00-0000000{n}-0000-0000-0000-000000000000.jsonl",
+                day.replace('/', "-")
+            ));
+            std::fs::write(&path, b"{}\n").unwrap();
+            path
+        };
+        rollout("2025/11/30", 1);
+        let root = rollout("2025/12/31", 2);
+        let sibling = rollout("2025/12/31", 3);
+        let child = rollout("2026/01/01", 4);
+        rollout("2026/01/03", 5);
+        std::fs::write(sessions.join("2025/12/31/notes.txt"), b"x").unwrap();
+
+        let last = (2026, 1, 2);
+        let named = rollouts_through(&root, last).unwrap();
+        let walked: Vec<PathBuf> = rollouts_from(&root)
+            .into_iter()
+            .filter(|p| day_of(p).and_then(day_key).is_none_or(|d| d <= last))
+            .collect();
+        assert_eq!(named, vec![root.clone(), sibling, child]);
+        assert_eq!(named, walked);
+        // A root last written before its own day has no span at all.
+        assert_eq!(rollouts_through(&root, (2025, 12, 30)), Some(Vec::new()));
+        // Too long to name day by day: the caller walks instead.
+        assert_eq!(rollouts_through(&root, (2027, 6, 1)), None);
+        std::fs::remove_dir_all(&sessions).unwrap();
     }
 
     #[test]

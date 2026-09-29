@@ -1112,10 +1112,18 @@ impl Lifecycle {
 
     /// The newest point event (not a coverage window) at or before `t`.
     pub fn latest_at(&self, t: Option<DateTime<Utc>>) -> Option<&LifecycleEvent> {
-        self.ordered()
-            .filter(|e| !e.change.is_coverage())
-            .take_while(|e| t.is_none_or(|t| e.at.is_some_and(|at| at <= t)))
-            .last()
+        // Drawn every frame: walk back from `t` rather than forward through
+        // every event. `order` ascends by time, so those at or before `t` are
+        // a prefix.
+        let end = t.map_or(self.order.len(), |t| {
+            self.order
+                .partition_point(|id| self.events[id].at.is_some_and(|at| at <= t))
+        });
+        self.order[..end]
+            .iter()
+            .rev()
+            .map(|id| &self.events[id])
+            .find(|e| !e.change.is_coverage())
     }
 }
 
@@ -1550,6 +1558,34 @@ mod tests {
         assert!(!store.observing(at("08:40:01")));
         assert_eq!(store.latest_at(Some(at("08:05:30"))).unwrap().id, "s2");
         assert_eq!(store.latest_at(None).unwrap().id, "down");
+    }
+
+    /// The footer's event, found walking back from the moment, is the one a
+    /// walk forward through every event finds, at every moment.
+    #[test]
+    fn latest_at_matches_a_forward_walk() {
+        for name in ["crew", "feed", "validation"] {
+            let mut store = Lifecycle::default();
+            store.insert(fixture(name));
+            let forward = |t: Option<DateTime<Utc>>| {
+                store
+                    .ordered()
+                    .filter(|e| !e.change.is_coverage())
+                    .take_while(|e| t.is_none_or(|t| e.at.is_some_and(|at| at <= t)))
+                    .last()
+                    .map(|e| e.id.clone())
+            };
+            let mut moments = vec![None];
+            for e in store.ordered() {
+                let at = e.at.unwrap();
+                moments.extend([Some(at - chrono::Duration::seconds(1)), Some(at)]);
+            }
+            assert!(moments.len() > 10, "{name} holds events to walk");
+            for t in moments {
+                let found = store.latest_at(t).map(|e| e.id.clone());
+                assert_eq!(found, forward(t), "{name} at {t:?}");
+            }
+        }
     }
 
     #[test]
