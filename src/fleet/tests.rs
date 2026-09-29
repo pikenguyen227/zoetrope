@@ -1158,3 +1158,100 @@ fn replay_draws_the_delegator_observed_by_the_playhead() {
     fleet.sync();
     assert_eq!(delegators(&fleet), [key("mate-2").node_id(MAIN_ID)]);
 }
+
+/// A collector that carried every member it ever saw forward: a standing
+/// Captain, one live worker, and `finished` workers that left, the newest
+/// last, each linked to the next.
+fn crowded(finished: usize) -> Manifest {
+    let at = |minute: usize| -> DateTime<Utc> {
+        "2026-09-21T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+            + chrono::Duration::minutes(minute as i64)
+    };
+    let observed = |value: &str, when| Observation {
+        value: value.into(),
+        source: "synthetic".into(),
+        observed_at: when,
+    };
+    let spec = |id: &str| SessionSpec {
+        key: key(id),
+        label: id.into(),
+        file: None,
+        runtime: None,
+        herdr: None,
+    };
+    let task = |id: &str, runtime: Observation, state| Task {
+        id: id.into(),
+        spawn_gen: "g".into(),
+        label: id.into(),
+        project: None,
+        session: Some(key(id)),
+        state: observed("done", state),
+        runtime: Some(runtime),
+        depends_on: vec![],
+    };
+    let mut manifest = manifest();
+    manifest.sessions = vec![spec("captain"), spec("worker")];
+    manifest.links.clear();
+    manifest.tasks = vec![task("worker", observed("working", at(0)), at(0))];
+    for n in 0..finished {
+        let id = format!("gone-{n}");
+        manifest.sessions.push(spec(&id));
+        manifest
+            .tasks
+            .push(task(&id, observed(NOT_OBSERVED, at(9999)), at(n)));
+        if n > 0 {
+            manifest.links.push(Link {
+                id: id.clone(),
+                from: key(&format!("gone-{}", n - 1)).into(),
+                to: key(&id).into(),
+                kind: Relation::Continues,
+                evidence: "synthetic".into(),
+                observed_at: at(n),
+            });
+        }
+    }
+    manifest
+}
+
+#[test]
+fn an_over_limit_fleet_shows_its_most_recent_members() {
+    let over = crowded(140);
+    // The limits stand: validation alone still refuses the whole fleet.
+    assert!(over.validate().is_err());
+    let manifest = Manifest::parse(&serde_json::to_string(&over).unwrap()).unwrap();
+    assert_eq!(manifest.sessions.len(), MAX_SESSIONS);
+    let shown: BTreeSet<_> = manifest
+        .sessions
+        .iter()
+        .map(|s| s.key.session_id.as_str())
+        .collect();
+    // The standing Captain and the live worker, then the newest to finish.
+    assert!(shown.contains("captain") && shown.contains("worker"));
+    assert!(!shown.contains("gone-13") && shown.contains("gone-14"));
+    assert_eq!(manifest.tasks.len(), MAX_SESSIONS - 1);
+    // A link to a hidden member goes with it.
+    assert_eq!(manifest.links.len(), 125);
+    assert!(manifest.links.iter().all(|l| l.id != "gone-14"));
+    assert!(manifest.diagnostics[0].starts_with(
+        "fleet exceeds supported membership limits: showing the most recent 128 of 142 sessions"
+    ));
+    // The viewer opens on it, and a refresh past the limits keeps it running.
+    let mut fleet = Fleet::new(crowded(140)).unwrap();
+    assert_eq!(fleet.members.len(), MAX_SESSIONS);
+    fleet.update(crowded(200)).unwrap();
+    assert_eq!(fleet.manifest.sessions.len(), MAX_SESSIONS);
+    assert!(fleet.manifest.diagnostics[0].contains("of 202 sessions"));
+    // Members the trim hides do not pile up as retained history.
+    assert_eq!(fleet.members.len(), MAX_SESSIONS);
+    let mut grown = Fleet::new(crowded(10)).unwrap();
+    grown.update(crowded(200)).unwrap();
+    assert_eq!(grown.members.len(), MAX_SESSIONS);
+    assert!(grown.members.contains_key(&key("captain")));
+    assert!(grown.members.contains_key(&key("worker")));
+    // Within the limits, nothing changes.
+    let fit = crowded(10);
+    let mut same = fit.clone();
+    same.fit();
+    assert_eq!(same.sessions, fit.sessions);
+    assert!(same.diagnostics.is_empty());
+}

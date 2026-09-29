@@ -119,8 +119,29 @@ Publish manifests atomically. Keep the last valid version if a refresh is malfor
 show its age and diagnostic. Retain lifecycle events in an append-only journal
 outside the source checkout; only an explicit archive or delete removes records
 from it. A worker disappearing from the current snapshot must
-not erase historical membership or prove task completion. Do not copy private
+not erase historical membership at once or prove task completion. Do not copy private
 transcripts into the repository. Missing transcripts produce an unavailable node.
+
+Membership is retained, not accumulated: every collection carries the previous
+manifest forward, so without a bound a long-running collector grows past the
+viewer's limits. On every build the adapter retires finished members
+(`retire` in `scripts/firstmate-fleet.py`): a task attempt no home's snapshot
+lists any more (runtime `not observed`), or a Captain a later one replaced. A
+finished member keeps the moment it left as its runtime's `observed_at`, and
+stays for 24 hours from then (`RETAIN_SECONDS`) while it is among the 32 that
+left most recently (`RETAIN_FINISHED`), ranked by that moment and then by its
+last Firstmate state. A session goes with the last attempt that named it, and
+links go with either end. Nothing a snapshot still lists is retired, however
+long ago it finished: Firstmate drops a task only at teardown, so live or
+unlanded work stays. A worker of a secondmate whose crew is unread this poll is
+held, with the secondmate attempt that owns it, since nothing proves it left. The journal keeps a retired member's
+lifecycle, so scrubbing back still draws it as a card.
+
+The viewer keeps the limits (128 sessions, 4096 task attempts, 4096 links) but
+never refuses a fleet over them: `Manifest::fit` (`src/fleet/mod.rs`) keeps the
+most recent members within them (still observed first, then the newest to
+leave, then the newest Firstmate state; the standing Captain always) and puts
+a first diagnostic in the header saying how many were hidden.
 
 Preserve Firstmate task state, Herdr runtime state and transcript activity separately,
 including unknown/stale values and their provenance. Snapshot observation time is

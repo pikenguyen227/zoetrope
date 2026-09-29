@@ -117,6 +117,61 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(cleaned["tasks"][0]["runtime"]["value"], "not observed")
         self.assertEqual(cleaned["tasks"][0]["state"]["source"], "codex-unverified")
 
+    def stale(self, count, left=WHEN):
+        """A previous manifest holding `count` finished workers, each its own
+        session, that left every snapshot at `left`, the newest last, and a
+        retired Captain."""
+        manifest = self.build()
+        for n in range(count):
+            key = {"provider": "claude", "session_id": f"gone-{n}"}
+            manifest["sessions"].append({"key": key, "label": f"gone-{n}"})
+            manifest["tasks"].append({
+                "id": f"gone-{n}", "spawn_gen": "g", "label": f"gone-{n}", "project": None,
+                "session": key, "depends_on": [],
+                "state": adapter.observation("done", "status", f"2026-09-21T{n // 60:02}:{n % 60:02}:00Z"),
+                "runtime": adapter.observation(adapter.NOT_OBSERVED, "firstmate.snapshot", left)})
+        manifest["sessions"][:0] = [
+            {"key": {"provider": "claude", "session_id": "old-captain"}, "label": "Captain · claude",
+             "runtime": adapter.observation(adapter.NOT_OBSERVED, "herdr.pane.get", left)},
+            {"key": {"provider": "claude", "session_id": "captain"}, "label": "Captain · claude"}]
+        manifest["links"].append({"id": "old", "kind": "continues", "evidence": "synthetic",
+                                  "from": {"provider": "claude", "session_id": "gone-0"},
+                                  "to": {"provider": "claude", "session_id": "gone-1"},
+                                  "observed_at": left})
+        return manifest
+
+    def test_finished_members_age_out_while_live_ones_stay(self):
+        # A long-running collector carried every member it ever saw forward,
+        # past the viewer's 128-session limit.
+        manifest = self.build(previous=self.stale(140))
+        live = manifest["tasks"][0]
+        self.assertEqual((live["id"], live["runtime"]["value"]), ("worker", "done"))
+        kept = [t["id"] for t in manifest["tasks"][1:]]
+        # The most recent finished ones, by their last Firstmate state.
+        self.assertEqual(kept, [f"gone-{n}" for n in range(140 - adapter.RETAIN_FINISHED, 140)])
+        self.assertEqual({s["key"]["session_id"] for s in manifest["sessions"]},
+                         {"captain", "native-one"} | {f"gone-{n}" for n in range(108, 140)})
+        # Links to a pruned member go with it.
+        self.assertEqual(manifest["links"], [])
+        # Within the count, a finished member still goes once the window passes.
+        later = "2026-09-23T00:00:01Z"
+        aged = adapter.build_manifest(snapshot(), snapshot(), {"main:w1:p2": pane()},
+                                      self.stale(3), observed=later)
+        self.assertEqual([t["id"] for t in aged["tasks"]], ["worker"])
+        self.assertEqual([s["key"]["session_id"] for s in aged["sessions"]], ["captain", "native-one"])
+
+    def test_a_finished_member_ages_from_when_it_left(self):
+        first = self.build()
+        empty = snapshot(); empty["tasks"] = []
+        left = adapter.build_manifest(empty, empty, {}, first, observed=WHEN)
+        later = adapter.build_manifest(empty, empty, {}, left, observed="2026-09-22T12:00:00Z")
+        self.assertEqual(later["tasks"][0]["runtime"]["observed_at"], WHEN)
+        gone = adapter.build_manifest(empty, empty, {}, later, observed="2026-09-23T00:00:01Z")
+        self.assertEqual((gone["tasks"], gone["sessions"]), ([], []))
+        # A task that comes back is live again, whatever its age.
+        back = self.build(previous=later)
+        self.assertEqual(back["tasks"][0]["runtime"]["value"], "done")
+
     def test_every_task_backend_unreachable_is_diagnosed(self):
         unreachable = {"state": "unknown", "source": "none",
                        "detail": "backend unreachable (herdr endpoint state: unreadable)",
@@ -786,6 +841,27 @@ class MateCrewTests(unittest.TestCase):
                                   sessions=dict(self.SESSIONS, **{"w25:p2": "sm-uiux-2"}))
         self.assertEqual([e["attempt"]["task"] for e in events(bridge.observe(snap, gone), "torn_down")],
                          ["acceptance-docs-typo"])
+
+    def test_retention_holds_a_worker_whose_crew_is_unread(self):
+        manifest, _ = self.collect()
+        primary, _ = mate_homes("s1790299999.1.1")
+        relaunched = dict(self.SESSIONS, **{"w25:p2": "sm-uiux-2"})
+        unread, _ = self.collect(manifest, homes=(primary, RuntimeError("snapshot timed out")),
+                                 sessions=relaunched)
+        # It left long enough ago to age out, were its leaving proven.
+        for task in unread["tasks"]:
+            if task["runtime"]["value"] == adapter.NOT_OBSERVED:
+                task["runtime"]["observed_at"] = "2026-09-01T00:00:00Z"
+        still, _ = self.collect(unread, homes=(primary, RuntimeError("snapshot timed out")),
+                                sessions=relaunched)
+        self.assertIn("acceptance-docs-typo", [t["id"] for t in still["tasks"]])
+        self.assertIn("crew-typo", [s["key"]["session_id"] for s in still["sessions"]])
+        self.assertEqual(self.delegations(still), [("sm-uiux", "crew-typo")])
+        # Once the crew reads without it, it has left, and ages out.
+        gone, _ = self.collect(still, homes=mate_homes("s1790299999.1.1", crew=False),
+                               sessions=relaunched)
+        self.assertNotIn("acceptance-docs-typo", [t["id"] for t in gone["tasks"]])
+        self.assertNotIn("crew-typo", [s["key"]["session_id"] for s in gone["sessions"]])
 
     def test_a_restarted_bridge_holds_only_the_unread_crew(self):
         manifest, snap = self.collect()
