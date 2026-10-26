@@ -8,19 +8,23 @@ date: 2026-10-26
 
 `bin/zoe-fleet-tower` resolves its own symlinks to find the Fleet runtime and
 offers setup, doctor, open, inspect and a synthetic demo
-(`bin/zoe-fleet-tower:4`, `bin/zoe-fleet-tower:24`). Setup requires a Firstmate
-snapshot executable and writes a mode-0600 config under the user's XDG config
-home (`bin/zoe-fleet-tower:43`, `bin/zoe-fleet-tower:62`,
-`bin/zoe-fleet-tower:75`). See `docs/FLEET-USAGE.md` for commands.
+(`bin/zoe-fleet-tower:4`, `bin/zoe-fleet-tower:25`). Setup requires a Firstmate
+snapshot executable, creates its directories under `umask 077`, and writes a
+mode-0600 config under the user's XDG config home (`bin/zoe-fleet-tower:43`,
+`bin/zoe-fleet-tower:60`, `bin/zoe-fleet-tower:64`). See `docs/FLEET-USAGE.md`
+for commands.
 
 The shared config reader treats `KEY=VALUE` as data, lets environment values
-win, and refuses an unset `FM_HOME` (`scripts/fleet-config.sh:5`,
-`scripts/fleet-config.sh:12`, `scripts/fleet-config.sh:31`). Its default state
-path is under the user's XDG state home, keyed by the first 12 SHA-256 hex digits
-of the resolved Firstmate home; telemetry lives in that home's state subtree
-(`scripts/fleet-config.sh:38`, `scripts/fleet-config.sh:42`,
-`scripts/fleet-config.sh:46`). The Claude bridge follows the same home-scoped
-store (`scripts/claude-telemetry.py:20`).
+win, and refuses an unset `FM_HOME` (`scripts/fleet-config.sh:7`,
+`scripts/fleet-config.sh:13`, `scripts/fleet-config.sh:30`). Recorded state and
+telemetry paths apply only when the effective `FM_HOME` resolves to the
+configured home, so an `FM_HOME` override never reuses another home's manifest
+or journal (`scripts/fleet-config.sh:39`). Otherwise the state path is under the
+user's XDG state home, keyed by the first 12 SHA-256 hex digits of the resolved
+Firstmate home; telemetry lives in that home's state subtree
+(`scripts/fleet-config.sh:38`, `scripts/fleet-config.sh:47`,
+`scripts/fleet-config.sh:50`). The Claude bridge follows the same home-scoped
+store and creates its parents privately (`scripts/claude-telemetry.py:20`).
 
 The separate state is necessary because a Fleet manifest records the home in
 its ID and rejects a previous manifest from a different home

@@ -24,7 +24,7 @@ shift
 
 case "$command_name" in
   setup)
-    home= bin= state= telemetry= no_mistakes= configured_runtime=$runtime
+    home='' bin='' state='' telemetry='' no_mistakes='' configured_runtime=$runtime
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --home|--bin|--state|--telemetry|--no-mistakes|--runtime)
