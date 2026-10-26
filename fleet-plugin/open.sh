@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-agentic_root=$(dirname -- "$repo")
+. "$repo/scripts/fleet-config.sh"
+fleet_load_config "$repo"
 if [ "${HERDR_ENV:-}" != 1 ]; then
   echo "Open Fleet from a genuine Herdr pane." >&2
   exit 1
@@ -13,21 +14,11 @@ if [ -n "${HERDR_TAB_ID:-}" ]; then
     printf 'Fleet: could not rename its tab to Team.\n' >&2
 fi
 # Configuration stays outside the repository; no user's session IDs ship here.
-config="${ZOE_FLEET_STATE_DIR:-$agentic_root/.tools/state/zoe-fleet}"
-mkdir -p "$config"
-export ZOE_TELEMETRY_DIR="${ZOE_TELEMETRY_DIR:-$agentic_root/.tools/state/zoe-telemetry}"
-firstmate_home="${FM_HOME:-$agentic_root/firstmate}"
-binary="${ZOE_FLEET_BIN:-$agentic_root/.tools/bin/zoe-fleet}"
-if [ ! -x "$binary" ]; then
-  echo "Build the Fleet binary first: bash scripts/install-fleet.sh" >&2
+mkdir -p "$ZOE_FLEET_STATE_DIR"
+if [ ! -x "$ZOE_FLEET_BIN" ]; then
+  printf 'Fleet binary unavailable: %s\n' "$ZOE_FLEET_BIN" >&2
   read -r -p "Press Enter to close " || true
   exit 1
-fi
-# Firstmate attributes validation runs only when no-mistakes is on PATH, and a
-# Herdr pane's PATH rarely holds the one installed beside the Fleet binary.
-if [ -z "${ZOE_NO_MISTAKES_BIN:-}" ] && ! command -v no-mistakes >/dev/null 2>&1 &&
-  [ -x "$agentic_root/.tools/bin/no-mistakes" ]; then
-  export ZOE_NO_MISTAKES_BIN="$agentic_root/.tools/bin/no-mistakes"
 fi
 captain=()
 context="${HERDR_PLUGIN_CONTEXT_JSON:-}"
@@ -36,14 +27,14 @@ focused=$(printf '%s' "$context" | python3 -c 'import json,sys; print(json.load(
 # The Captain is the pane running this home's coordinator, never merely the
 # focused one: the captain's own Shell tab is often focused. With none found,
 # pass no --captain and the collector keeps the last Captain registered.
-coordinator=$(python3 "$repo/fleet-plugin/captain.py" "${HERDR_BIN_PATH:-herdr}" \
-  "$firstmate_home" "$focused" || true)
+coordinator=$(python3 "$ZOE_FLEET_RUNTIME/fleet-plugin/captain.py" "${HERDR_BIN_PATH:-herdr}" \
+  "$FM_HOME" "$focused" || true)
 if [ -n "$coordinator" ]; then
   captain=(--captain "$coordinator")
 fi
 # Herdr runs this with macOS /bin/bash 3.2, where an empty "${captain[@]}" is
 # unbound under set -u; expand it only when set.
-python3 "$repo/scripts/firstmate-fleet.py" --home "$firstmate_home" \
-  --output "$config/fleet.json" --watch --view "$binary" ${captain[@]+"${captain[@]}"} || {
+python3 "$ZOE_FLEET_RUNTIME/scripts/firstmate-fleet.py" --home "$FM_HOME" \
+  --output "$ZOE_FLEET_STATE_DIR/fleet.json" --watch --view "$ZOE_FLEET_BIN" ${captain[@]+"${captain[@]}"} || {
   read -r -p "Fleet stopped. Press Enter to close " || true
 }

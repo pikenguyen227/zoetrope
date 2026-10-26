@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+import hashlib
 
 SCRIPT = Path(__file__).with_name('claude-telemetry.py')
 spec = importlib.util.spec_from_file_location('telemetry', SCRIPT)
@@ -14,6 +16,21 @@ spec.loader.exec_module(telemetry)
 
 
 class TelemetryTests(unittest.TestCase):
+    def test_default_store_uses_the_configured_home_state(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            config = root / 'config/zoe-fleet/config'
+            config.parent.mkdir(parents=True)
+            home = root / 'firstmate'; home.mkdir()
+            config.write_text(f'FM_HOME={home}\n')
+            with mock.patch.dict(os.environ, {'HOME': str(root), 'XDG_CONFIG_HOME': str(root / 'config'),
+                                             'XDG_STATE_HOME': str(root / 'state')}, clear=True):
+                digest = hashlib.sha256(str(home.resolve()).encode()).hexdigest()[:12]
+                self.assertEqual(telemetry.default_store(),
+                                 root / 'state/zoe-fleet' / digest / 'telemetry')
+                os.environ['ZOE_TELEMETRY_DIR'] = str(root / 'override')
+                self.assertEqual(telemetry.default_store(), root / 'override')
+
     def test_only_quota_and_identity_are_persisted(self):
         data = {'session_id': 'test-123', 'transcript_path': '/private/log', 'token': 'secret',
                 'context_window': {'total_input_tokens': 3000},
