@@ -107,7 +107,7 @@ stage_binary x86_64-apple-darwin "$x64_binary"
 
 runtime="$work/runtime"
 mkdir -p "$runtime/scripts" "$runtime/fleet-plugin" "$runtime/docs"
-for name in firstmate-fleet.py claude-telemetry.py fleet-demo.py; do
+for name in firstmate-fleet.py claude-telemetry.py fleet-demo.py fleet-config.sh; do
   cp "$source_tree/scripts/$name" "$runtime/scripts/$name"
 done
 for name in open.sh pane.sh captain.py herdr-plugin.toml; do
