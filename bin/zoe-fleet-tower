@@ -3,8 +3,7 @@ set -euo pipefail
 
 # Resolve symlinks so the runtime is found when the kit links this into its bin.
 source_path=${BASH_SOURCE[0]}
-invocation_dir=$(cd "$(dirname "$source_path")" && pwd -P)
-entry_dir=$invocation_dir
+entry_dir=$(cd "$(dirname "$source_path")" && pwd -P)
 while [ -L "$source_path" ]; do
   target=$(readlink "$source_path")
   case "$target" in /*) source_path=$target ;; *) source_path="$entry_dir/$target" ;; esac
@@ -24,16 +23,15 @@ shift
 
 case "$command_name" in
   setup)
-    home='' bin='' state='' telemetry='' no_mistakes='' configured_runtime=$runtime
+    home='' bin='' state='' telemetry='' no_mistakes=''
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        --home|--bin|--state|--telemetry|--no-mistakes|--runtime)
+        --home|--bin|--state|--telemetry|--no-mistakes)
           option=$1
           [ "$#" -ge 2 ] || usage
           case "$option" in
             --home) home=$2 ;; --bin) bin=$2 ;; --state) state=$2 ;;
             --telemetry) telemetry=$2 ;; --no-mistakes) no_mistakes=$2 ;;
-            --runtime) configured_runtime=$2 ;;
           esac
           shift 2 ;;
         *) usage ;;
@@ -45,10 +43,8 @@ case "$command_name" in
       exit 1
     fi
     home=$(cd "$home" && pwd -P)
-    configured_runtime=$(cd "$configured_runtime" && pwd -P)
     explicit_state=$state explicit_telemetry=$telemetry
-    bin=${bin:-$invocation_dir/zoe-fleet}
-    case "$bin" in /*) ;; *) bin="$PWD/$bin" ;; esac
+    case "$bin" in ''|/*) ;; *) bin="$PWD/$bin" ;; esac
     case "$state" in '')
       digest=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "$home")
       state="${XDG_STATE_HOME:-$HOME/.local/state}/zoe-fleet/$digest" ;;
@@ -67,11 +63,10 @@ case "$command_name" in
     trap 'rm -f "$temp"' EXIT
     {
       printf 'FM_HOME=%s\n' "$home"
-      printf 'ZOE_FLEET_BIN=%s\n' "$bin"
+      [ -z "$bin" ] || printf 'ZOE_FLEET_BIN=%s\n' "$bin"
       [ -z "$explicit_state" ] || printf 'ZOE_FLEET_STATE_DIR=%s\n' "$state"
       [ -z "$explicit_telemetry" ] || printf 'ZOE_TELEMETRY_DIR=%s\n' "$telemetry"
       printf 'ZOE_NO_MISTAKES_BIN=%s\n' "$no_mistakes"
-      printf 'ZOE_FLEET_RUNTIME=%s\n' "$configured_runtime"
     } > "$temp"
     chmod 600 "$temp"
     mv -f "$temp" "$config_dir/config"
@@ -119,7 +114,7 @@ case "$command_name" in
   demo)
     [ "$#" -eq 0 ] || usage
     # The synthetic demo needs neither a Firstmate home nor its config.
-    fleet_load_config "$runtime" 1 "$invocation_dir/zoe-fleet"
+    fleet_load_config "$runtime" 1
     exec python3 "$ZOE_FLEET_RUNTIME/scripts/fleet-demo.py" --play "$ZOE_FLEET_BIN" ;;
   *) usage ;;
 esac

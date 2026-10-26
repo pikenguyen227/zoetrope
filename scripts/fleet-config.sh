@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared, data-only Fleet configuration. Call fleet_load_config <runtime root>.
 fleet_load_config() {
-  local runtime="$1" allow_missing="${2:-0}" default_binary="${3:-}" file line key value digest config_home='' config_state='' config_telemetry=''
+  local runtime="$1" allow_missing="${2:-0}" file line key value digest config_home='' config_state='' config_telemetry=''
   file="${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet/config"
   if [ -f "$file" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
@@ -22,8 +22,7 @@ fleet_load_config() {
   fi
   if [ "$allow_missing" = 1 ]; then
     ZOE_FLEET_RUNTIME=${ZOE_FLEET_RUNTIME:-$runtime}
-    default_binary=${default_binary:-$ZOE_FLEET_RUNTIME/bin/zoe-fleet}
-    ZOE_FLEET_BIN=${ZOE_FLEET_BIN:-$default_binary}
+    ZOE_FLEET_BIN=${ZOE_FLEET_BIN:-$ZOE_FLEET_RUNTIME/bin/zoe-fleet}
     export ZOE_FLEET_RUNTIME ZOE_FLEET_BIN
     return 0
   fi
@@ -41,8 +40,7 @@ fleet_load_config() {
     [ "${ZOE_TELEMETRY_DIR+x}" = x ] || [ -z "$config_telemetry" ] || ZOE_TELEMETRY_DIR=$config_telemetry
   fi
   ZOE_FLEET_RUNTIME=${ZOE_FLEET_RUNTIME:-$runtime}
-  default_binary=${default_binary:-$ZOE_FLEET_RUNTIME/bin/zoe-fleet}
-  ZOE_FLEET_BIN=${ZOE_FLEET_BIN:-$default_binary}
+  ZOE_FLEET_BIN=${ZOE_FLEET_BIN:-$ZOE_FLEET_RUNTIME/bin/zoe-fleet}
   if [ -z "${ZOE_FLEET_STATE_DIR:-}" ]; then
     digest=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "$FM_HOME") || return 1
     ZOE_FLEET_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/zoe-fleet/$digest"

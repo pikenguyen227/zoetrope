@@ -18,7 +18,10 @@ bin/zoe-fleet-tower demo
 
 `setup` requires the home's `bin/fm-fleet-snapshot.sh`, writes a private
 `${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet/config` (mode 0600), and creates
-its state directory. `--bin` defaults to `zoe-fleet` beside the launcher. The
+its state directory. Setup never records `ZOE_FLEET_RUNTIME` and records
+`ZOE_FLEET_BIN` only when `--bin` is given; otherwise the runtime is the one the
+running launcher resolves to and the binary is `zoe-fleet` beside it, so a newer
+runtime's launcher uses its own scripts without re-running setup. The
 config accepts `FM_HOME`, `ZOE_FLEET_BIN`, `ZOE_FLEET_STATE_DIR`,
 `ZOE_TELEMETRY_DIR`, `ZOE_NO_MISTAKES_BIN` and `ZOE_FLEET_RUNTIME` as plain
 `KEY=VALUE` lines; environment variables take precedence. Without `--state`,

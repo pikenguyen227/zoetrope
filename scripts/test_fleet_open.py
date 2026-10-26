@@ -243,7 +243,6 @@ class LauncherTests(unittest.TestCase):
             linked = root / "tools" / "zoe-fleet-tower"
             linked.parent.mkdir()
             linked.symlink_to(runtime / "bin" / "zoe-fleet-tower")
-            (linked.parent / "zoe-fleet").symlink_to(binary)
             herdr = root / "stub-herdr"
             herdr.write_text("#!/bin/sh\nprintf 'pikenguyen227.zoetrope-fleet\\n'\n")
             herdr.chmod(0o755)
@@ -257,8 +256,8 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
             values = dict(line.split("=", 1) for line in config.read_text().splitlines())
             self.assertEqual(values["FM_HOME"], str(home.resolve()))
-            self.assertEqual(Path(values["ZOE_FLEET_BIN"]).resolve(), binary.resolve())
-            self.assertEqual(Path(values["ZOE_FLEET_RUNTIME"]).resolve(), runtime.resolve())
+            self.assertNotIn("ZOE_FLEET_BIN", values)
+            self.assertNotIn("ZOE_FLEET_RUNTIME", values)
             self.assertNotIn("ZOE_FLEET_STATE_DIR", values)
             self.assertNotIn("ZOE_TELEMETRY_DIR", values)
             digest = hashlib.sha256(str(home.resolve()).encode()).hexdigest()[:12]
@@ -285,12 +284,27 @@ class LauncherTests(unittest.TestCase):
             demo = subprocess.run([BASH, str(linked), "demo"], env=env,
                                   capture_output=True, text=True)
             self.assertEqual(demo.returncode, 0, demo.stderr)
-            self.assertEqual(demo.stdout.strip(), f"--play {values['ZOE_FLEET_BIN']}")
+            self.assertEqual(demo.stdout.strip(), f"--play {binary.resolve()}")
+            upgraded = root / "upgraded"
+            shutil.copytree(runtime, upgraded)
+            (upgraded / "scripts" / "fleet-demo.py").write_text(
+                "import sys\nprint('upgraded', ' '.join(sys.argv[1:]))\n")
+            newer = subprocess.run([BASH, str(upgraded / "bin" / "zoe-fleet-tower"), "demo"], env=env,
+                                   capture_output=True, text=True)
+            self.assertEqual(newer.returncode, 0, newer.stderr)
+            self.assertEqual(newer.stdout.strip(),
+                             f"upgraded --play {(upgraded / 'bin' / 'zoe-fleet').resolve()}")
+            with config.open("a") as handle:
+                handle.write(f"ZOE_FLEET_RUNTIME={runtime}\n")
+            pinned = subprocess.run([BASH, str(upgraded / "bin" / "zoe-fleet-tower"), "demo"], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(pinned.returncode, 0, pinned.stderr)
+            self.assertEqual(pinned.stdout.strip(), f"--play {runtime}/bin/zoe-fleet")
             shutil.rmtree(home)
             stale = subprocess.run([BASH, str(linked), "demo"], env=env,
                                    capture_output=True, text=True)
             self.assertEqual(stale.returncode, 0, stale.stderr)
-            self.assertEqual(stale.stdout.strip(), f"--play {values['ZOE_FLEET_BIN']}")
+            self.assertEqual(stale.stdout.strip(), f"--play {runtime}/bin/zoe-fleet")
 
     def test_explicit_state_stays_with_the_configured_home(self):
         with tempfile.TemporaryDirectory() as tmp:
