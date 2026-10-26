@@ -46,6 +46,7 @@ case "$command_name" in
     fi
     home=$(cd "$home" && pwd -P)
     configured_runtime=$(cd "$configured_runtime" && pwd -P)
+    explicit_state=$state explicit_telemetry=$telemetry
     bin=${bin:-$invocation_dir/zoe-fleet}
     case "$bin" in /*) ;; *) bin="$PWD/$bin" ;; esac
     case "$state" in '')
@@ -56,19 +57,19 @@ case "$command_name" in
     telemetry=${telemetry:-$state/telemetry}
     case "$telemetry" in /*) ;; *) telemetry="$PWD/$telemetry" ;; esac
     case "$no_mistakes" in ''|/*) ;; *) no_mistakes="$PWD/$no_mistakes" ;; esac
+    umask 077
     mkdir -p "$state" "$telemetry"
     state=$(cd "$state" && pwd -P)
     telemetry=$(cd "$telemetry" && pwd -P)
     config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet"
     mkdir -p "$config_dir"
-    umask 077
     temp=$(mktemp "$config_dir/.config.XXXXXX")
     trap 'rm -f "$temp"' EXIT
     {
       printf 'FM_HOME=%s\n' "$home"
       printf 'ZOE_FLEET_BIN=%s\n' "$bin"
-      printf 'ZOE_FLEET_STATE_DIR=%s\n' "$state"
-      printf 'ZOE_TELEMETRY_DIR=%s\n' "$telemetry"
+      [ -z "$explicit_state" ] || printf 'ZOE_FLEET_STATE_DIR=%s\n' "$state"
+      [ -z "$explicit_telemetry" ] || printf 'ZOE_TELEMETRY_DIR=%s\n' "$telemetry"
       printf 'ZOE_NO_MISTAKES_BIN=%s\n' "$no_mistakes"
       printf 'ZOE_FLEET_RUNTIME=%s\n' "$configured_runtime"
     } > "$temp"
@@ -87,8 +88,7 @@ case "$command_name" in
     case "$command_name" in
       doctor)
         failed=0
-        config="${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet/config"
-        if [ -f "$config" ]; then printf 'Config: %s\n' "$config"; else printf 'Config missing: %s\n' "$config"; failed=1; fi
+        printf 'Config: %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet/config"
         if [ -x "$ZOE_FLEET_BIN" ] && "$ZOE_FLEET_BIN" --version; then :; else printf 'Fleet binary unavailable: %s\n' "$ZOE_FLEET_BIN"; failed=1; fi
         if python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))'; then printf 'Python: compatible\n'; else printf 'Python 3.9 or newer required\n'; failed=1; fi
         if [ -x "$FM_HOME/bin/fm-fleet-snapshot.sh" ]; then printf 'Firstmate home: %s\n' "$FM_HOME"; else printf 'Firstmate snapshot unavailable: %s\n' "$FM_HOME"; failed=1; fi

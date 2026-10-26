@@ -20,14 +20,14 @@ fleet_load_config() {
       esac
     done < "$file"
   fi
+  if [ "$allow_missing" = 1 ]; then
+    ZOE_FLEET_RUNTIME=${ZOE_FLEET_RUNTIME:-$runtime}
+    default_binary=${default_binary:-$ZOE_FLEET_RUNTIME/bin/zoe-fleet}
+    ZOE_FLEET_BIN=${ZOE_FLEET_BIN:-$default_binary}
+    export ZOE_FLEET_RUNTIME ZOE_FLEET_BIN
+    return 0
+  fi
   if [ -z "${FM_HOME:-}" ]; then
-    if [ "$allow_missing" = 1 ]; then
-      ZOE_FLEET_RUNTIME=${ZOE_FLEET_RUNTIME:-$runtime}
-      default_binary=${default_binary:-$ZOE_FLEET_RUNTIME/bin/zoe-fleet}
-      ZOE_FLEET_BIN=${ZOE_FLEET_BIN:-$default_binary}
-      export ZOE_FLEET_RUNTIME ZOE_FLEET_BIN
-      return 0
-    fi
     printf 'Fleet: FM_HOME is unset; run zoe-fleet-tower setup --home <Firstmate home>.\n' >&2
     return 1
   fi
