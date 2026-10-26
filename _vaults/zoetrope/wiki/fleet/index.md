@@ -6,6 +6,8 @@ date: 2026-09-26
 
 # Fleet notes
 
+- [Isolated tower acceptance](acceptance.md): sandbox lab, Phase A evidence,
+  and the explicit Phase B boundary.
 - [Fleet release packaging](packaging.md): pristine commit builds, archive layout, checksum verification, and later Linux targets.
 - [User-relative Fleet launch](user-relative-launch.md): config, per-home state,
   runtime lookup and the developer install migration.

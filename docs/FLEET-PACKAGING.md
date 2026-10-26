@@ -99,6 +99,44 @@ Download the assets into an empty temporary directory and run
 in the release notes for the kit manifest. No code signing, notarization, or
 checksum signature is part of this release format.
 
+## Acceptance
+
+Run this script from a zoetrope source checkout at the candidate commit. Run
+Phase A for every candidate release on macOS before approving its asset
+URLs for the kit. Supply either the downloaded release directory (including
+`SHA256SUMS`) or a locally built `zoe` and this runtime checkout, plus the
+approved full Firstmate source commit:
+
+```sh
+scripts/acceptance-tower.sh --firstmate-ref <40-character-firstmate-sha> \
+  --assets /tmp/downloaded-fleet-assets --record /tmp/fleet-acceptance.md
+# Or, before a release exists:
+scripts/acceptance-tower.sh --firstmate-ref <40-character-firstmate-sha> \
+  --local-bin target/debug/zoe --local-runtime . \
+  --record /tmp/fleet-acceptance.md
+```
+
+The runner stages inputs in a new `/private/tmp` lab, then executes the test
+under `sandbox-exec` with a lab `HOME`, XDG directories, `TMPDIR`, and a
+minimal `PATH`. Its profile denies reads and writes to the real home and
+explicitly to the three live Agentic checkout/tool paths. It clones Firstmate
+from GitHub at the supplied pin; it does not read a local Firstmate checkout.
+Phase A configures the tower, checks `doctor`, seeds a local secondmate without
+launching an agent, verifies both snapshots and the bundled Fleet inspect
+fixture, checks that generated lab data contains no owner path, and writes a
+Markdown record. The lab is removed on exit. The Phase A Herdr command is an
+inert availability probe used only by `doctor`; no Herdr process or viewer runs.
+
+Phase B is a separate, explicit `--phase-b` invocation for one person after
+lab-safe Herdr and agent binaries have been provisioned. It opens an
+interactive shell inside the same sandbox and prompts for one Herdr pane,
+`zoe-fleet-tower open`, and one `fm-spawn.sh --secondmate lab-mate` launch.
+After the person exits that shell, the runner inspects the manifest and checks
+its fleet ID, spawned task presence, and absence of owner paths in the manifest
+and event journal. Record the inspect output in the Markdown record. Phase B
+must pass once before declaring full tower parity; it is never run by a kit
+install or check, and is not part of this automated Phase A check.
+
 ## Linux and WSL2 extension
 
 The target-keyed archive names can later include
