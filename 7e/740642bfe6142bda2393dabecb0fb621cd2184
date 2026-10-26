@@ -1,0 +1,19 @@
+docs/FLEET-PACKAGING.md
+  s_04d43614b0a040::t_0fccbc72a99499 136-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7e740642bfe6142bda2393dabecb0fb621cd2184",
+  "prompts": {},
+  "sessions": {
+    "s_04d43614b0a040": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97688ef3-7c60-4161-960f-b0058878bf1f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
