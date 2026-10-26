@@ -1,0 +1,9 @@
+(version 1)
+; The runner stages its inputs in a throwaway /private/tmp lab before entering
+; this profile. Nothing in the login user's real home is needed inside it.
+(allow default)
+(deny file-read* file-write* (subpath (param "REAL_HOME")))
+; Keep these explicit even though they are covered by REAL_HOME.
+(deny file-read* file-write* (subpath (param "OWNER_FIRSTMATE")))
+(deny file-read* file-write* (subpath (param "OWNER_ZOETROPE")))
+(deny file-read* file-write* (subpath (param "OWNER_TOOLS")))
