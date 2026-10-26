@@ -6,6 +6,8 @@ date: 2026-09-26
 
 # Fleet notes
 
+- [Fleet release packaging](packaging.md): pristine commit builds, archive layout, checksum verification, and later Linux targets.
+
 - [Member liveness and Herdr runtime](member-liveness.md): how a fleet card
   decides active or idle, and why Herdr's pane status overrides a quiet or stale
   transcript.
