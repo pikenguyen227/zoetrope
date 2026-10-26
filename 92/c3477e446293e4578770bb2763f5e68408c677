@@ -1,0 +1,22 @@
+scripts/test_release_fleet.sh
+  s_30b1c6a32a1f5b::t_5e5f8afd6fdcc1 17,31
+  s_30b1c6a32a1f5b::t_b7f6e0e649865c 30
+scripts/release-fleet.sh
+  s_30b1c6a32a1f5b::t_5e5f8afd6fdcc1 4,81,85,89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "92c3477e446293e4578770bb2763f5e68408c677",
+  "prompts": {},
+  "sessions": {
+    "s_30b1c6a32a1f5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5add3893-a32c-40ba-8e4f-bc5edc0a153d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
