@@ -38,5 +38,5 @@ assignment expression (`scripts/firstmate-fleet.py:555`,
 The developer installer delegates setup to the launcher. It recognizes the
 older sibling-home layout once and keeps its existing binary and state paths
 when it first writes config (`scripts/install-fleet.sh:7`,
-`scripts/install-fleet.sh:40`). This migration is specific to the developer
+`scripts/install-fleet.sh:41`). This migration is specific to the developer
 wrapper; the runtime launcher and plugin have no sibling-home default.

@@ -26,6 +26,7 @@ ln -sfn "$repo/bin/zoe-fleet-tower" "$destination/zoe-fleet-tower"
 # Keep the old command names; both dispatch through the same launcher.
 for action in open demo; do
   wrapper="$destination/zoe-fleet-$action"
+  # shellcheck disable=SC2016 # the wrapper expands $0 and $@ when it runs
   { printf '#!/usr/bin/env bash\nset -euo pipefail\n';
     printf 'exec "$(dirname "$0")/zoe-fleet-tower" %s "$@"\n' "$action"; } > "$wrapper"
   chmod 755 "$wrapper"
