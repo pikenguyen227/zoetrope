@@ -1,0 +1,21 @@
+scripts/test_fleet_open.py
+  s_ec98b4ad2d57db::t_1bb2d1c2abd9e8 182-205
+fleet-plugin/open.sh
+  s_ec98b4ad2d57db::t_1bb2d1c2abd9e8 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9bac589f982927d8693c50077c656162397f58ce",
+  "prompts": {},
+  "sessions": {
+    "s_ec98b4ad2d57db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b76775a2-667e-433e-a3bb-e3fd08457809",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
