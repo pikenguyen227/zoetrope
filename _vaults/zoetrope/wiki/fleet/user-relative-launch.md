@@ -14,7 +14,7 @@ mode-0600 config under the user's XDG config home (`bin/zoe-fleet-tower:41`,
 `bin/zoe-fleet-tower:56`, `bin/zoe-fleet-tower:60`). See `docs/FLEET-USAGE.md`
 for commands. Setup never records the runtime and records the binary only
 when `--bin` is given, so both default to the running launcher's resolved
-location (`scripts/fleet-config.sh:43`, `scripts/fleet-config.sh:44`).
+location (`scripts/fleet-config.sh:42`, `scripts/fleet-config.sh:43`).
 
 The shared config reader treats `KEY=VALUE` as data, lets environment values
 win, and refuses an unset `FM_HOME` (`scripts/fleet-config.sh:7`,
@@ -24,7 +24,7 @@ configured home, so an `FM_HOME` override never reuses another home's manifest
 or journal (`scripts/fleet-config.sh:38`). Otherwise the state path is under the
 user's XDG state home, keyed by the first 12 SHA-256 hex digits of the resolved
 Firstmate home; telemetry lives in that home's state subtree
-(`scripts/fleet-config.sh:37`, `scripts/fleet-config.sh:45`,
+(`scripts/fleet-config.sh:45`, `scripts/fleet-config.sh:46`,
 `scripts/fleet-config.sh:48`). The Claude bridge follows the same home-scoped
 store and creates its parents privately (`scripts/claude-telemetry.py:20`).
 

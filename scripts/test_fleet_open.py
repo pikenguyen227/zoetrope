@@ -390,6 +390,45 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(config.read_bytes(), before)
 
+    def test_fresh_install_guidance_configures_a_working_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "zoetrope"
+            for directory in ("bin", "scripts"):
+                (repo / directory).mkdir(parents=True)
+            shutil.copy(LAUNCHER, repo / "bin" / "zoe-fleet-tower")
+            shutil.copy(CONFIG_HELPER, repo / "scripts" / "fleet-config.sh")
+            shutil.copy(INSTALLER, repo / "scripts" / "install-fleet.sh")
+            home = root / "firstmate"
+            (home / "bin").mkdir(parents=True)
+            snapshot = home / "bin" / "fm-fleet-snapshot.sh"
+            snapshot.write_text("#!/bin/sh\n")
+            snapshot.chmod(0o755)
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            cargo = fake_bin / "cargo"
+            cargo.write_text("#!/bin/sh\nmkdir -p target/release\n"
+                             "printf '#!/bin/sh\\nprintf \"%%s\\\\n\" \"$*\"\\n' > target/release/zoe\n"
+                             "chmod 755 target/release/zoe\n")
+            cargo.chmod(0o755)
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("FM_", "ZOE_", "XDG_"))}
+            env.update(HOME=str(root / "user"), XDG_CONFIG_HOME=str(root / "user/config"),
+                       XDG_STATE_HOME=str(root / "user/state"), PATH=f"{fake_bin}:{os.environ['PATH']}")
+            run = subprocess.run([BASH, str(repo / "scripts/install-fleet.sh")], env=env,
+                                 capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            guidance = next(line for line in run.stdout.splitlines() if "Configure it with" in line)
+            command = guidance.split("Configure it with ", 1)[1].split()
+            command = [str(home) if word == "<Firstmate" else word for word in command if word != "home>"]
+            installed = root / "user/.local/bin"
+            setup = subprocess.run([BASH, str(installed / command[0]), *command[1:]], env=env,
+                                   capture_output=True, text=True)
+            self.assertEqual(setup.returncode, 0, setup.stderr)
+            inspect = subprocess.run([BASH, str(installed / "zoe-fleet-tower"), "inspect"], env=env,
+                                     capture_output=True, text=True)
+            self.assertEqual(inspect.returncode, 0, inspect.stderr)
+            self.assertTrue(inspect.stdout.strip().endswith("/fleet.json --inspect"), inspect.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

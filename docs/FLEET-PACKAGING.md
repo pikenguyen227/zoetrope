@@ -22,6 +22,10 @@ files in its state directory. A separate state directory per Firstmate home is
 required because the manifest identifies its source by the absolute home path.
 The shipped `bin/zoe-fleet-tower` launcher derives that directory per home;
 its config, state paths, and commands are documented in `docs/FLEET-USAGE.md`.
+The binary archive ships `zoe-fleet` apart from the runtime, and the launcher
+looks for it in the runtime's `bin/` beside the real `zoe-fleet-tower`, not
+beside a link to it. The kit either places `zoe-fleet` in `<runtime>/bin/` or
+runs `zoe-fleet-tower setup --bin <path to zoe-fleet>`.
 
 ## Build and archive layout
 

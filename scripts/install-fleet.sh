@@ -36,7 +36,8 @@ if [ ! -f "$config" ]; then
   home=${FM_HOME:-}
   if [ -z "$home" ] && [ "$legacy" = 1 ]; then home="$parent/firstmate"; fi
   if [ -z "$home" ]; then
-    printf 'Fleet binary installed. Configure it with zoe-fleet-tower setup --home <Firstmate home>.\n'
+    printf 'Fleet binary installed. Configure it with zoe-fleet-tower setup --home <Firstmate home> --bin %s\n' \
+      "$destination/zoe-fleet"
   elif [ "$legacy" = 1 ]; then
     args=(setup --home "$home" --bin "$destination/zoe-fleet" \
       --state "$parent/.tools/state/zoe-fleet" --telemetry "$parent/.tools/state/zoe-telemetry")
