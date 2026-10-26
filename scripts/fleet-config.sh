@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared, data-only Fleet configuration. Call fleet_load_config <runtime root>.
 fleet_load_config() {
-  local runtime="$1" allow_missing="${2:-0}" default_binary="${3:-}" file line key value digest config_home= config_state= config_telemetry=
+  local runtime="$1" allow_missing="${2:-0}" default_binary="${3:-}" file line key value digest config_home='' config_state='' config_telemetry=''
   file="${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet/config"
   if [ -f "$file" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
