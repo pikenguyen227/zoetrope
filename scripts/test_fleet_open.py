@@ -268,6 +268,34 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(stale.returncode, 0, stale.stderr)
             self.assertEqual(stale.stdout.strip(), f"--play {values['ZOE_FLEET_BIN']}")
 
+    def test_explicit_state_stays_with_the_configured_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "firstmate"
+            (home / "bin").mkdir(parents=True)
+            snapshot = home / "bin" / "fm-fleet-snapshot.sh"
+            snapshot.write_text("#!/bin/sh\n")
+            snapshot.chmod(0o755)
+            other = root / "other"
+            other.mkdir()
+            binary = root / "zoe-fleet"
+            binary.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\"\n")
+            binary.chmod(0o755)
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("FM_", "ZOE_", "XDG_", "HERDR_"))}
+            env.update(HOME=str(root / "user"), XDG_CONFIG_HOME=str(root / "user/config"),
+                       XDG_STATE_HOME=str(root / "user/state"))
+            setup = subprocess.run([BASH, str(LAUNCHER), "setup", "--home", str(home), "--bin", str(binary),
+                                    "--state", str(root / "legacy")], env=env, capture_output=True, text=True)
+            self.assertEqual(setup.returncode, 0, setup.stderr)
+            same = subprocess.run([BASH, str(LAUNCHER), "inspect"], env=env, capture_output=True, text=True)
+            self.assertEqual(same.stdout.strip(), f"fleet {(root / 'legacy').resolve()}/fleet.json --inspect")
+            moved = subprocess.run([BASH, str(LAUNCHER), "inspect"], env={**env, "FM_HOME": str(other)},
+                                   capture_output=True, text=True)
+            self.assertEqual(moved.returncode, 0, moved.stderr)
+            digest = hashlib.sha256(str(other.resolve()).encode()).hexdigest()[:12]
+            self.assertEqual(moved.stdout.strip(),
+                             f"fleet {root / 'user/state/zoe-fleet' / digest}/fleet.json --inspect")
+
     def test_setup_rejects_a_home_without_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

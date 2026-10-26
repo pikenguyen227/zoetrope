@@ -33,8 +33,10 @@ def default_store():
         pass
     home = os.environ.get('FM_HOME', values.get('FM_HOME', ''))
     if not home:
-        return Path(values['ZOE_TELEMETRY_DIR']) if values.get('ZOE_TELEMETRY_DIR') else None
+        return None
     home = str(Path(home).resolve())
+    if not values.get('FM_HOME') or str(Path(values['FM_HOME']).resolve()) != home:
+        values = {}
     digest = hashlib.sha256(home.encode()).hexdigest()[:12]
     state = os.environ.get('ZOE_FLEET_STATE_DIR', values.get('ZOE_FLEET_STATE_DIR',
         str(Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state'))) / 'zoe-fleet' / digest)))
@@ -67,7 +69,11 @@ def statusline():
         if record:
             store = default_store()
             if store:
-                store.mkdir(parents=True, exist_ok=True, mode=0o700)
+                previous = os.umask(0o077)
+                try:
+                    store.mkdir(parents=True, exist_ok=True)
+                finally:
+                    os.umask(previous)
                 fd, name = tempfile.mkstemp(prefix='.usage-', dir=store)
                 try:
                     with os.fdopen(fd, 'w') as output:

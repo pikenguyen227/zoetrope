@@ -26,7 +26,8 @@ state lives in `${XDG_STATE_HOME:-$HOME/.local/state}/zoe-fleet/<home-hash>/`,
 where the hash is the first 12 SHA-256 hex digits of the resolved `FM_HOME`,
 and telemetry lives in its `telemetry/` subdirectory. Setup creates both
 directories private (0700) and records them in the config only when `--state`
-or `--telemetry` is given, so an `FM_HOME` override keeps its own state. `FM_HOME` has no
+or `--telemetry` is given. Recorded paths apply only to the configured home, so
+an `FM_HOME` override always gets its own per-home state. `FM_HOME` has no
 implicit default. `doctor` reads the setup and
 reports binary, Python, Firstmate, Herdr, optional no-mistakes, plugin, and
 state readiness. `inspect` runs a headless check of the current manifest.
