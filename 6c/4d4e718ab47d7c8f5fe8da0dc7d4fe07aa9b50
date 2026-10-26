@@ -1,0 +1,21 @@
+scripts/release-fleet.sh
+  s_4228fa52a7546a::t_7da201a3c00ffc 110
+scripts/test_release_fleet.sh
+  s_4228fa52a7546a::t_d69ad8cab72a30 32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6c4d4e718ab47d7c8f5fe8da0dc7d4fe07aa9b50",
+  "prompts": {},
+  "sessions": {
+    "s_4228fa52a7546a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0e1c2ab-7b0c-4458-9245-bc0af0912494",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
