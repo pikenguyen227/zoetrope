@@ -363,8 +363,8 @@ as graph nodes of its own.
   rarely holds it. The adapter takes `ZOE_NO_MISTAKES_BIN`, else the first
   `no-mistakes` on its own `PATH` (`find_no_mistakes`), appends that directory
   to the snapshot's `PATH` after Herdr's, and reads runs with that binary.
-  `fleet-plugin/open.sh` names the one in `.tools/bin` when its `PATH` has
-  none. Without one, every `validation_run` is null, which is a manifest
+  `fleet-plugin/open.sh` passes `ZOE_NO_MISTAKES_BIN` through from the Fleet
+  config or environment. Without one, every `validation_run` is null, which is a manifest
   diagnostic rather than a crew that merely never validates.
 - **Two allow-listed reads, nothing else.** `no-mistakes axi status --run
   <id>`, which reads the run's record without the daemon's socket, and
@@ -536,7 +536,8 @@ Do not publish releases, crate packages or captured transcripts as part of a pro
 
 ## Preparation record
 
-Local checkout: `Desktop/Agentic/zoetrope`.
+Preparation used a local zoetrope checkout; current installs use
+`zoe-fleet-tower setup --home <Firstmate home>` (see `FLEET-USAGE.md`).
 Development branch: `codex/firstmate-fleet`.
 `origin` points to the user's fork; `upstream` points to `furkankly/zoetrope`.
 At preparation, both main branches were at the baseline commit above.

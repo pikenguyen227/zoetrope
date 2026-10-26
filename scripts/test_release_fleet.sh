@@ -29,7 +29,7 @@ mkdir "$work/runtime"
 tar -xzf "$runtime" -C "$work/runtime"
 if tar -tzf "$runtime" | grep -Eq '(^|/)\._'; then echo 'AppleDouble entry in runtime archive' >&2; exit 1; fi
 grep -Fxq 'rustc=fixture build' "$work/aarch64-apple-darwin/BUILD.txt"
-for name in scripts/firstmate-fleet.py scripts/claude-telemetry.py scripts/fleet-demo.py \
+for name in scripts/firstmate-fleet.py scripts/claude-telemetry.py scripts/fleet-demo.py scripts/fleet-config.sh \
   fleet-plugin/open.sh fleet-plugin/pane.sh fleet-plugin/captain.py \
   fleet-plugin/herdr-plugin.toml docs/FLEET-USAGE.md docs/FLEET-PACKAGING.md \
   README.md LICENSE NOTICE; do

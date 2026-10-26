@@ -20,12 +20,12 @@ The kit installer does not invoke this collector.
 The producer writes `fleet.json` and companion checkpoint, feed, request, and lock
 files in its state directory. A separate state directory per Firstmate home is
 required because the manifest identifies its source by the absolute home path.
-The launcher from the parallel user-relative PR uses
-`${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet/config` and
-`${XDG_STATE_HOME:-$HOME/.local/state}/zoe-fleet/<home-hash>/`. Its config binds
-`FM_HOME`, `ZOE_FLEET_BIN`, `ZOE_FLEET_STATE_DIR`, `ZOE_TELEMETRY_DIR`,
-`ZOE_NO_MISTAKES_BIN`, and `ZOE_FLEET_RUNTIME`. This packaging PR does not
-change the current collector's default paths; the launcher PR owns that change.
+The shipped `bin/zoe-fleet-tower` launcher derives that directory per home;
+its config, state paths, and commands are documented in `docs/FLEET-USAGE.md`.
+The binary archive ships `zoe-fleet` apart from the runtime, and the launcher
+looks for it in the runtime's `bin/` beside the real `zoe-fleet-tower`, not
+beside a link to it. The kit either places `zoe-fleet` in `<runtime>/bin/` or
+runs `zoe-fleet-tower setup --bin <path to zoe-fleet>`.
 
 ## Build and archive layout
 
@@ -52,13 +52,13 @@ The output directory must not exist. It contains:
 | --- | --- |
 | `zoe-fleet-0.2.0-<shortsha>-aarch64-apple-darwin.tar.gz` | one executable regular file `zoe-fleet`, `LICENSE`, `NOTICE`, `BUILD.txt` |
 | `zoe-fleet-0.2.0-<shortsha>-x86_64-apple-darwin.tar.gz` | same layout for x64 |
-| `zoetrope-fleet-runtime-0.2.0-<shortsha>.tar.gz` | `scripts/firstmate-fleet.py`, `scripts/claude-telemetry.py`, `scripts/fleet-demo.py`, `fleet-plugin/*`, `docs/FLEET-USAGE.md`, `docs/FLEET-PACKAGING.md`, `LICENSE`, `NOTICE`, `README.md`, and `bin/zoe-fleet-tower` once the parallel launcher PR lands |
+| `zoetrope-fleet-runtime-0.2.0-<shortsha>.tar.gz` | `scripts/firstmate-fleet.py`, `scripts/claude-telemetry.py`, `scripts/fleet-demo.py`, `scripts/fleet-config.sh`, `fleet-plugin/*`, `docs/FLEET-USAGE.md`, `docs/FLEET-PACKAGING.md`, `LICENSE`, `NOTICE`, `README.md`, `bin/zoe-fleet-tower` |
 | `SHA256SUMS` | SHA-256 entries for all emitted archives |
 
 `BUILD.txt` records version, full commit, target, rustc, and
 `SOURCE_DATE_EPOCH`. Each archive's NOTICE includes the build commit. The
-packager tolerates the launcher's absence until that parallel PR lands;
-a release should wait for it. `--universal` optionally adds a fourth binary
+packager still tolerates a source tree without the launcher, but a release
+must include it. `--universal` optionally adds a fourth binary
 archive assembled by `lipo` with the same root layout. Per-target archives are
 the default because the kit manifest selects a target.
 

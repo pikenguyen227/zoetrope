@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve symlinks so the runtime is found when the kit links this into its bin.
+source_path=${BASH_SOURCE[0]}
+entry_dir=$(cd "$(dirname "$source_path")" && pwd -P)
+while [ -L "$source_path" ]; do
+  target=$(readlink "$source_path")
+  case "$target" in /*) source_path=$target ;; *) source_path="$entry_dir/$target" ;; esac
+  entry_dir=$(cd "$(dirname "$source_path")" && pwd -P)
+done
+runtime=$(cd "$entry_dir/.." && pwd -P)
+. "$runtime/scripts/fleet-config.sh"
+
+usage() {
+  printf 'Usage: zoe-fleet-tower {setup|doctor|open|inspect|demo}\n' >&2
+  exit 2
+}
+
+command_name=${1:-}
+[ -n "$command_name" ] || usage
+shift
+
+case "$command_name" in
+  setup)
+    home='' bin='' state='' telemetry='' no_mistakes=''
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --home|--bin|--state|--telemetry|--no-mistakes)
+          option=$1
+          [ "$#" -ge 2 ] || usage
+          case "$option" in
+            --home) home=$2 ;; --bin) bin=$2 ;; --state) state=$2 ;;
+            --telemetry) telemetry=$2 ;; --no-mistakes) no_mistakes=$2 ;;
+          esac
+          shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [ -n "$home" ] || usage
+    if [ ! -x "$home/bin/fm-fleet-snapshot.sh" ]; then
+      printf 'Fleet: Firstmate home needs bin/fm-fleet-snapshot.sh: %s\n' "$home" >&2
+      exit 1
+    fi
+    home=$(cd "$home" && pwd -P)
+    explicit_state=$state explicit_telemetry=$telemetry
+    case "$bin" in ''|/*) ;; *) bin="$PWD/$bin" ;; esac
+    case "$state" in '')
+      digest=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "$home")
+      state="${XDG_STATE_HOME:-$HOME/.local/state}/zoe-fleet/$digest" ;;
+      /*) ;; *) state="$PWD/$state" ;;
+    esac
+    telemetry=${telemetry:-$state/telemetry}
+    case "$telemetry" in /*) ;; *) telemetry="$PWD/$telemetry" ;; esac
+    case "$no_mistakes" in ''|/*) ;; *) no_mistakes="$PWD/$no_mistakes" ;; esac
+    umask 077
+    mkdir -p "$state" "$telemetry"
+    state=$(cd "$state" && pwd -P)
+    telemetry=$(cd "$telemetry" && pwd -P)
+    config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet"
+    mkdir -p "$config_dir"
+    temp=$(mktemp "$config_dir/.config.XXXXXX")
+    trap 'rm -f "$temp"' EXIT
+    {
+      printf 'FM_HOME=%s\n' "$home"
+      [ -z "$bin" ] || printf 'ZOE_FLEET_BIN=%s\n' "$bin"
+      [ -z "$explicit_state" ] || printf 'ZOE_FLEET_STATE_DIR=%s\n' "$state"
+      [ -z "$explicit_telemetry" ] || printf 'ZOE_TELEMETRY_DIR=%s\n' "$telemetry"
+      printf 'ZOE_NO_MISTAKES_BIN=%s\n' "$no_mistakes"
+    } > "$temp"
+    chmod 600 "$temp"
+    mv -f "$temp" "$config_dir/config"
+    trap - EXIT
+    printf 'Fleet configured: %s\nFM_HOME=%s\nState=%s\n' "$config_dir/config" "$home" "$state"
+    ;;
+  doctor|open|inspect)
+    [ "$#" -eq 0 ] || usage
+    if [ "$command_name" = doctor ] && [ ! -f "${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet/config" ]; then
+      printf 'Config missing: %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet/config" >&2
+      exit 1
+    fi
+    fleet_load_config "$runtime"
+    case "$command_name" in
+      doctor)
+        failed=0
+        printf 'Config: %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet/config"
+        if [ -x "$ZOE_FLEET_BIN" ] && "$ZOE_FLEET_BIN" --version; then :; else printf 'Fleet binary unavailable: %s\n' "$ZOE_FLEET_BIN"; failed=1; fi
+        if python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))'; then printf 'Python: compatible\n'; else printf 'Python 3.9 or newer required\n'; failed=1; fi
+        if [ -x "$FM_HOME/bin/fm-fleet-snapshot.sh" ]; then printf 'Firstmate home: %s\n' "$FM_HOME"; else printf 'Firstmate snapshot unavailable: %s\n' "$FM_HOME"; failed=1; fi
+        herdr_bin=${HERDR_BIN_PATH:-herdr}
+        if command -v "$herdr_bin" >/dev/null 2>&1; then
+          printf 'Herdr: found\n'
+          if "$herdr_bin" plugin list 2>/dev/null | grep -q 'pikenguyen227.zoetrope-fleet'; then
+            printf 'Herdr plugin: linked\n'
+          else
+            printf 'Herdr plugin: not linked\n'
+          fi
+        else printf 'Herdr: unavailable\nHerdr plugin: not linked\n'; failed=1; fi
+        if [ -n "${ZOE_NO_MISTAKES_BIN:-}" ]; then
+          if [ -x "$ZOE_NO_MISTAKES_BIN" ]; then printf 'no-mistakes: found\n'; else printf 'no-mistakes unavailable: %s\n' "$ZOE_NO_MISTAKES_BIN"; failed=1; fi
+        elif command -v no-mistakes >/dev/null 2>&1; then printf 'no-mistakes: found on PATH\n'
+        else printf 'no-mistakes: validation bands off\n'; fi
+        if [ -d "$ZOE_FLEET_STATE_DIR" ] && [ -w "$ZOE_FLEET_STATE_DIR" ]; then printf 'State writable: %s\n' "$ZOE_FLEET_STATE_DIR"; else printf 'State not writable: %s\n' "$ZOE_FLEET_STATE_DIR"; failed=1; fi
+        exit "$failed" ;;
+      open)
+        if [ "${HERDR_ENV:-}" != 1 ]; then printf 'Open Fleet from a genuine Herdr pane.\n' >&2; exit 1; fi
+        herdr_bin=${HERDR_BIN_PATH:-herdr}
+        "$herdr_bin" plugin link "$ZOE_FLEET_RUNTIME/fleet-plugin"
+        exec "$herdr_bin" plugin action invoke open --plugin pikenguyen227.zoetrope-fleet ;;
+      inspect)
+        exec "$ZOE_FLEET_BIN" fleet "$ZOE_FLEET_STATE_DIR/fleet.json" --inspect ;;
+    esac
+    ;;
+  demo)
+    [ "$#" -eq 0 ] || usage
+    # The synthetic demo needs neither a Firstmate home nor its config.
+    fleet_load_config "$runtime" 1
+    exec python3 "$ZOE_FLEET_RUNTIME/scripts/fleet-demo.py" --play "$ZOE_FLEET_BIN" ;;
+  *) usage ;;
+esac

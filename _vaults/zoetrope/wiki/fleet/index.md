@@ -7,7 +7,8 @@ date: 2026-09-26
 # Fleet notes
 
 - [Fleet release packaging](packaging.md): pristine commit builds, archive layout, checksum verification, and later Linux targets.
-
+- [User-relative Fleet launch](user-relative-launch.md): config, per-home state,
+  runtime lookup and the developer install migration.
 - [Member liveness and Herdr runtime](member-liveness.md): how a fleet card
   decides active or idle, and why Herdr's pane status overrides a quiet or stale
   transcript.
