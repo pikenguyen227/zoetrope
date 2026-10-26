@@ -133,8 +133,9 @@ interactive shell inside the same sandbox and prompts for one Herdr pane,
 `zoe-fleet-tower open`, and one `fm-spawn.sh --secondmate lab-mate` launch.
 After the person exits that shell, the runner inspects the manifest and checks
 its fleet ID, that the only spawned task is `lab-mate`, and that no manifest or
-event-journal string names `Desktop/Agentic` or a path under the real home. Record the inspect output in the Markdown record. Phase B
-must pass once before declaring full tower parity; it is never run by a kit
+event-journal string names `Desktop/Agentic` or a path under the real home.
+It appends the inspect output and those assertions to the Markdown record.
+Phase B must pass once before declaring full tower parity; it is never run by a kit
 install or check, and is not part of this automated Phase A check.
 
 ## Linux and WSL2 extension
