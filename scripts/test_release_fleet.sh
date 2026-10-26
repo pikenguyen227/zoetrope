@@ -14,6 +14,7 @@ short=${sha:0:12}
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
   archive="$work/out/zoe-fleet-0.2.0-$short-$target.tar.gz"
   [ -f "$archive" ]
+  [ "$(tar -tzf "$archive" | LC_ALL=C sort | tr '\n' ' ')" = 'BUILD.txt LICENSE NOTICE zoe-fleet ' ]
   mkdir "$work/$target"
   tar -xzf "$archive" -C "$work/$target"
   [ "$(find "$work/$target" -type f | wc -l | tr -d ' ')" = 4 ]
@@ -26,6 +27,8 @@ done
 runtime="$work/out/zoetrope-fleet-runtime-0.2.0-$short.tar.gz"
 mkdir "$work/runtime"
 tar -xzf "$runtime" -C "$work/runtime"
+if tar -tzf "$runtime" | grep -Eq '(^|/)\._'; then echo 'AppleDouble entry in runtime archive' >&2; exit 1; fi
+grep -Fxq 'rustc=fixture build' "$work/aarch64-apple-darwin/BUILD.txt"
 for name in scripts/firstmate-fleet.py scripts/claude-telemetry.py scripts/fleet-demo.py \
   fleet-plugin/open.sh fleet-plugin/pane.sh fleet-plugin/captain.py \
   fleet-plugin/herdr-plugin.toml docs/FLEET-USAGE.md docs/FLEET-PACKAGING.md \

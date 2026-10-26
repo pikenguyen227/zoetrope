@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build reviewable Fleet release assets. Publishing is a separate manual step.
 set -euo pipefail
+export COPYFILE_DISABLE=1
 
 usage() {
   cat >&2 <<'USAGE'
@@ -77,15 +78,16 @@ if [ "$fixture" = false ]; then
     [ -x "$binary" ] || { echo "Missing binary: $binary" >&2; exit 1; }
     lipo -verify_arch "$slice" "$binary"
     version_line=$(arch -"$slice" "$binary" --version)
-    case "$version_line" in *"($short, built "*) ;; *) echo "Build stamp mismatch: $version_line" >&2; exit 1 ;; esac
+    case "$version_line" in "zoe $version ($short, built "*) ;; *) echo "Build stamp mismatch: $version_line" >&2; exit 1 ;; esac
     arch -"$slice" "$binary" fleet "$source_tree/assets/fleet/crew/fleet.json" --inspect >/dev/null
   done
   [ -z "$(git -C "$source_tree" status --porcelain)" ] || { echo 'Build made source checkout dirty.' >&2; exit 1; }
+  rustc_version=$(cd "$source_tree" && rustc --version)
 else
   [ -f "$arm_binary" ] && [ -f "$x64_binary" ] || { echo 'Fixture binaries are missing.' >&2; exit 2; }
   epoch=$(git -C "$source_tree" show -s --format=%ct "$sha")
+  rustc_version='fixture build'
 fi
-rustc_version=$(rustc --version 2>/dev/null || printf 'fixture build')
 
 stage_binary() {
   local target=$1 binary=$2 stage="$work/stage-$1" asset
