@@ -1,0 +1,27 @@
+docs/FLEET-USAGE.md
+  s_ec98b4ad2d57db::t_f50befece89c3c 29-30
+scripts/fleet-config.sh
+  s_ec98b4ad2d57db::t_1b2f0a3ccd6b0a 4,13,15-16,39-42
+scripts/test_claude_telemetry.py
+  s_ec98b4ad2d57db::t_1b2f0a3ccd6b0a 34-58
+scripts/test_fleet_open.py
+  s_ec98b4ad2d57db::t_1b2f0a3ccd6b0a 271-298
+scripts/claude-telemetry.py
+  s_ec98b4ad2d57db::t_1b2f0a3ccd6b0a 36,38-39,72-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "765618fc9d4665d2fd459b0840da636748c05275",
+  "prompts": {},
+  "sessions": {
+    "s_ec98b4ad2d57db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b76775a2-667e-433e-a3bb-e3fd08457809",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
