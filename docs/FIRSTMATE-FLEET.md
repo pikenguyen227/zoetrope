@@ -536,7 +536,8 @@ Do not publish releases, crate packages or captured transcripts as part of a pro
 
 ## Preparation record
 
-Local checkout: `Desktop/Agentic/zoetrope`.
+Preparation used a local zoetrope checkout; current installs use
+`zoe-fleet-tower setup --home <Firstmate home>` (see `FLEET-USAGE.md`).
 Development branch: `codex/firstmate-fleet`.
 `origin` points to the user's fork; `upstream` points to `furkankly/zoetrope`.
 At preparation, both main branches were at the baseline commit above.

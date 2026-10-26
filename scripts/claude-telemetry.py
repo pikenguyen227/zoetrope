@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Agentic-scoped Claude launcher and minimal, local status-line quota bridge.
+"""Per-user Claude launcher and minimal, local status-line quota bridge.
 
 No requests, credentials, prompt content, or transcript bodies are persisted.
 The viewer reads these snapshots; only Claude's status-line process writes them.
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -16,8 +17,29 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 
-ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_STORE = ROOT / '.tools/state/zoe-telemetry'
+def default_store():
+    """Use the configured Firstmate home's private Fleet state root."""
+    if 'ZOE_TELEMETRY_DIR' in os.environ:
+        return Path(os.environ['ZOE_TELEMETRY_DIR'])
+    values = {}
+    config = Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'zoe-fleet/config'
+    try:
+        for line in config.read_text().splitlines():
+            if '=' in line and not line.startswith('#'):
+                key, value = line.split('=', 1)
+                if key in ('FM_HOME', 'ZOE_FLEET_STATE_DIR', 'ZOE_TELEMETRY_DIR'):
+                    values[key] = value
+    except FileNotFoundError:
+        pass
+    home = os.environ.get('FM_HOME', values.get('FM_HOME', ''))
+    if not home:
+        return Path(values['ZOE_TELEMETRY_DIR']) if values.get('ZOE_TELEMETRY_DIR') else None
+    home = str(Path(home).resolve())
+    digest = hashlib.sha256(home.encode()).hexdigest()[:12]
+    state = os.environ.get('ZOE_FLEET_STATE_DIR', values.get('ZOE_FLEET_STATE_DIR',
+        str(Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state'))) / 'zoe-fleet' / digest)))
+    return Path(os.environ.get('ZOE_TELEMETRY_DIR', values.get('ZOE_TELEMETRY_DIR',
+        str(Path(state) / 'telemetry'))))
 
 
 def snapshot(data):
@@ -43,16 +65,17 @@ def statusline():
         data = json.loads(raw)
         record = snapshot(data)
         if record:
-            store = Path(os.environ.get('ZOE_TELEMETRY_DIR', DEFAULT_STORE))
-            store.mkdir(parents=True, exist_ok=True, mode=0o700)
-            fd, name = tempfile.mkstemp(prefix='.usage-', dir=store)
-            try:
-                with os.fdopen(fd, 'w') as output:
-                    json.dump(record, output)
-                os.replace(name, store / f"claude-{record['session_id']}.json")
-            finally:
-                if os.path.exists(name):
-                    os.unlink(name)
+            store = default_store()
+            if store:
+                store.mkdir(parents=True, exist_ok=True, mode=0o700)
+                fd, name = tempfile.mkstemp(prefix='.usage-', dir=store)
+                try:
+                    with os.fdopen(fd, 'w') as output:
+                        json.dump(record, output)
+                    os.replace(name, store / f"claude-{record['session_id']}.json")
+                finally:
+                    if os.path.exists(name):
+                        os.unlink(name)
     except (ValueError, TypeError, AttributeError, OSError):
         pass  # Optional telemetry must never break the user's status line.
     command = os.environ.get('ZOE_STATUSLINE_COMMAND')
@@ -118,7 +141,9 @@ def main():
     try:
         forwarded, previous = launch_args(args, Path.cwd(), Path(os.environ.get('CLAUDE_CONFIG_DIR', Path.home() / '.claude')))
         os.environ['ZOE_STATUSLINE_COMMAND'] = previous
-        os.environ.setdefault('ZOE_TELEMETRY_DIR', str(DEFAULT_STORE))
+        store = default_store()
+        if store:
+            os.environ.setdefault('ZOE_TELEMETRY_DIR', str(store))
     except ValueError as error:
         print(f'Zoe telemetry skipped: {error}', file=sys.stderr)
         forwarded = args

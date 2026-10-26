@@ -8,16 +8,35 @@ Herdr's Team tab. The ordinary single-session `zoe` command remains available.
 
 ## Install and try without model tokens
 
-From this checkout:
+For a configured Firstmate home, use the launcher beside the Fleet runtime:
 
 ```sh
-bash scripts/install-fleet.sh
-../.tools/bin/zoe-fleet-demo
+bin/zoe-fleet-tower setup --home /absolute/path/to/firstmate --bin /absolute/path/to/zoe-fleet
+bin/zoe-fleet-tower doctor
+bin/zoe-fleet-tower demo
 ```
 
-The installer builds a release executable and copies it as `zoe-fleet` into the
-parent Agentic folder's `.tools/bin`, alongside `zoe-fleet-demo` and `zoe-fleet-open`.
-It does not replace the installed Homebrew `zoe` or start a coding agent.
+`setup` requires the home's `bin/fm-fleet-snapshot.sh`, writes a private
+`${XDG_CONFIG_HOME:-$HOME/.config}/zoe-fleet/config` (mode 0600), and creates
+its state directory. `--bin` defaults to `zoe-fleet` beside the launcher. The
+config accepts `FM_HOME`, `ZOE_FLEET_BIN`, `ZOE_FLEET_STATE_DIR`,
+`ZOE_TELEMETRY_DIR`, `ZOE_NO_MISTAKES_BIN` and `ZOE_FLEET_RUNTIME` as plain
+`KEY=VALUE` lines; environment variables take precedence. Without `--state`,
+state lives in `${XDG_STATE_HOME:-$HOME/.local/state}/zoe-fleet/<home-hash>/`,
+where the hash is the first 12 SHA-256 hex digits of the resolved `FM_HOME`,
+and telemetry lives in its `telemetry/` subdirectory. `FM_HOME` has no
+implicit default. `doctor` reads the setup and
+reports binary, Python, Firstmate, Herdr, optional no-mistakes, plugin, and
+state readiness. `inspect` runs a headless check of the current manifest.
+
+For a source development build, `bash scripts/install-fleet.sh` builds
+`zoe-fleet` and installs `zoe-fleet-tower`, plus the older `zoe-fleet-open` and
+`zoe-fleet-demo` command names as delegates. Set `FM_HOME` first for a new
+checkout. On an existing checkout with a sibling Firstmate home and `.tools/bin`,
+the wrapper writes the config once with that same home, binary and existing
+Fleet and telemetry state directories. Later runs leave the config alone, so an
+already-running Team tab keeps its current state and binary until reopened.
+The installer does not replace the Homebrew `zoe` or start a coding agent.
 
 The demo is labelled SYNTHETIC. It creates temporary transcripts for a Captain,
 two independent Codex workers and one native child, then appends fake tool events
@@ -34,7 +53,8 @@ fleet membership node) and 4 edges. No Herdr server or model is involved.
 
 ## Firstmate in Herdr
 
-Run `zoe-fleet-open` from a shell **inside Herdr**. It links the separate
+Run `zoe-fleet-tower open` (or the older `zoe-fleet-open`) from a shell
+**inside Herdr**. It links the separate
 `pikenguyen227.zoetrope-fleet` plugin and opens a dedicated tab named **Team**. The adapter refuses
 to run outside Herdr. Close an existing Fleet collector before opening another.
 
@@ -67,11 +87,9 @@ Captain, whatever its tab is called: opened (or autostarted) from a secondmate's
 or a worker's pane, the Fleet keeps the last Captain registered, keeps the
 crew's name, and a diagnostic names the task whose pane it was.
 
-Default arrangement: `Agentic/firstmate` beside `Agentic/zoetrope`. Override with
-`FM_HOME`, `ZOE_FLEET_BIN`, `ZOE_FLEET_STATE_DIR` or `ZOE_NO_MISTAKES_BIN` if
-needed. By default, the manifest and checkpoint journal live in
-`Agentic/.tools/state/zoe-fleet/`, and no-mistakes is the one on `PATH`, else
-`Agentic/.tools/bin/no-mistakes`: without it no card shows a validation run.
+The manifest and checkpoint journal live in the configured per-home state
+directory. Set `ZOE_NO_MISTAKES_BIN` in the config or environment when Herdr's
+PATH does not contain no-mistakes; without it no card shows a validation run.
 
 Every viewer's header names the build it runs (`build <commit>`, `-dirty` when
 built from an uncommitted tree); `zoe-fleet --version` names the one on disk, and
@@ -296,7 +314,7 @@ refuse while one holds the lock). They only change files, so Herdr is not
 needed:
 
 ```sh
-state=../.tools/state/zoe-fleet
+state=/absolute/state/path/printed/by/zoe-fleet-tower/setup
 python3 scripts/firstmate-fleet.py --output "$state/fleet.json" --archive
 python3 scripts/firstmate-fleet.py --output "$state/fleet.json" --delete
 python3 scripts/firstmate-fleet.py --output "$state/fleet.json" --archive --worker <session ID, task or task/spawn_gen>
@@ -358,7 +376,7 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo check --locked --no-default-features
 python3 -m unittest discover -s scripts -p 'test_*.py' -v
-bash -n fleet-plugin/open.sh fleet-plugin/pane.sh scripts/install-fleet.sh
+bash -n bin/zoe-fleet-tower scripts/fleet-config.sh fleet-plugin/open.sh fleet-plugin/pane.sh scripts/install-fleet.sh
 ```
 
 The existing browser lock requires Rust 1.90 or later. Check that unchanged
@@ -419,8 +437,9 @@ python3 scripts/claude-telemetry.py --launch /absolute/path/to/real/claude -- [n
 ```
 
 It writes only exact session ID, reported quota windows and observation time to
-`Agentic/.tools/state/zoe-telemetry/`. No prompts, credentials or transcript bodies
-are written. Override with `ZOE_TELEMETRY_DIR`; use that same directory in the viewer.
+the configured home's Fleet `telemetry/` directory. No prompts, credentials or
+transcript bodies are written. Override with `ZOE_TELEMETRY_DIR`; use that same
+directory in the viewer.
 The Fleet Herdr launcher sets this directory automatically. Already-running Claude
 sessions need to be reopened through the bridge. The helper does not start an agent
 until you explicitly run the launcher; installation and tests use no model calls.
