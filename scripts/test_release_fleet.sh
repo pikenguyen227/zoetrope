@@ -32,7 +32,7 @@ for name in scripts/firstmate-fleet.py scripts/claude-telemetry.py scripts/fleet
   README.md LICENSE NOTICE; do
   [ -f "$work/runtime/$name" ] || { echo "Missing runtime file: $name" >&2; exit 1; }
 done
-if [ -f "$repo/scripts/zoe-fleet-tower" ] || [ -f "$repo/bin/zoe-fleet-tower" ]; then
+if [ -f "$repo/bin/zoe-fleet-tower" ]; then
   [ -f "$work/runtime/bin/zoe-fleet-tower" ]
 fi
 printf 'Fleet archive fixture passed.\n'

@@ -118,11 +118,7 @@ cp "$source_tree/README.md" "$source_tree/LICENSE" "$runtime/"
 cp "$source_tree/NOTICE" "$runtime/NOTICE"
 printf '\nBuild commit: %s\n' "$sha" >> "$runtime/NOTICE"
 launcher_present=false
-if [ -f "$source_tree/scripts/zoe-fleet-tower" ]; then
-  mkdir -p "$runtime/bin"
-  cp "$source_tree/scripts/zoe-fleet-tower" "$runtime/bin/zoe-fleet-tower"
-  launcher_present=true
-elif [ -f "$source_tree/bin/zoe-fleet-tower" ]; then
+if [ -f "$source_tree/bin/zoe-fleet-tower" ]; then
   mkdir -p "$runtime/bin"
   cp "$source_tree/bin/zoe-fleet-tower" "$runtime/bin/zoe-fleet-tower"
   launcher_present=true
