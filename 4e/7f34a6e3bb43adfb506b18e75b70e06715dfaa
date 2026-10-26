@@ -1,0 +1,25 @@
+docs/FIRSTMATE-FLEET.md
+  s_937e95365d5656::t_b3e405fc1d72db 366-367
+scripts/fleet-config.sh
+  s_937e95365d5656::t_23c1808b2633c5 4
+_vaults/zoetrope/wiki/fleet/user-relative-launch.md
+  s_937e95365d5656::t_b59e4a7c730a72 11-15,18-27
+bin/zoe-fleet-tower
+  s_937e95365d5656::t_23c1808b2633c5 27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4e7f34a6e3bb43adfb506b18e75b70e06715dfaa",
+  "prompts": {},
+  "sessions": {
+    "s_937e95365d5656": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be9bd133-df4b-4e05-b0dc-faf53aa0f8f6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
