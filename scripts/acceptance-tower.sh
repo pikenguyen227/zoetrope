@@ -30,15 +30,17 @@ repo=$(cd "$script_dir/.." && pwd -P)
 if [ "${1:-}" = --inside-lab ]; then
   [ "${ACCEPTANCE_INSIDE:-}" = 1 ] || die 'internal mode requires the sandbox runner'
   shift
-  lab=$1 pin=$2 phase_b=$3 source_kind=$4
-  shift 4
+  lab=$1 pin=$2 phase_b=$3 source_kind=$4 real_home=$5
+  shift 5
   [ "$#" -eq 0 ] || usage
+  case "$real_home" in /?*) ;; *) die 'real home must be an absolute path' ;; esac
+  case "$lab/" in "$real_home"/*) die 'lab is under the real home' ;; esac
   [ "$HOME" = "$lab/home" ] || die 'lab HOME mismatch'
   [ "$XDG_CONFIG_HOME" = "$lab/home/.config" ] || die 'lab config mismatch'
   [ "$XDG_STATE_HOME" = "$lab/home/.local/state" ] || die 'lab state mismatch'
   [ "$TMPDIR" = "$lab/tmp" ] || die 'lab TMPDIR mismatch'
   case "$PATH" in "$lab/kit/bin:/usr/bin:/bin:/usr/sbin:/sbin") ;; *) die 'non-minimal PATH' ;; esac
-  if env | grep -Fq 'Desktop/Agentic'; then die 'inherited environment points at Desktop/Agentic'; fi
+  if env | grep -Fq -e 'Desktop/Agentic' -e "$real_home/"; then die 'inherited environment points at an owner path'; fi
   for name in FM_HOME FM_ROOT_OVERRIDE; do
     [ "${!name+x}" != x ] || die "inherited $name"
   done
@@ -62,7 +64,7 @@ if [ "${1:-}" = --inside-lab ]; then
   "$lab/runtime/bin/zoe-fleet-tower" setup --home "$fm" --bin "$lab/runtime/bin/zoe-fleet" >"$lab/setup.txt"
   config="$XDG_CONFIG_HOME/zoe-fleet/config"
   [ "$(stat -f %Lp "$config")" = 600 ] || die 'config is not mode 0600'
-  if grep -Fq 'Desktop/Agentic' "$config"; then die 'config contains owner path'; fi
+  if grep -Fq -e 'Desktop/Agentic' -e "$real_home/" "$config"; then die 'config contains owner path'; fi
   "$lab/runtime/bin/zoe-fleet-tower" doctor >"$lab/doctor.txt"
 
   FM_HOME="$fm" "$fm/bin/fm-fleet-snapshot.sh" --json >"$lab/snapshot-before.json"
@@ -89,10 +91,10 @@ PY
   "$lab/runtime/bin/zoe-fleet" fleet "$lab/runtime/assets/fleet/crew/fleet.json" --inspect >"$lab/inspect.txt"
   # Immutable pinned source may mention an owner's example path in documentation.
   # Scan all generated lab state and output, excluding the two source checkouts.
-  if grep -r -F -l 'Desktop/Agentic' "$lab/home" "$lab/setup.txt" "$lab/doctor.txt" \
+  if grep -r -F -l -e 'Desktop/Agentic' -e "$real_home/" "$lab/home" "$lab/setup.txt" "$lab/doctor.txt" \
       "$lab/seed.txt" "$lab/snapshot-before.json" "$lab/snapshot-after.json" \
       "$lab/inspect.txt" 2>/dev/null | grep -q .; then
-    die 'generated lab data contains Desktop/Agentic'
+    die 'generated lab data contains an owner path'
   fi
   {
     printf '# Fleet tower acceptance — Phase A\n\n'
@@ -104,7 +106,7 @@ PY
     printf '1. Clone Firstmate at the pin; create empty `data/`, `state/`, `config/`, `projects/`.\n'
     printf '2. `zoe-fleet-tower setup`, `doctor`, snapshot, `fm-home-seed.sh lab-mate --no-projects`, snapshot.\n'
     printf '3. `zoe-fleet fleet assets/fleet/crew/fleet.json --inspect`.\n\n'
-    printf 'Assertions passed: exact source pin; private config; fresh-home snapshot; lab-only registered mate; zero tasks; binary inspect; generated state has no `Desktop/Agentic`.\n\n'
+    printf 'Assertions passed: exact source pin; private config; fresh-home snapshot; lab-only registered mate; zero tasks; binary inspect; generated state has no `Desktop/Agentic` or real-home path.\n\n'
     printf '### Doctor\n\n```text\n'; cat "$lab/doctor.txt"; printf '```\n\n'
     printf '### Binary inspect\n\n```text\n'; cat "$lab/inspect.txt"; printf '```\n\n'
     printf '### Snapshot assertions\n\n```json\n'
@@ -130,37 +132,42 @@ PROMPT
     /bin/bash --noprofile --norc
     "$lab/runtime/bin/zoe-fleet-tower" inspect >"$lab/phase-b-inspect.txt"
     FM_HOME="$fm" "$fm/bin/fm-fleet-snapshot.sh" --json >"$lab/phase-b-snapshot.json"
-    python3 - "$lab" <<'PY'
+    python3 - "$lab" "$real_home" <<'PY'
 import json, pathlib, sys
 lab = pathlib.Path(sys.argv[1])
+real_home = sys.argv[2]
 state = next((lab / 'home/.local/state/zoe-fleet').glob('*/fleet.json'))
 manifest = json.loads(state.read_text())
 snapshot = json.loads((lab / 'phase-b-snapshot.json').read_text())
 assert manifest['fleet_id'] == 'firstmate:' + str(lab / 'firstmate')
 expected = {task['id'] for task in snapshot['tasks']}
 actual = {task['id'] for task in manifest['tasks']}
-assert expected and expected == actual, (expected, actual)
+assert expected == actual == {'lab-mate'}, (expected, actual)
 assert len(expected) == len(snapshot['tasks']) == len(manifest['tasks']), 'unexpected task count'
+def owner_path(text):
+    return 'Desktop/Agentic' in text or text == real_home or real_home + '/' in text
 def check_paths(value, key=''):
     if isinstance(value, dict):
         for child_key, child in value.items():
+            assert not owner_path(child_key), child_key
             check_paths(child, child_key)
     elif isinstance(value, list):
         for child in value:
             check_paths(child, key)
-    elif isinstance(value, str) and key in {'file', 'home', 'project', 'root', 'path'}:
-        if value.startswith('/'):
+    elif isinstance(value, str):
+        assert not owner_path(value), (key, value)
+        if key in {'file', 'home', 'project', 'root', 'path'} and value.startswith('/'):
             assert value.startswith(str(lab) + '/'), (key, value)
 check_paths(manifest)
-for path in (state, state.with_name('fleet.events.jsonl')):
-    data = path.read_text()
-    assert 'Desktop/Agentic' not in data
-assert 'Desktop/Agentic' not in (lab / 'phase-b-inspect.txt').read_text()
+for line in state.with_name('fleet.events.jsonl').read_text().splitlines():
+    if line.strip():
+        check_paths(json.loads(line))
+assert not owner_path((lab / 'phase-b-inspect.txt').read_text())
 PY
     {
       printf '\n## Phase B inspect\n\n```json\n'
       cat "$lab/phase-b-inspect.txt"
-      printf '```\n\nPhase B assertions passed: fleet ID, exact spawned task set, lab-only paths, no owner path in manifest or journal.\n'
+      printf '```\n\nPhase B assertions passed: fleet ID, exact spawned task set `{lab-mate}`, lab-only paths, no owner path in manifest or journal.\n'
     } >>"$report"
   fi
   exit 0
@@ -211,16 +218,20 @@ if [ -n "$assets" ]; then
   for archive in "${runtime_archive[0]}" "${binary_archive[0]}" "$assets/SHA256SUMS"; do
     safe_path "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$archive")"
   done
-  python3 - "$assets" <<'PY'
+  python3 - "$assets" "${runtime_archive[0]}" "${binary_archive[0]}" <<'PY'
 import pathlib, re, sys
 assets = pathlib.Path(sys.argv[1]).resolve()
 lines = (assets / 'SHA256SUMS').read_text().splitlines()
 assert lines, 'empty SHA256SUMS'
+listed = set()
 for line in lines:
     match = re.fullmatch(r'[0-9a-fA-F]{64} [ *]([^/]+\.tar\.gz)', line)
     assert match, 'unsafe SHA256SUMS entry'
     target = (assets / match.group(1)).resolve()
     assert target.parent == assets, 'asset escapes release directory'
+    listed.add(match.group(1))
+missing = {pathlib.Path(name).name for name in sys.argv[2:]} - listed
+assert not missing, f'SHA256SUMS does not cover {sorted(missing)}'
 PY
   (cd "$assets" && shasum -a 256 -c SHA256SUMS) || die 'release checksums failed'
   tar -xzf "${runtime_archive[0]}" -C "$lab/runtime"
@@ -267,7 +278,7 @@ fi
   -D OWNER_ZOETROPE="$real_home/Desktop/Agentic/zoetrope" \
   -D OWNER_TOOLS="$real_home/Desktop/Agentic/.tools" \
   -f "$script_dir/tower-acceptance.sb" /bin/bash "$lab/runtime/scripts/acceptance-tower.sh" \
-  --inside-lab "$lab" "$pin" "$phase_b" "$source_kind")
+  --inside-lab "$lab" "$pin" "$phase_b" "$source_kind" "$real_home")
 mkdir -p "$(dirname "$record")"
 cp "$lab/record.md" "$record"
 printf 'Acceptance record: %s\n' "$record"
