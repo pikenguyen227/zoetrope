@@ -2,7 +2,7 @@
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 . "$repo/scripts/fleet-config.sh"
-fleet_load_config "$repo"
+fleet_load_config "$repo" || { read -r -p "Press Enter to close " || true; exit 1; }
 if [ "${HERDR_ENV:-}" != 1 ]; then
   echo "Open Fleet from a genuine Herdr pane." >&2
   exit 1

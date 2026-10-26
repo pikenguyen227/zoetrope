@@ -179,6 +179,30 @@ class OpenTests(unittest.TestCase):
         self.assertTrue(argv[argv.index("--home") + 1].endswith("/firstmate"))
         self.assertTrue(argv[argv.index("--output") + 1].endswith("/state/fleet.json"))
 
+    def test_config_failure_waits_before_closing_the_pane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            (root / "fleet-plugin").mkdir(parents=True)
+            (root / "scripts").mkdir()
+            shutil.copy(OPEN, root / "fleet-plugin" / "open.sh")
+            shutil.copy(CONFIG_HELPER, root / "scripts" / "fleet-config.sh")
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("HERDR_", "ZOE_", "FM_", "XDG_"))}
+            env.update(HOME=str(Path(tmp) / "user"), XDG_CONFIG_HOME=str(Path(tmp) / "user/config"),
+                       HERDR_ENV="1")
+            pane = subprocess.Popen([BASH, str(root / "fleet-plugin" / "open.sh")], env=env,
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    pane.wait(timeout=1)
+                _, error = pane.communicate("\n", timeout=10)
+            finally:
+                if pane.poll() is None:
+                    pane.kill()
+                    pane.communicate()
+            self.assertEqual(pane.returncode, 1)
+            self.assertIn("FM_HOME is unset", error)
+
     def test_missing_home_refuses_without_owner_layout_default(self):
         error = self.launch({}, missing_home=True, installed=True)
         self.assertIn("FM_HOME is unset", error)
