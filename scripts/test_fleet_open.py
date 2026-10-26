@@ -235,7 +235,12 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(values["FM_HOME"], str(home.resolve()))
             self.assertEqual(Path(values["ZOE_FLEET_BIN"]).resolve(), binary.resolve())
             self.assertEqual(Path(values["ZOE_FLEET_RUNTIME"]).resolve(), runtime.resolve())
-            self.assertTrue(Path(values["ZOE_FLEET_STATE_DIR"]).is_dir())
+            self.assertNotIn("ZOE_FLEET_STATE_DIR", values)
+            self.assertNotIn("ZOE_TELEMETRY_DIR", values)
+            digest = hashlib.sha256(str(home.resolve()).encode()).hexdigest()[:12]
+            state = root / "user/state/zoe-fleet" / digest
+            for directory in (state, state / "telemetry"):
+                self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
             doctor = subprocess.run([BASH, str(linked), "doctor"], env=env,
                                     capture_output=True, text=True)
             self.assertEqual(doctor.returncode, 0, doctor.stderr)
@@ -244,12 +249,24 @@ class LauncherTests(unittest.TestCase):
             inspect = subprocess.run([BASH, str(linked), "inspect"], env=env,
                                      capture_output=True, text=True)
             self.assertEqual(inspect.returncode, 0, inspect.stderr)
-            self.assertEqual(inspect.stdout.strip(),
-                             f"fleet {values['ZOE_FLEET_STATE_DIR']}/fleet.json --inspect")
+            self.assertEqual(inspect.stdout.strip(), f"fleet {state}/fleet.json --inspect")
+            other = root / "other-home"
+            other.mkdir()
+            moved = subprocess.run([BASH, str(linked), "inspect"], env={**env, "FM_HOME": str(other)},
+                                   capture_output=True, text=True)
+            self.assertEqual(moved.returncode, 0, moved.stderr)
+            other_digest = hashlib.sha256(str(other.resolve()).encode()).hexdigest()[:12]
+            self.assertEqual(moved.stdout.strip(),
+                             f"fleet {root / 'user/state/zoe-fleet' / other_digest}/fleet.json --inspect")
             demo = subprocess.run([BASH, str(linked), "demo"], env=env,
                                   capture_output=True, text=True)
             self.assertEqual(demo.returncode, 0, demo.stderr)
             self.assertEqual(demo.stdout.strip(), f"--play {values['ZOE_FLEET_BIN']}")
+            shutil.rmtree(home)
+            stale = subprocess.run([BASH, str(linked), "demo"], env=env,
+                                   capture_output=True, text=True)
+            self.assertEqual(stale.returncode, 0, stale.stderr)
+            self.assertEqual(stale.stdout.strip(), f"--play {values['ZOE_FLEET_BIN']}")
 
     def test_setup_rejects_a_home_without_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -14,7 +14,7 @@ if [ -n "${HERDR_TAB_ID:-}" ]; then
     printf 'Fleet: could not rename its tab to Team.\n' >&2
 fi
 # Configuration stays outside the repository; no user's session IDs ship here.
-mkdir -p "$ZOE_FLEET_STATE_DIR"
+(umask 077 && mkdir -p "$ZOE_FLEET_STATE_DIR")
 if [ ! -x "$ZOE_FLEET_BIN" ]; then
   printf 'Fleet binary unavailable: %s\n' "$ZOE_FLEET_BIN" >&2
   read -r -p "Press Enter to close " || true
