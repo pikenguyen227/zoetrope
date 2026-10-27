@@ -109,11 +109,13 @@ approved full Firstmate source commit:
 
 ```sh
 scripts/acceptance-tower.sh --firstmate-ref <40-character-firstmate-sha> \
-  --assets /tmp/downloaded-fleet-assets --record /tmp/fleet-acceptance.md
+  --assets /tmp/downloaded-fleet-assets --record /tmp/fleet-acceptance.md \
+  --evidence-dir /tmp/fleet-acceptance-evidence
 # Or, before a release exists:
 scripts/acceptance-tower.sh --firstmate-ref <40-character-firstmate-sha> \
   --local-bin target/debug/zoe --local-runtime . \
-  --record /tmp/fleet-acceptance.md
+  --record /tmp/fleet-acceptance.md \
+  --evidence-dir /tmp/fleet-acceptance-evidence
 ```
 
 The runner stages inputs in a new `/private/tmp` lab, then executes the test
@@ -126,6 +128,13 @@ launching an agent, verifies both snapshots and the bundled Fleet inspect
 fixture, checks that generated lab data contains no owner path, and writes a
 Markdown record. The lab is removed on exit. The Phase A Herdr command is an
 inert availability probe used only by `doctor`; no Herdr process or viewer runs.
+`--record` remains success-only. With `--evidence-dir`, the single outer exit
+cleanup exports only the record if present, a failure phase/status report,
+setup/doctor/clone/seed logs, snapshots, inspect output, and the Fleet manifest
+and journal before removing the lab. Each exported file is capped at 1 MiB;
+the directory must be outside the lab and pass the runner's live-path checks.
+This is useful when Phase A fails before the record exists or a later Phase B
+assertion fails. It never copies the lab HOME or `.codex` authentication files.
 
 Phase B is a separate, explicit `--phase-b` invocation for one person after
 lab-safe Herdr and agent binaries have been provisioned. It opens an
