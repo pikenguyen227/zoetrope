@@ -7,11 +7,13 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/acceptance-tower.sh --firstmate-ref <40-char SHA> \
   (--assets <release directory> | --local-bin <zoe binary> --local-runtime <checkout>) \
-  [--record <Markdown path>] [--evidence-dir <directory>] [--phase-b]
+  [--record <Markdown path>] [--evidence-dir <directory>] \
+  [--phase-b --phase-b-dedicated-account --phase-b-codex-bin <native binary>]
 
 Phase A runs under sandbox-exec and launches no Herdr, agent, or viewer.
---phase-b opens an interactive lab shell for one person to launch Herdr and one
-secondmate; its manifest assertions run after that person returns to the runner.
+--phase-b opens an interactive lab shell for one person to use the dedicated
+account's empty default Herdr session and launch one secondmate. Assertions
+run after that person returns to the runner.
 USAGE
   exit 2
 }
@@ -128,16 +130,24 @@ PY
   } >"$report"
   if [ "$phase_b" = 1 ]; then
     phase phase-b-shell
+    export XDG_DATA_HOME="$lab/home/.local/share" CODEX_HOME="$lab/home/.codex"
+    unset ZOE_NO_MISTAKES_BIN
+    command -v no-mistakes >/dev/null 2>&1 && die 'no-mistakes is on the lab PATH'
+    "$lab/kit/bin/codex" --version >/dev/null || die 'staged Codex binary cannot run in the lab'
+    "$lab/kit/bin/herdr-real" session list >/dev/null 2>&1 \
+      || die "cannot reach this account's Herdr API socket from inside the sandbox (herdr session list failed)"
     cat <<PROMPT
 
-PHASE B — PERSON REQUIRED. This shell remains inside the disposable sandbox.
+PHASE B — DEDICATED ACCOUNT ONLY. This shell remains inside the disposable sandbox.
 Lab: $lab
-Provision a real Herdr and an agent inside $lab/kit/bin (replace the inert
-Herdr doctor probe there). Use only this lab HOME. Start the lab Herdr and a
-pane; from that pane run $lab/runtime/bin/zoe-fleet-tower open. From the lab
-Firstmate home, launch only fm-spawn.sh --secondmate lab-mate. Wait for one
-collection, then stop that agent and the lab Herdr before typing exit. Never
-use a live owner's Herdr or Firstmate. The lab shell opens now.
+The account's empty default Herdr session passed the preflight. The staged
+Herdr command in $lab/kit/bin propagates this lab environment to new panes.
+Create one lab pane; check its HOME, XDG directories, CODEX_HOME and PATH.
+Sign in with codex login --device-auth in that pane, then codex login status.
+Launch only fm-spawn.sh --secondmate lab-mate from this lab Firstmate home.
+Wait for one collection; end the exact mate and close its recorded pane.
+Keep its metadata/home, stop the default Herdr session, then type exit.
+Follow docs/FLEET-PACKAGING.md for the exact owner sequence.
 PROMPT
     /bin/bash --noprofile --norc
     phase phase-b-inspect
@@ -186,20 +196,24 @@ PY
   exit 0
 fi
 
-pin='' assets='' local_bin='' local_runtime='' phase_b=0 record="$PWD/acceptance-tower-record.md" evidence_dir=''
+pin='' assets='' local_bin='' local_runtime='' phase_b=0 dedicated=0 codex_bin='' record="$PWD/acceptance-tower-record.md" evidence_dir=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --firstmate-ref|--assets|--local-bin|--local-runtime|--record|--evidence-dir)
+    --firstmate-ref|--assets|--local-bin|--local-runtime|--record|--evidence-dir|--phase-b-codex-bin)
       [ "$#" -ge 2 ] || usage
       case "$1" in
         --firstmate-ref) pin=$2 ;; --assets) assets=$2 ;; --local-bin) local_bin=$2 ;;
         --local-runtime) local_runtime=$2 ;; --record) record=$2 ;; --evidence-dir) evidence_dir=$2 ;;
+        --phase-b-codex-bin) codex_bin=$2 ;;
       esac
       shift 2 ;;
     --phase-b) phase_b=1; shift ;;
+    --phase-b-dedicated-account) dedicated=1; shift ;;
     *) usage ;;
   esac
 done
+[ "$phase_b" = 1 ] || { [ "$dedicated" = 0 ] && [ -z "$codex_bin" ]; } || usage
+[ "$phase_b" = 0 ] || [ -n "$codex_bin" ] || usage
 [[ "$pin" =~ ^[0-9a-f]{40}$ ]] || usage
 if [ -n "$assets" ]; then
   source_kind='checksum-verified release assets'
@@ -208,12 +222,19 @@ else
   source_kind='local build and checked-out runtime'
   [ -n "$local_bin" ] && [ -n "$local_runtime" ] || usage
 fi
-for input in "$assets" "$local_bin" "$local_runtime" "$record" "$evidence_dir"; do safe_path "$input"; done
+for input in "$assets" "$local_bin" "$local_runtime" "$record" "$evidence_dir" "$codex_bin"; do safe_path "$input"; done
 for tool in sandbox-exec git python3 shasum tar; do need "$tool"; done
-for input in "$assets" "$local_bin" "$local_runtime" "$record" "$evidence_dir"; do
+for input in "$assets" "$local_bin" "$local_runtime" "$record" "$evidence_dir" "$codex_bin"; do
   [ -z "$input" ] || safe_path "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$input")"
 done
 real_home=$(cd "$HOME" && pwd -P)
+if [ "$phase_b" = 1 ]; then
+  [ -x "$codex_bin" ] || die 'Phase B requires an executable native Codex binary'
+  herdr_bin=$(command -v herdr) || die 'Phase B requires Herdr on PATH'
+  safe_path "$herdr_bin"
+  "$script_dir/tower-phase-b-preflight.sh" "$real_home" "$herdr_bin" \
+    "$repo/fleet-plugin/herdr-plugin.toml" "$dedicated"
+fi
 lab=$(mktemp -d /tmp/zoe-tower-acceptance.XXXXXX)
 lab=$(cd "$lab" && pwd -P)
 # Only these named outputs leave the lab. Skip symlinks, including a symlinked
@@ -320,8 +341,8 @@ else
 fi
 cp -R "$repo/assets/fleet/crew/." "$lab/runtime/assets/fleet/crew/"
 cp "$script_dir/acceptance-tower.sh" "$lab/runtime/scripts/acceptance-tower.sh"
-# Doctor probes plugin availability without launching Herdr. Phase B participants
-# replace this probe with their real lab Herdr binary in the interactive shell.
+# Phase A's doctor gets an inert plugin probe. Phase B replaces it before the
+# sandbox with the staged native binary and lab environment wrapper.
 cat >"$lab/kit/bin/herdr" <<'SH'
 #!/bin/sh
 [ "${1:-}" = plugin ] && [ "${2:-}" = list ] && exit 0
@@ -329,6 +350,14 @@ echo 'The Phase A Herdr probe cannot start Herdr.' >&2
 exit 1
 SH
 chmod 755 "$lab/kit/bin/herdr"
+if [ "$phase_b" = 1 ]; then
+  cp "$herdr_bin" "$lab/kit/bin/herdr-real"
+  cp "$codex_bin" "$lab/kit/bin/codex"
+  chmod 755 "$lab/kit/bin/herdr-real"
+  chmod 755 "$lab/kit/bin/codex"
+  cp "$script_dir/tower-phase-b-herdr.sh" "$lab/kit/bin/herdr"
+  chmod 755 "$lab/kit/bin/herdr"
+fi
 chmod 755 "$lab/runtime/bin/zoe-fleet-tower" "$lab/runtime/bin/zoe-fleet"
 
 # Remove all possible owner overrides before entering the sandbox. env -i then
