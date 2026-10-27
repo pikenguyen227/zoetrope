@@ -82,4 +82,28 @@ for kind in workspace tab; do
   grep -Fxq "ACCEPTANCE_LAB=$scratch/lab" "$scratch/wrapper-out"
   grep -Fxq "HERDR_BIN_PATH=$scratch/lab/kit/bin/herdr" "$scratch/wrapper-out"
 done
+# zoe-fleet-tower open from a lab pane opens the Fleet plugin pane with the lab env.
+mkdir -p "$scratch/lab/runtime/bin" "$scratch/lab/runtime/scripts" "$scratch/lab/runtime/fleet-plugin"
+cp "$root/bin/zoe-fleet-tower" "$scratch/lab/runtime/bin/"
+cp "$root/scripts/fleet-config.sh" "$scratch/lab/runtime/scripts/"
+cp "$root/fleet-plugin/pane.sh" "$scratch/lab/runtime/fleet-plugin/"
+HERDR_ENV=1 FM_HOME="$scratch/lab/firstmate" HERDR_BIN_PATH="$scratch/lab/kit/bin/herdr" \
+  "$scratch/lab/runtime/bin/zoe-fleet-tower" open >"$scratch/wrapper-out"
+python3 - "$scratch/wrapper-out" "$scratch/lab" "$HOME" "$XDG_STATE_HOME" "$CODEX_HOME" "$PATH" <<'PY'
+import sys
+args = open(sys.argv[1]).read().splitlines()
+lab, home, state, codex, path = sys.argv[2:]
+start = args.index('pane')
+assert args[start - 1:start + 2] == ['plugin', 'pane', 'open'], args
+pane = args[start + 2:]
+assert pane[:6] == ['--plugin', 'pikenguyen227.zoetrope-fleet', '--entrypoint', 'fleet',
+                    '--placement', 'tab'], pane
+env = {pane[i + 1].split('=', 1)[0]: pane[i + 1].split('=', 1)[1]
+       for i in range(6, len(pane), 2) if pane[i] == '--env'}
+assert env['HOME'] == home and env['XDG_STATE_HOME'] == state, env
+assert env['CODEX_HOME'] == codex and env['PATH'] == path, env
+assert env['FM_HOME'] == lab + '/firstmate', env
+assert env['HERDR_BIN_PATH'] == lab + '/kit/bin/herdr', env
+assert 'invoke' not in args, args
+PY
 echo 'Phase B preflight stub cases: passed'

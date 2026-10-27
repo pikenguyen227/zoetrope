@@ -172,9 +172,14 @@ Codex into the disposable kit before the sandbox. The preflight checks the
 account home, absence of known Fleet/Firstmate state and ambient overrides,
 Herdr version, and the empty default session. It does not start or stop Herdr.
 The staged `herdr` wrapper adds the lab HOME, XDG directories, TMPDIR,
-CODEX_HOME, PATH, FM_HOME, and wrapper path to every `workspace create` and
-`tab create`, including Firstmate's mate pane. The real binary remains staged
-as `herdr-real`. The sandbox still denies the account's real home.
+CODEX_HOME, PATH, FM_HOME, and wrapper path to every `workspace create`,
+`tab create` and `plugin pane open`, including Firstmate's mate pane. It runs
+the lab plugin's `pane.sh` itself for `zoe-fleet-tower open`, so the Fleet
+collector tab also gets the lab environment and writes `fleet.json` under the
+lab home rather than inheriting the Herdr server's. The real binary remains
+staged as `herdr-real`. The sandbox still denies the account's real home;
+before opening the lab shell the runner runs `herdr session list` inside it
+and stops with a socket message if the account's Herdr API is unreachable.
 
 In the printed lab shell, set `lab=<printed-absolute-lab-path>`. Confirm
 `command -v herdr` resolves under `$lab/kit/bin`, `command -v no-mistakes`

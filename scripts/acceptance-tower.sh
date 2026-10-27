@@ -134,7 +134,8 @@ PY
     unset ZOE_NO_MISTAKES_BIN
     command -v no-mistakes >/dev/null 2>&1 && die 'no-mistakes is on the lab PATH'
     "$lab/kit/bin/codex" --version >/dev/null || die 'staged Codex binary cannot run in the lab'
-    "$lab/kit/bin/herdr-real" --version >/dev/null || die 'staged Herdr binary cannot run in the lab'
+    "$lab/kit/bin/herdr-real" session list >/dev/null 2>&1 \
+      || die "cannot reach this account's Herdr API socket from inside the sandbox (herdr session list failed)"
     cat <<PROMPT
 
 PHASE B — DEDICATED ACCOUNT ONLY. This shell remains inside the disposable sandbox.

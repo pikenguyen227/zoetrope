@@ -35,8 +35,12 @@ workspace, and pane lists before lab staging
 `scripts/tower-phase-b-preflight.sh:19`, `scripts/tower-phase-b-preflight.sh:26`,
 `scripts/tower-phase-b-preflight.sh:36`). Phase B stages native Herdr and Codex
 binaries into the lab; its Herdr command injects the lab workload environment
-into workspace and tab creation, including Firstmate's spawned mate pane
-(`scripts/acceptance-tower.sh:351`, `scripts/tower-phase-b-herdr.sh:5`).
+into workspace, tab and plugin pane creation, including Firstmate's spawned
+mate pane, and runs the lab `pane.sh` itself for the Fleet open action so the
+collector tab gets the lab environment (`scripts/acceptance-tower.sh:354`,
+`scripts/tower-phase-b-herdr.sh:7`, `scripts/tower-phase-b-herdr.sh:10`).
+Before the lab shell opens, an in-sandbox `herdr session list` must reach the
+account's Herdr API socket (`scripts/acceptance-tower.sh:137`).
 The owner guide and stop order are in `docs/FLEET-PACKAGING.md:141`. The runner
 then checks the collected manifest against a fresh Firstmate snapshot and
 requires only `lab-mate`, with lab-only paths
