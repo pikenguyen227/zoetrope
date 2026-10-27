@@ -30,7 +30,7 @@ commands need Windows alternatives. Both plugin manifests already declare
   a mode 0600 config (`bin/zoe-fleet-tower:71`); `/mnt/c` DrvFS does not honour
   either reliably. UNVERIFIED on a real WSL2 host.
 - Prerequisites: Python 3.9 or newer (`bin/zoe-fleet-tower:88`), `jq` for the
-  Firstmate snapshot, and Herdr 0.9.1 or newer (`docs/FLEET-PACKAGING.md:13`).
+  Firstmate snapshot, and Herdr 0.9.1 or newer (`fleet-plugin/herdr-plugin.toml:6`).
   `sha256sum` is always present; `shasum` needs the `perl` package.
 - The home hash uses `python3` (`bin/zoe-fleet-tower:49`).
 - Build floor: binaries are built on Ubuntu 22.04, glibc 2.35
