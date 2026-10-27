@@ -138,16 +138,88 @@ runner also prints the failing step's captured output to stderr.
 This is useful when Phase A fails before the record exists or a later Phase B
 assertion fails. It never copies the lab HOME or `.codex` authentication files.
 
-Phase B is a separate, explicit `--phase-b` invocation for one person after
-lab-safe Herdr and agent binaries have been provisioned. It opens an
-interactive shell inside the same sandbox and prompts for one Herdr pane,
-`zoe-fleet-tower open`, and one `fm-spawn.sh --secondmate lab-mate` launch.
-After the person exits that shell, the runner inspects the manifest and checks
-its fleet ID, that the only spawned task is `lab-mate`, and that no manifest or
-event-journal string names `Desktop/Agentic` or a path under the real home.
-It appends the inspect output and those assertions to the Markdown record.
-Phase B must pass once before declaring full tower parity; it is never run by a kit
-install or check, and is not part of this automated Phase A check.
+### Phase B: one dedicated macOS account
+
+Use a fresh, separate macOS user account, or a teammate's machine on which
+that user's own **default** Herdr session is the lab. Run from Terminal outside
+Herdr. `HOME` must be that macOS login's actual home, not an alternate HOME in
+the owner's account: Herdr's API socket is per macOS user. Do not use an
+account with a Fleet config/state, a Firstmate home, or any occupied or second
+Herdr session. The runner reads the session, workspace and pane lists before
+staging and refuses an occupied default session. `--phase-b-dedicated-account`
+is the person's explicit acknowledgement of this account boundary.
+
+Install a checksum-verified, self-contained native Herdr binary satisfying
+`fleet-plugin/herdr-plugin.toml`'s `min_herdr_version`, and a native Codex
+binary, in this account. Check `herdr --version`, `codex --version`, `jq --version`,
+and `python3 --version`. Bring up this account's default Herdr session with no
+workspaces or panes using Herdr's normal account setup. Do not sign in to Codex
+in the account home or copy another person's credentials. Run Phase A first,
+with its own new evidence directory. The Phase B command is:
+
+```sh
+scripts/acceptance-tower.sh --firstmate-ref <40-character-firstmate-sha> \
+  --assets /tmp/downloaded-fleet-assets \
+  --phase-b --phase-b-dedicated-account \
+  --phase-b-codex-bin /path/to/native/codex \
+  --record /tmp/fleet-phase-b.md \
+  --evidence-dir /tmp/fleet-phase-b-evidence
+```
+
+`--local-bin` and `--local-runtime` can replace `--assets` before a release
+exists. Herdr is taken from this account's `PATH`; the runner copies it and
+Codex into the disposable kit before the sandbox. The preflight checks the
+account home, absence of known Fleet/Firstmate state and ambient overrides,
+Herdr version, and the empty default session. It does not start or stop Herdr.
+The staged `herdr` wrapper adds the lab HOME, XDG directories, TMPDIR,
+CODEX_HOME, PATH, FM_HOME, and wrapper path to every `workspace create` and
+`tab create`, including Firstmate's mate pane. The real binary remains staged
+as `herdr-real`. The sandbox still denies the account's real home.
+
+In the printed lab shell, set `lab=<printed-absolute-lab-path>`. Confirm
+`command -v herdr` resolves under `$lab/kit/bin`, `command -v no-mistakes`
+fails, and `ZOE_NO_MISTAKES_BIN` is unset. Create the one lab workspace with
+`herdr workspace create --cwd "$lab/firstmate" --label phase-b-lab --no-focus`.
+Record its returned root pane ID; run a shell in that pane with
+`herdr pane run <root-pane-id> 'export lab="$ACCEPTANCE_LAB" HERDR_BIN_PATH="$ACCEPTANCE_LAB/kit/bin/herdr"; exec /bin/bash --noprofile --norc'`. In the pane,
+verify `HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_DATA_HOME`, `TMPDIR`,
+`CODEX_HOME`, `PATH`, `FM_HOME`, and `HERDR_BIN_PATH` all point into the printed
+lab, and that `no-mistakes` is absent. If any value differs, stop the run.
+The pane is a genuine Herdr pane; do not fabricate `HERDR_ENV`.
+
+The person then signs in **inside that pane** with the lab `CODEX_HOME`:
+
+```sh
+mkdir -p "$CODEX_HOME"
+codex login --device-auth
+codex login status
+cd "$FM_HOME"
+FM_HOME="$FM_HOME" "$FM_HOME/bin/fm-spawn.sh" \
+  lab-mate "$lab/mate" --secondmate --backend herdr --harness codex
+"$lab/runtime/bin/zoe-fleet-tower" open
+```
+
+The spawn is the single agent launch; do not also use `herdr agent start`.
+Verify the new mate pane's environment before treating a collection as valid.
+After one `lab-mate` collection, read `firstmate/state/lab-mate.meta` as data,
+verify its recorded Herdr session is `default` and its pane is the lab mate,
+end that agent, and close **only that recorded pane**. Confirm the agent exited.
+Keep `lab-mate.meta`, the mate home and the collected Fleet state. Stop the
+default Herdr session using this dedicated account's Herdr control, then exit
+the lab shell. Do not run `fm-teardown.sh` or remove the mate before the runner
+completes its assertions. The runner then inspects Fleet, takes a fresh
+Firstmate snapshot and requires exactly `{lab-mate}` in both task lists, with
+lab-only paths.
+
+On success the Markdown result is `--record`; success or failure evidence is
+exported to `--evidence-dir` before the lab is removed. Inspect that bounded
+directory for `failure-report.txt`, snapshots, inspect output, and Fleet
+manifest/journal. It excludes Codex authentication. After saving evidence,
+confirm the dedicated account has no running Herdr session or agent and
+remove the temporary account only according to the machine owner's normal
+account cleanup procedure. Phase B must pass once before full tower parity is
+claimed. It is never part of kit install or the automated Phase A check; a
+new tower release still requires the owner's word.
 
 ## Linux and WSL2 extension
 
