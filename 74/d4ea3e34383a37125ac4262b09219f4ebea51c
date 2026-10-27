@@ -1,0 +1,19 @@
+docs/HERDR-PLUGIN.md
+  s_9231cf40e878ac::t_5da69034f72e01 39,159-160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "74d4ea3e34383a37125ac4262b09219f4ebea51c",
+  "prompts": {},
+  "sessions": {
+    "s_9231cf40e878ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e3df3073-4a76-4d0c-8e49-de3b0d831eef",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
