@@ -73,15 +73,25 @@ tag="fleet-v${version}-${short}"
 if ! has_target aarch64-apple-darwin && ! has_target x86_64-apple-darwin; then
   tag="${tag}-linux"
 fi
-# Keep Docker bind mounts under the host's shared /private/tmp path.
-work=$(mktemp -d /private/tmp/zoe-fleet-release.XXXXXX)
+if [ "$fixture" = false ]; then
+  [ "$(uname -s)" = Darwin ] || { echo 'macOS is required as the release host.' >&2; exit 2; }
+  # Keep Docker bind mounts under the host's shared /private/tmp path.
+  work_parent=/private/tmp
+else
+  work_parent=${TMPDIR:-/tmp}
+fi
+work=$(mktemp -d "$work_parent/zoe-fleet-release.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 
 if [ "$fixture" = false ]; then
-  [ "$(uname -s)" = Darwin ] || { echo 'macOS is required as the release host.' >&2; exit 2; }
-  for tool in rustc git file docker; do
+  for tool in rustc git; do
     command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 2; }
   done
+  if has_target aarch64-unknown-linux-gnu || has_target x86_64-unknown-linux-gnu; then
+    for tool in file docker; do
+      command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 2; }
+    done
+  fi
   if has_target aarch64-apple-darwin || has_target x86_64-apple-darwin; then
     for tool in cargo rustup arch lipo; do
       command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 2; }

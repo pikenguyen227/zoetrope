@@ -13,9 +13,9 @@ Darwin and Linux targets sequentially with `SOURCE_DATE_EPOCH` from that commit.
 Darwin uses host Rust; Linux uses ephemeral Ubuntu 22.04 Docker containers
 pinned by digest, with the host's Rust toolchain version. It checks architecture,
 version stamp, and inspect fixture before staging assets
-(`scripts/release-fleet.sh:23`, `scripts/release-fleet.sh:93`,
-`scripts/release-fleet.sh:98`, `scripts/release-fleet.sh:107`,
-`scripts/release-fleet.sh:130`, `scripts/release-fleet.sh:153`). A build from a
+(`scripts/release-fleet.sh:23`, `scripts/release-fleet.sh:103`,
+`scripts/release-fleet.sh:108`, `scripts/release-fleet.sh:117`,
+`scripts/release-fleet.sh:140`, `scripts/release-fleet.sh:163`). A build from a
 pristine Git checkout matters: `build.rs` appends `-dirty` when Git reports
 changes, while a non-checkout build cannot name a commit (`build.rs:1`,
 `build.rs:63`, `build.rs:73`).
@@ -23,12 +23,12 @@ changes, while a non-checkout build cannot name a commit (`build.rs:1`,
 Each target archive holds `zoe-fleet`, `LICENSE`, a commit-stamped `NOTICE`, and
 `BUILD.txt`; the separate architecture-independent runtime keeps
 `fleet-plugin/` beside `scripts/` and adds the launcher when it exists
-(`scripts/release-fleet.sh:174`, `scripts/release-fleet.sh:198`,
-`scripts/release-fleet.sh:214`). Linux `BUILD.txt` records the glibc 2.35 floor
-(`scripts/release-fleet.sh:143`, `scripts/release-fleet.sh:185`). `SHA256SUMS`
+(`scripts/release-fleet.sh:184`, `scripts/release-fleet.sh:208`,
+`scripts/release-fleet.sh:224`). Linux `BUILD.txt` records the glibc 2.35 floor
+(`scripts/release-fleet.sh:153`, `scripts/release-fleet.sh:195`). `SHA256SUMS`
 covers only emitted archives and is checked locally; a Linux-only target
-selection emits no runtime or Darwin archive (`scripts/release-fleet.sh:198`,
-`scripts/release-fleet.sh:234`). The fixture tests all four binaries and the
+selection emits no runtime or Darwin archive (`scripts/release-fleet.sh:208`,
+`scripts/release-fleet.sh:244`). The fixture tests all four binaries and the
 Linux-only subset without building Rust (`scripts/test_release_fleet.sh:10`,
 `scripts/test_release_fleet.sh:16`, `scripts/test_release_fleet.sh:44`).
 
