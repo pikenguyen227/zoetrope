@@ -1,0 +1,28 @@
+scripts/test_acceptance_tower_evidence.sh
+  s_dd636dbf47f656::t_54dbf28ef72a7d 59-77
+scripts/acceptance-tower.sh
+  s_dd636dbf47f656::t_5309f46f365ea6 72,100,144,227-228,250,254-255,257-258,271-274,276-277,358
+  s_dd636dbf47f656::t_5f8ebd7359df53 275
+  s_dd636dbf47f656::t_54dbf28ef72a7d 256
+docs/FLEET-PACKAGING.md
+  s_dd636dbf47f656::t_0525cfeed6da25 135-137
+_vaults/zoetrope/wiki/fleet/acceptance.md
+  s_dd636dbf47f656::t_98381bf938b6e1 13-14,17-18,26,43-44,47
+  s_dd636dbf47f656::t_0525cfeed6da25 45-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ca01ac36b5cd561670afaeb5cacb32a29a4b59c0",
+  "prompts": {},
+  "sessions": {
+    "s_dd636dbf47f656": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4cc32073-7ce0-44e3-be08-b7c04bbd5dd9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
