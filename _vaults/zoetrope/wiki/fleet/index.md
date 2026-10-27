@@ -9,6 +9,8 @@ date: 2026-09-26
 - [Isolated tower acceptance](acceptance.md): sandbox lab, Phase A evidence,
   and the explicit Phase B boundary.
 - [Fleet release packaging](packaging.md): pristine commit builds, Darwin and Linux archive layout, and checksum verification.
+- [Fleet tower on Windows via WSL2 Ubuntu](wsl2-tower.md): why the tower runs in WSL2,
+  the Linux-filesystem rule, prerequisites and the hands-on acceptance label.
 - [User-relative Fleet launch](user-relative-launch.md): config, per-home state,
   runtime lookup and the developer install migration.
 - [Member liveness and Herdr runtime](member-liveness.md): how a fleet card

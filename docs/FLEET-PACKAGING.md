@@ -107,6 +107,19 @@ gh-axi release create fleet-v0.2.0-<shortsha> \
   zoetrope-fleet-runtime-0.2.0-<shortsha>.tar.gz SHA256SUMS
 ```
 
+Release-notes SHA-256 table rows for a Linux sibling release (hash from the
+two-entry `SHA256SUMS`; the label stays until hands-on acceptance records
+otherwise):
+
+| Asset | SHA-256 | Notes |
+| --- | --- | --- |
+| `zoe-fleet-0.2.0-<shortsha>-aarch64-unknown-linux-gnu.tar.gz` | `<hash>` | Windows via WSL2 Ubuntu; glibc 2.35 floor, built on Ubuntu 22.04; arm64 hands-on acceptance pending on the owner's VM |
+| `zoe-fleet-0.2.0-<shortsha>-x86_64-unknown-linux-gnu.tar.gz` | `<hash>` | Windows via WSL2 Ubuntu; glibc 2.35 floor, built on Ubuntu 22.04; x64 unconfirmed until a teammate x64 PC runs it |
+
+State in the notes that the runtime archive comes from the original
+`fleet-v0.2.0-<shortsha>` release. Install steps are in
+`docs/FLEET-USAGE.md`, section "Windows (WSL2 Ubuntu)".
+
 Download the assets into an empty temporary directory and run
 `shasum -a 256 -c SHA256SUMS` again. Record direct asset URLs and SHA-256 values
 in the release notes for the kit manifest. No code signing, notarization, or
@@ -255,5 +268,5 @@ floor. Each container runs the built binary's version and inspect checks. The
 host verifies the ELF architecture. These assets are for Windows through WSL2
 Ubuntu; standalone Linux desktops and servers are outside this release's
 claim and testing. The runtime archive and producer contract remain
-architecture-independent. WSL2 install, doctor, and open instructions are not
-yet in `docs/FLEET-USAGE.md`; they follow in a separate change.
+architecture-independent. WSL2 install, doctor, and open instructions are in
+`docs/FLEET-USAGE.md`, section "Windows (WSL2 Ubuntu)".
