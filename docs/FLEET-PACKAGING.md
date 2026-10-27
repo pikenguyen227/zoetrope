@@ -30,21 +30,28 @@ runs `zoe-fleet-tower setup --bin <path to zoe-fleet>`.
 ## Build and archive layout
 
 On an arm64 Mac with Rust, Xcode command-line tools, Rosetta for the x64 smoke
-test, and both Rust targets installed:
+test, both Darwin Rust targets installed, and Docker Desktop running:
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 scripts/release-fleet.sh <approved-full-40-character-sha> --output /tmp/zoe-fleet-release
+# To build only Linux assets for a sibling release at an existing commit:
+scripts/release-fleet.sh <approved-full-40-character-sha> \
+  --targets aarch64-unknown-linux-gnu,x86_64-unknown-linux-gnu \
+  --output /tmp/zoe-fleet-linux
 ```
 
 The script clones `https://github.com/pikenguyen227/zoetrope.git` into a fresh
 temporary checkout at the exact commit. `SOURCE_DATE_EPOCH` comes from that
-commit's Unix timestamp. It builds the `zoe` bin once per target with
-`cargo build --locked --release`, checks each architecture with `lipo`, runs
-`--version` and `fleet assets/fleet/crew/fleet.json --inspect` for both slices
-(the x64 binary through Rosetta), and rejects a dirty checkout or wrong build
-stamp. Build hosts need the dependencies locally; the script does not install
-Rust targets. It removes its temporary checkout on exit.
+commit's Unix timestamp. It builds the `zoe` bin once per selected target with
+`cargo build --locked --release`, checks each architecture (`lipo` for Darwin,
+`file` for Linux), runs `--version` and
+`fleet assets/fleet/crew/fleet.json --inspect` for each target, and rejects a
+dirty checkout or wrong build stamp. The x64 Darwin smoke uses Rosetta. Linux
+builds and smoke checks run in sequential, ephemeral Ubuntu 22.04 Docker
+containers pinned by image digest. The script installs the host's `rustc`
+toolchain version inside each container; it does not install Rust targets on
+the host. It removes its temporary checkout on exit.
 
 The output directory must not exist. It contains:
 
@@ -52,15 +59,19 @@ The output directory must not exist. It contains:
 | --- | --- |
 | `zoe-fleet-0.2.0-<shortsha>-aarch64-apple-darwin.tar.gz` | one executable regular file `zoe-fleet`, `LICENSE`, `NOTICE`, `BUILD.txt` |
 | `zoe-fleet-0.2.0-<shortsha>-x86_64-apple-darwin.tar.gz` | same layout for x64 |
+| `zoe-fleet-0.2.0-<shortsha>-aarch64-unknown-linux-gnu.tar.gz` | same layout for Linux arm64; Windows via WSL2 Ubuntu |
+| `zoe-fleet-0.2.0-<shortsha>-x86_64-unknown-linux-gnu.tar.gz` | same layout for Linux x64; Windows via WSL2 Ubuntu |
 | `zoetrope-fleet-runtime-0.2.0-<shortsha>.tar.gz` | `scripts/firstmate-fleet.py`, `scripts/claude-telemetry.py`, `scripts/fleet-demo.py`, `scripts/fleet-config.sh`, `fleet-plugin/*`, `docs/FLEET-USAGE.md`, `docs/FLEET-PACKAGING.md`, `LICENSE`, `NOTICE`, `README.md`, `bin/zoe-fleet-tower` |
 | `SHA256SUMS` | SHA-256 entries for all emitted archives |
 
 `BUILD.txt` records version, full commit, target, rustc, and
 `SOURCE_DATE_EPOCH`. Each archive's NOTICE includes the build commit. The
-packager still tolerates a source tree without the launcher, but a release
-must include it. `--universal` optionally adds a fourth binary
-archive assembled by `lipo` with the same root layout. Per-target archives are
-the default because the kit manifest selects a target.
+Linux archives also record `libc=glibc 2.35`. The packager still tolerates a
+source tree without the launcher, but a release must include it. `--universal`
+optionally adds a Darwin binary archive assembled by `lipo` with the same root
+layout. `--targets` defaults to all four targets; a Linux-only selection emits
+only the two Linux archives and a two-entry `SHA256SUMS`. It does not rebuild or
+stage the previously published macOS or runtime archives.
 
 The shell fixture check exercises staging without building or launching the
 viewer:
@@ -77,6 +88,8 @@ inside the output directory:
 ```sh
 cd /tmp/zoe-fleet-release
 shasum -a 256 -c SHA256SUMS
+# On WSL2 Ubuntu, when only selected archives were downloaded:
+sha256sum -c SHA256SUMS --ignore-missing
 tar -tzf zoe-fleet-0.2.0-<shortsha>-aarch64-apple-darwin.tar.gz
 ```
 
@@ -98,6 +111,14 @@ Download the assets into an empty temporary directory and run
 `shasum -a 256 -c SHA256SUMS` again. Record direct asset URLs and SHA-256 values
 in the release notes for the kit manifest. No code signing, notarization, or
 checksum signature is part of this release format.
+
+For the already published `fleet-v0.2.0-fc45c4d9ea1d` release, the selected
+Linux archives and their two-entry `SHA256SUMS` belong to a separate sibling
+tag, `fleet-v0.2.0-fc45c4d9ea1d-linux`, at the same source commit. The
+published macOS archives, runtime archive, and original checksum file stay
+untouched. Creating that tag and uploading its assets remain manual release
+steps after approval. Windows via WSL2 Ubuntu arm64 hands-on acceptance remains
+pending; x64 on real hardware remains unconfirmed.
 
 ## Acceptance
 
@@ -226,11 +247,13 @@ account cleanup procedure. Phase B must pass once before full tower parity is
 claimed. It is never part of kit install or the automated Phase A check; a
 new tower release still requires the owner's word.
 
-## Linux and WSL2 extension
+## Windows via WSL2 Ubuntu binaries
 
-The target-keyed archive names can later include
-`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`. The existing
-`.github/workflows/cd.yml` uses `cross` for those targets. Extending the script
-requires target-specific build and executable smoke checks on Linux, while the
-runtime archive and producer contract remain architecture-independent. WSL2 is
-a Linux consumer; its kit installer chooses the Linux asset and Python runtime.
+The `aarch64-unknown-linux-gnu` and `x86_64-unknown-linux-gnu` assets are built
+inside Ubuntu 22.04 Docker containers, setting a glibc 2.35 compatibility
+floor. Each container runs the built binary's version and inspect checks. The
+host verifies the ELF architecture. These assets are for Windows through WSL2
+Ubuntu; standalone Linux desktops and servers are outside this release's
+claim and testing. The runtime archive and producer contract remain
+architecture-independent. WSL2 install, doctor, and open instructions are
+tracked separately in `docs/FLEET-USAGE.md`.
