@@ -7,7 +7,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/acceptance-tower.sh --firstmate-ref <40-char SHA> \
   (--assets <release directory> | --local-bin <zoe binary> --local-runtime <checkout>) \
-  [--record <Markdown path>] [--phase-b]
+  [--record <Markdown path>] [--evidence-dir <directory>] [--phase-b]
 
 Phase A runs under sandbox-exec and launches no Herdr, agent, or viewer.
 --phase-b opens an interactive lab shell for one person to launch Herdr and one
@@ -24,6 +24,7 @@ safe_path() {
   esac
 }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing tool: $1"; }
+phase() { printf '%s\n' "$1" >"$lab/failure-phase.txt"; }
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 repo=$(cd "$script_dir/.." && pwd -P)
@@ -53,6 +54,7 @@ if [ "${1:-}" = --inside-lab ]; then
   fm="$lab/firstmate"
   mate="$lab/mate"
   report="$lab/record.md"
+  phase clone
   git clone --no-checkout https://github.com/pikenguyen227/firstmate.git "$fm" >"$lab/clone.log" 2>&1 || {
     cat "$lab/clone.log" >&2; die 'Firstmate clone failed';
   }
@@ -61,18 +63,24 @@ if [ "${1:-}" = --inside-lab ]; then
   }
   [ "$(git -C "$fm" rev-parse HEAD)" = "$pin" ] || die 'Firstmate checkout is not at the pin'
   mkdir -p "$fm/data" "$fm/state" "$fm/config" "$fm/projects"
-  "$lab/runtime/bin/zoe-fleet-tower" setup --home "$fm" --bin "$lab/runtime/bin/zoe-fleet" >"$lab/setup.txt"
+  phase setup
+  "$lab/runtime/bin/zoe-fleet-tower" setup --home "$fm" --bin "$lab/runtime/bin/zoe-fleet" >"$lab/setup.txt" 2>&1
   config="$XDG_CONFIG_HOME/zoe-fleet/config"
   [ "$(stat -f %Lp "$config")" = 600 ] || die 'config is not mode 0600'
   if grep -Fq -e 'Desktop/Agentic' -e "$real_home/" "$config"; then die 'config contains owner path'; fi
-  "$lab/runtime/bin/zoe-fleet-tower" doctor >"$lab/doctor.txt"
+  phase doctor
+  "$lab/runtime/bin/zoe-fleet-tower" doctor >"$lab/doctor.txt" 2>"$lab/doctor.err"
 
-  FM_HOME="$fm" "$fm/bin/fm-fleet-snapshot.sh" --json >"$lab/snapshot-before.json"
+  phase snapshot-before
+  FM_HOME="$fm" "$fm/bin/fm-fleet-snapshot.sh" --json >"$lab/snapshot-before.json" 2>"$lab/snapshot-before.err"
+  phase seed
   (cd "$fm" && FM_HOME="$fm" \
     FM_SECONDMATE_CHARTER='Acceptance lab mate; local fleet visibility only.' \
     FM_SECONDMATE_SCOPE='Acceptance lab only.' \
     "$fm/bin/fm-home-seed.sh" lab-mate "$mate" --no-projects) >"$lab/seed.txt" 2>&1
-  FM_HOME="$fm" "$fm/bin/fm-fleet-snapshot.sh" --json >"$lab/snapshot-after.json"
+  phase snapshot-after
+  FM_HOME="$fm" "$fm/bin/fm-fleet-snapshot.sh" --json >"$lab/snapshot-after.json" 2>"$lab/snapshot-after.err"
+  phase phase-a-assertions
   python3 - "$lab" <<'PY'
 import json, pathlib, sys
 lab = pathlib.Path(sys.argv[1])
@@ -88,7 +96,8 @@ assert any(r['id'] == 'lab-mate' and r['home'] == mate and r['registered'] for r
 assert all(str(r['home']).startswith(str(lab) + '/') for r in records), records
 assert after['tasks'] == [], 'Phase A must not launch agents'
 PY
-  "$lab/runtime/bin/zoe-fleet" fleet "$lab/runtime/assets/fleet/crew/fleet.json" --inspect >"$lab/inspect.txt"
+  phase inspect
+  "$lab/runtime/bin/zoe-fleet" fleet "$lab/runtime/assets/fleet/crew/fleet.json" --inspect >"$lab/inspect.txt" 2>"$lab/inspect.err"
   # Immutable pinned source may mention an owner's example path in documentation.
   # Scan all generated lab state and output, excluding the two source checkouts.
   if grep -r -F -l -e 'Desktop/Agentic' -e "$real_home/" "$lab/home" "$lab/setup.txt" "$lab/doctor.txt" \
@@ -118,6 +127,7 @@ PY
     printf '```\n\nPhase B: not run; requires one person to launch a real Herdr and agent in the lab.\n'
   } >"$report"
   if [ "$phase_b" = 1 ]; then
+    phase phase-b-shell
     cat <<PROMPT
 
 PHASE B — PERSON REQUIRED. This shell remains inside the disposable sandbox.
@@ -130,8 +140,11 @@ collection, then stop that agent and the lab Herdr before typing exit. Never
 use a live owner's Herdr or Firstmate. The lab shell opens now.
 PROMPT
     /bin/bash --noprofile --norc
-    "$lab/runtime/bin/zoe-fleet-tower" inspect >"$lab/phase-b-inspect.txt"
-    FM_HOME="$fm" "$fm/bin/fm-fleet-snapshot.sh" --json >"$lab/phase-b-snapshot.json"
+    phase phase-b-inspect
+    "$lab/runtime/bin/zoe-fleet-tower" inspect >"$lab/phase-b-inspect.txt" 2>"$lab/phase-b-inspect.err"
+    phase phase-b-snapshot
+    FM_HOME="$fm" "$fm/bin/fm-fleet-snapshot.sh" --json >"$lab/phase-b-snapshot.json" 2>"$lab/phase-b-snapshot.err"
+    phase phase-b-assertions
     python3 - "$lab" "$real_home" <<'PY'
 import json, pathlib, sys
 lab = pathlib.Path(sys.argv[1])
@@ -173,14 +186,14 @@ PY
   exit 0
 fi
 
-pin='' assets='' local_bin='' local_runtime='' phase_b=0 record="$PWD/acceptance-tower-record.md"
+pin='' assets='' local_bin='' local_runtime='' phase_b=0 record="$PWD/acceptance-tower-record.md" evidence_dir=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --firstmate-ref|--assets|--local-bin|--local-runtime|--record)
+    --firstmate-ref|--assets|--local-bin|--local-runtime|--record|--evidence-dir)
       [ "$#" -ge 2 ] || usage
       case "$1" in
         --firstmate-ref) pin=$2 ;; --assets) assets=$2 ;; --local-bin) local_bin=$2 ;;
-        --local-runtime) local_runtime=$2 ;; --record) record=$2 ;;
+        --local-runtime) local_runtime=$2 ;; --record) record=$2 ;; --evidence-dir) evidence_dir=$2 ;;
       esac
       shift 2 ;;
     --phase-b) phase_b=1; shift ;;
@@ -195,15 +208,75 @@ else
   source_kind='local build and checked-out runtime'
   [ -n "$local_bin" ] && [ -n "$local_runtime" ] || usage
 fi
-for input in "$assets" "$local_bin" "$local_runtime" "$record"; do safe_path "$input"; done
+for input in "$assets" "$local_bin" "$local_runtime" "$record" "$evidence_dir"; do safe_path "$input"; done
 for tool in sandbox-exec git python3 shasum tar; do need "$tool"; done
-for input in "$assets" "$local_bin" "$local_runtime" "$record"; do
+for input in "$assets" "$local_bin" "$local_runtime" "$record" "$evidence_dir"; do
   [ -z "$input" ] || safe_path "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$input")"
 done
 real_home=$(cd "$HOME" && pwd -P)
 lab=$(mktemp -d /tmp/zoe-tower-acceptance.XXXXXX)
 lab=$(cd "$lab" && pwd -P)
-trap 'rm -rf -- "$lab"' EXIT
+# Only these named outputs leave the lab. Skip symlinks, including a symlinked
+# Fleet state directory, so cleanup never follows a lab path into real HOME.
+export_evidence() {
+  local src rel dest failed=0 count=0
+  [ -n "$evidence_dir" ] || return 0
+  mkdir -p -- "$evidence_dir" || return 1
+  for rel in record.md failure-phase.txt clone.log setup.txt doctor.txt seed.txt \
+      snapshot-before.json snapshot-before.err snapshot-after.json snapshot-after.err \
+      doctor.err inspect.txt inspect.err phase-b-snapshot.json phase-b-snapshot.err \
+      phase-b-inspect.txt phase-b-inspect.err; do
+    src="$lab/$rel"
+    if [ -f "$src" ] && [ ! -L "$src" ]; then
+      tail -c 1048576 -- "$src" >"$evidence_dir/$rel" || failed=1
+    fi
+  done
+  if [ -d "$lab/home/.local/state/zoe-fleet" ] && [ ! -L "$lab/home/.local/state/zoe-fleet" ]; then
+    while IFS= read -r -d '' src; do
+      [ ! -L "$src" ] || continue
+      rel=${src#"$lab/home/.local/state/zoe-fleet/"}
+      case "$rel" in */fleet.json|*/fleet.events.jsonl)
+        count=$((count + 1))
+        [ "$count" -le 20 ] || { failed=1; break; }
+        dest="$evidence_dir/fleet/$rel"
+        mkdir -p -- "$(dirname "$dest")" || { failed=1; continue; }
+        tail -c 1048576 -- "$src" >"$dest" || failed=1 ;;
+      esac
+    done < <(find "$lab/home/.local/state/zoe-fleet" -type f \( -name fleet.json -o -name fleet.events.jsonl \) -print0)
+  fi
+  return "$failed"
+}
+finish() {
+  local status=$? export_status=0 failed_phase log
+  trap - EXIT
+  set +e
+  if [ "$status" -ne 0 ]; then
+    failed_phase=$(cat "$lab/failure-phase.txt" 2>/dev/null || printf 'staging')
+    printf 'phase: %s\nstatus: %s\n' "$failed_phase" "$status" >"$lab/failure-report.txt"
+    for log in "$lab/$failed_phase.txt" "$lab/$failed_phase.err"; do
+      [ ! -f "$log" ] || [ -L "$log" ] || { printf 'Acceptance: %s failed; last output of %s:\n' "$failed_phase" "${log##*/}" >&2; tail -n 40 -- "$log" >&2; }
+    done
+  fi
+  export_evidence
+  export_status=$?
+  if [ -n "$evidence_dir" ] && [ -f "$lab/failure-report.txt" ]; then
+    cp "$lab/failure-report.txt" "$evidence_dir/failure-report.txt" 2>/dev/null || export_status=1
+  fi
+  rm -rf -- "$lab"
+  [ "$export_status" -eq 0 ] || printf 'Acceptance: evidence export failed: %s\n' "$evidence_dir" >&2
+  exit "$status"
+}
+trap finish EXIT
+if [ -n "$evidence_dir" ]; then
+  resolved_evidence=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$evidence_dir")
+  evidence_dir=''
+  case "$resolved_evidence/" in "$lab/"|"$lab/"*) die 'evidence directory is inside the lab' ;; esac
+  case "$lab/" in "$resolved_evidence/"*) die 'evidence directory contains the lab' ;; esac
+  [ ! -e "$resolved_evidence" ] || [ -z "$(ls -A -- "$resolved_evidence" 2>/dev/null)" ] \
+    || die 'evidence directory must be new or empty'
+  evidence_dir=$resolved_evidence
+fi
+phase staging
 mkdir -p "$lab/home/.config" "$lab/home/.local/state" "$lab/tmp" "$lab/kit/bin" "$lab/runtime/bin" "$lab/runtime/assets/fleet/crew"
 if [ -n "$assets" ]; then
   assets=$(cd "$assets" && pwd -P)
@@ -271,6 +344,8 @@ export PATH="$lab/kit/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 if [ -f "$XDG_CONFIG_HOME/zoe-fleet/config" ] && grep -Fq 'Desktop/Agentic' "$XDG_CONFIG_HOME/zoe-fleet/config"; then
   die 'lab config points at Desktop/Agentic'
 fi
+phase sandbox
+inner_status=0
 (cd "$lab" && env -i HOME="$HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" XDG_STATE_HOME="$XDG_STATE_HOME" \
   TMPDIR="$TMPDIR" PATH="$PATH" ACCEPTANCE_INSIDE=1 \
   /usr/bin/sandbox-exec -D REAL_HOME="$real_home" \
@@ -278,7 +353,9 @@ fi
   -D OWNER_ZOETROPE="$real_home/Desktop/Agentic/zoetrope" \
   -D OWNER_TOOLS="$real_home/Desktop/Agentic/.tools" \
   -f "$script_dir/tower-acceptance.sb" /bin/bash "$lab/runtime/scripts/acceptance-tower.sh" \
-  --inside-lab "$lab" "$pin" "$phase_b" "$source_kind" "$real_home")
+  --inside-lab "$lab" "$pin" "$phase_b" "$source_kind" "$real_home") || inner_status=$?
+[ "$inner_status" -eq 0 ] || exit "$inner_status"
+phase record
 mkdir -p "$(dirname "$record")"
 cp "$lab/record.md" "$record"
 printf 'Acceptance record: %s\n' "$record"
