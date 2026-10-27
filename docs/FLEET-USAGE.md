@@ -114,6 +114,95 @@ Herdr tasks only and reports unsupported endpoints. It never drains wakes, start
 workers, sends prompts, or changes approvals. Snapshot collection can take several
 seconds; transcript tailing and rendering run independently.
 
+## Windows (WSL2 Ubuntu)
+
+Status: **Windows via WSL2 Ubuntu; arm64 hands-on acceptance pending on the
+owner's VM; x64 unconfirmed until a teammate x64 PC runs it.** The tower runs
+inside WSL2 Ubuntu under Herdr for Linux, not in native Windows. Standalone
+Linux desktops and servers are not claimed and not tested. WSL-specific facts
+below are unverified until the VM run records them.
+
+Prerequisites:
+
+- Windows 11 with WSL2 and Ubuntu 22.04 or 24.04 (`wsl -l -v` shows VERSION 2).
+  For a Parallels VM, enable nested virtualization in the stopped VM's
+  configuration first.
+- Herdr for Linux (0.9.1 or newer), Python 3.9 or newer, `bash`, `git`, `curl`,
+  `jq` and `sha256sum`. `shasum` is not required; on Ubuntu it ships with the
+  `perl` package.
+- A Firstmate home checked out at the kit's pin.
+- Keep everything on the Linux filesystem under `/home/<user>`: the runtime,
+  `zoe-fleet`, the Firstmate home, the config and the state directory. Never
+  use `/mnt/c`; the adapter's `fcntl.flock` lock and the mode 0600 config are
+  unreliable on Windows drives.
+
+Install, in an Ubuntu shell:
+
+```sh
+uname -m                      # aarch64 or x86_64
+ldd --version | head -1       # glibc 2.35 or newer
+sudo apt-get install -y jq git curl
+curl -fsSL https://herdr.dev/install.sh | sh
+herdr --version               # run `herdr` once, then detach
+```
+
+Download into an empty directory under the Linux home. The runtime archive
+comes from release `fleet-v0.2.0-fc45c4d9ea1d`; the Linux binary and its
+checksums come from the sibling release `fleet-v0.2.0-fc45c4d9ea1d-linux`
+(source commit `fc45c4d9ea1de0af27092f26eaa8f5008881f01e`). Pick the binary by
+`uname -m`: `aarch64` selects `aarch64-unknown-linux-gnu`, `x86_64` selects
+`x86_64-unknown-linux-gnu`. The `-linux` release carries its own two-entry
+`SHA256SUMS`; the runtime archive's checksum is in the original release's
+`SHA256SUMS`.
+
+```sh
+case "$(uname -m)" in
+  aarch64) target=aarch64-unknown-linux-gnu ;;
+  x86_64)  target=x86_64-unknown-linux-gnu ;;
+  *) echo "unsupported: $(uname -m)" >&2; exit 1 ;;
+esac
+# From ...-linux: zoe-fleet-0.2.0-fc45c4d9ea1d-$target.tar.gz and SHA256SUMS
+# From the original release: zoetrope-fleet-runtime-0.2.0-fc45c4d9ea1d.tar.gz,
+# with its SHA256SUMS saved here as SHA256SUMS.runtime
+sha256sum -c SHA256SUMS --ignore-missing
+sha256sum -c SHA256SUMS.runtime --ignore-missing
+mkdir -p ~/zoe-fleet-runtime/bin
+tar -xzf zoetrope-fleet-runtime-0.2.0-fc45c4d9ea1d.tar.gz -C ~/zoe-fleet-runtime
+tar -xzf "zoe-fleet-0.2.0-fc45c4d9ea1d-$target.tar.gz" -C ~/zoe-fleet-runtime/bin zoe-fleet
+chmod 755 ~/zoe-fleet-runtime/bin/zoe-fleet
+~/zoe-fleet-runtime/bin/zoe-fleet --version   # release commit, no -dirty
+```
+
+`--ignore-missing` skips lines for files you did not download, but a mismatch in
+a downloaded file still fails; each command must report its archive `OK`.
+
+Set up, check and open:
+
+```sh
+~/zoe-fleet-runtime/bin/zoe-fleet-tower setup --home ~/firstmate --bin ~/zoe-fleet-runtime/bin/zoe-fleet
+~/zoe-fleet-runtime/bin/zoe-fleet-tower doctor
+# inside a Herdr shell pane:
+~/zoe-fleet-runtime/bin/zoe-fleet-tower open
+# from any shell:
+~/zoe-fleet-runtime/bin/zoe-fleet-tower inspect
+```
+
+Expect `doctor` to exit 0 reporting Herdr found and, before the first `open`,
+Herdr plugin not linked. `open` links the plugin and opens the **Team** tab.
+`inspect` prints JSON whose `fleet_id` is `firstmate:/home/<user>/firstmate`.
+Keep the outputs of the version, checksum, `doctor` and `open` steps, and a
+screenshot of the Team tab, as the hands-on evidence. When done, close the Team
+tab and run `herdr server stop`.
+
+Known caveats:
+
+- The WSL VM, and the Herdr server with it, stops shortly after the last Ubuntu
+  terminal closes; keep one open (Windows Terminal is the expected host).
+- Herdr's own native-Windows plugin support is preview and its bash plugin
+  commands need Windows alternatives, which is why this path uses WSL2.
+- The Phase A/B acceptance runner is macOS-only; WSL2 is checked by this
+  checklist instead.
+
 ## Controls
 
 | Key | Action |
