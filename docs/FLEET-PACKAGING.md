@@ -132,7 +132,9 @@ inert availability probe used only by `doctor`; no Herdr process or viewer runs.
 cleanup exports only the record if present, a failure phase/status report,
 setup/doctor/clone/seed logs, snapshots, inspect output, and the Fleet manifest
 and journal before removing the lab. Each exported file is capped at 1 MiB;
-the directory must be outside the lab and pass the runner's live-path checks.
+the directory must be new or empty, outside the lab, and pass the runner's
+live-path checks; a rejected directory is never written. On any failure the
+runner also prints the failing step's captured output to stderr.
 This is useful when Phase A fails before the record exists or a later Phase B
 assertion fails. It never copies the lab HOME or `.codex` authentication files.
 

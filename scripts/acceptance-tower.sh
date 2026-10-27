@@ -69,7 +69,7 @@ if [ "${1:-}" = --inside-lab ]; then
   [ "$(stat -f %Lp "$config")" = 600 ] || die 'config is not mode 0600'
   if grep -Fq -e 'Desktop/Agentic' -e "$real_home/" "$config"; then die 'config contains owner path'; fi
   phase doctor
-  "$lab/runtime/bin/zoe-fleet-tower" doctor >"$lab/doctor.txt" 2>&1
+  "$lab/runtime/bin/zoe-fleet-tower" doctor >"$lab/doctor.txt" 2>"$lab/doctor.err"
 
   phase snapshot-before
   FM_HOME="$fm" "$fm/bin/fm-fleet-snapshot.sh" --json >"$lab/snapshot-before.json" 2>"$lab/snapshot-before.err"
@@ -97,7 +97,7 @@ assert all(str(r['home']).startswith(str(lab) + '/') for r in records), records
 assert after['tasks'] == [], 'Phase A must not launch agents'
 PY
   phase inspect
-  "$lab/runtime/bin/zoe-fleet" fleet "$lab/runtime/assets/fleet/crew/fleet.json" --inspect >"$lab/inspect.txt" 2>&1
+  "$lab/runtime/bin/zoe-fleet" fleet "$lab/runtime/assets/fleet/crew/fleet.json" --inspect >"$lab/inspect.txt" 2>"$lab/inspect.err"
   # Immutable pinned source may mention an owner's example path in documentation.
   # Scan all generated lab state and output, excluding the two source checkouts.
   if grep -r -F -l -e 'Desktop/Agentic' -e "$real_home/" "$lab/home" "$lab/setup.txt" "$lab/doctor.txt" \
@@ -141,7 +141,7 @@ use a live owner's Herdr or Firstmate. The lab shell opens now.
 PROMPT
     /bin/bash --noprofile --norc
     phase phase-b-inspect
-    "$lab/runtime/bin/zoe-fleet-tower" inspect >"$lab/phase-b-inspect.txt" 2>&1
+    "$lab/runtime/bin/zoe-fleet-tower" inspect >"$lab/phase-b-inspect.txt" 2>"$lab/phase-b-inspect.err"
     phase phase-b-snapshot
     FM_HOME="$fm" "$fm/bin/fm-fleet-snapshot.sh" --json >"$lab/phase-b-snapshot.json" 2>"$lab/phase-b-snapshot.err"
     phase phase-b-assertions
@@ -183,7 +183,6 @@ PY
       printf '```\n\nPhase B assertions passed: fleet ID, exact spawned task set `{lab-mate}`, lab-only paths, no owner path in manifest or journal.\n'
     } >>"$report"
   fi
-  phase complete
   exit 0
 fi
 
@@ -225,7 +224,8 @@ export_evidence() {
   mkdir -p -- "$evidence_dir" || return 1
   for rel in record.md failure-phase.txt clone.log setup.txt doctor.txt seed.txt \
       snapshot-before.json snapshot-before.err snapshot-after.json snapshot-after.err \
-      inspect.txt phase-b-snapshot.json phase-b-snapshot.err phase-b-inspect.txt; do
+      doctor.err inspect.txt inspect.err phase-b-snapshot.json phase-b-snapshot.err \
+      phase-b-inspect.txt phase-b-inspect.err; do
     src="$lab/$rel"
     if [ -f "$src" ] && [ ! -L "$src" ]; then
       tail -c 1048576 -- "$src" >"$evidence_dir/$rel" || failed=1
@@ -247,11 +247,15 @@ export_evidence() {
   return "$failed"
 }
 finish() {
-  local status=$? export_status=0
+  local status=$? export_status=0 failed_phase log
   trap - EXIT
   set +e
   if [ "$status" -ne 0 ]; then
-    printf 'phase: %s\nstatus: %s\n' "$(cat "$lab/failure-phase.txt" 2>/dev/null || printf 'staging')" "$status" >"$lab/failure-report.txt"
+    failed_phase=$(cat "$lab/failure-phase.txt" 2>/dev/null || printf 'staging')
+    printf 'phase: %s\nstatus: %s\n' "$failed_phase" "$status" >"$lab/failure-report.txt"
+    for log in "$lab/$failed_phase.txt" "$lab/$failed_phase.err"; do
+      [ ! -f "$log" ] || [ -L "$log" ] || { printf 'Acceptance: %s failed; last output of %s:\n' "$failed_phase" "${log##*/}" >&2; tail -n 40 -- "$log" >&2; }
+    done
   fi
   export_evidence
   export_status=$?
@@ -264,9 +268,13 @@ finish() {
 }
 trap finish EXIT
 if [ -n "$evidence_dir" ]; then
-  evidence_dir=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$evidence_dir")
-  case "$evidence_dir/" in "$lab/"|"$lab/"*) die 'evidence directory is inside the lab' ;; esac
-  case "$lab/" in "$evidence_dir/"*) die 'evidence directory contains the lab' ;; esac
+  resolved_evidence=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$evidence_dir")
+  evidence_dir=''
+  case "$resolved_evidence/" in "$lab/"|"$lab/"*) die 'evidence directory is inside the lab' ;; esac
+  case "$lab/" in "$resolved_evidence/"*) die 'evidence directory contains the lab' ;; esac
+  [ ! -e "$resolved_evidence" ] || [ -z "$(ls -A -- "$resolved_evidence" 2>/dev/null)" ] \
+    || die 'evidence directory must be new or empty'
+  evidence_dir=$resolved_evidence
 fi
 phase staging
 mkdir -p "$lab/home/.config" "$lab/home/.local/state" "$lab/tmp" "$lab/kit/bin" "$lab/runtime/bin" "$lab/runtime/assets/fleet/crew"
@@ -347,6 +355,7 @@ inner_status=0
   -f "$script_dir/tower-acceptance.sb" /bin/bash "$lab/runtime/scripts/acceptance-tower.sh" \
   --inside-lab "$lab" "$pin" "$phase_b" "$source_kind" "$real_home") || inner_status=$?
 [ "$inner_status" -eq 0 ] || exit "$inner_status"
+phase record
 mkdir -p "$(dirname "$record")"
 cp "$lab/record.md" "$record"
 printf 'Acceptance record: %s\n' "$record"

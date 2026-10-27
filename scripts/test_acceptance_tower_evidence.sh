@@ -56,6 +56,25 @@ cmp "$scratch/b-evidence/fleet/fixture/fleet.json" <(printf '{"tasks":[]}\n')
 test -f "$scratch/b-evidence/fleet/fixture/fleet.events.jsonl"
 test ! -e "$scratch/b-evidence/home/.codex/auth.json"
 
+# A failing step's captured stderr reaches the terminal without --evidence-dir.
+lab="$scratch/doctor-lab"
+mkdir -p "$lab"
+printf 'doctor\n' >"$lab/failure-phase.txt"
+printf 'herdr plugin missing\n' >"$lab/doctor.err"
+check_status 1 run_case "$lab" '' 1 2>"$scratch/doctor-stderr"
+test ! -e "$lab"
+grep -q 'herdr plugin missing' "$scratch/doctor-stderr"
+
+# A non-empty evidence directory is refused before staging and left untouched.
+mkdir -p "$scratch/stale-evidence"
+printf 'old\n' >"$scratch/stale-evidence/failure-report.txt"
+check_status 1 "$root/scripts/acceptance-tower.sh" --firstmate-ref "$(printf '0%.0s' {1..40})" \
+  --local-bin "$scratch/missing-zoe" --local-runtime "$root" --record "$scratch/record.md" \
+  --evidence-dir "$scratch/stale-evidence" 2>"$scratch/stale-stderr"
+grep -q 'evidence directory must be new or empty' "$scratch/stale-stderr"
+[ "$(ls -A "$scratch/stale-evidence")" = failure-report.txt ]
+grep -qx old "$scratch/stale-evidence/failure-report.txt"
+
 # Success retains the record and creates no failure report.
 lab="$scratch/success-lab"
 mkdir -p "$lab" "$scratch/success-evidence"
