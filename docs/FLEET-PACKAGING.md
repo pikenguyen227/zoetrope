@@ -255,5 +255,5 @@ floor. Each container runs the built binary's version and inspect checks. The
 host verifies the ELF architecture. These assets are for Windows through WSL2
 Ubuntu; standalone Linux desktops and servers are outside this release's
 claim and testing. The runtime archive and producer contract remain
-architecture-independent. WSL2 install, doctor, and open instructions are
-tracked separately in `docs/FLEET-USAGE.md`.
+architecture-independent. WSL2 install, doctor, and open instructions are not
+yet in `docs/FLEET-USAGE.md`; they follow in a separate change.

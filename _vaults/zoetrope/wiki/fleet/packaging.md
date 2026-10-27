@@ -13,9 +13,10 @@ Darwin and Linux targets sequentially with `SOURCE_DATE_EPOCH` from that commit.
 Darwin uses host Rust; Linux uses ephemeral Ubuntu 22.04 Docker containers
 pinned by digest, with the host's Rust toolchain version. It checks architecture,
 version stamp, and inspect fixture before staging assets
-(`scripts/release-fleet.sh:23`, `scripts/release-fleet.sh:103`,
-`scripts/release-fleet.sh:108`, `scripts/release-fleet.sh:117`,
-`scripts/release-fleet.sh:140`, `scripts/release-fleet.sh:163`). A build from a
+(`scripts/release-fleet.sh:23`, `scripts/release-fleet.sh:108`,
+`scripts/release-fleet.sh:113`, `scripts/release-fleet.sh:118`,
+`scripts/release-fleet.sh:135`, `scripts/release-fleet.sh:140`,
+`scripts/release-fleet.sh:164`). A build from a
 pristine Git checkout matters: `build.rs` appends `-dirty` when Git reports
 changes, while a non-checkout build cannot name a commit (`build.rs:1`,
 `build.rs:63`, `build.rs:73`).
@@ -29,7 +30,7 @@ Each target archive holds `zoe-fleet`, `LICENSE`, a commit-stamped `NOTICE`, and
 covers only emitted archives and is checked locally; a Linux-only target
 selection emits no runtime or Darwin archive (`scripts/release-fleet.sh:208`,
 `scripts/release-fleet.sh:244`). The fixture tests all four binaries and the
-Linux-only subset without building Rust (`scripts/test_release_fleet.sh:10`,
+Linux-only subset without building Rust (`scripts/test_release_fleet.sh:12`,
 `scripts/test_release_fleet.sh:16`, `scripts/test_release_fleet.sh:44`).
 
 The script never uploads. The approved post-acceptance commit is the release
