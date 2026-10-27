@@ -1,0 +1,21 @@
+_vaults/zoetrope/wiki/fleet/packaging.md
+  s_0e4c079cf2f431::t_f25611bb8c50ce 16-18,26-28,30-31
+scripts/release-fleet.sh
+  s_0e4c079cf2f431::t_f6b219eda75bff 76-83,87,90-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cccfc43adebf865815479530604fc21266239b7f",
+  "prompts": {},
+  "sessions": {
+    "s_0e4c079cf2f431": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d9b8cb2-7ac9-447d-8134-9e595a7b1605",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
