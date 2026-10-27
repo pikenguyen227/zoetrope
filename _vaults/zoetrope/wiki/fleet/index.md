@@ -8,7 +8,7 @@ date: 2026-09-26
 
 - [Isolated tower acceptance](acceptance.md): sandbox lab, Phase A evidence,
   and the explicit Phase B boundary.
-- [Fleet release packaging](packaging.md): pristine commit builds, archive layout, checksum verification, and later Linux targets.
+- [Fleet release packaging](packaging.md): pristine commit builds, Darwin and Linux archive layout, and checksum verification.
 - [User-relative Fleet launch](user-relative-launch.md): config, per-home state,
   runtime lookup and the developer install migration.
 - [Member liveness and Herdr runtime](member-liveness.md): how a fleet card
