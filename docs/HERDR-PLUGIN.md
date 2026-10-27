@@ -36,7 +36,7 @@ by definition here, since the pane's agent is running.
 | Script | Role |
 |---|---|
 | `herdr/pane.sh` | all three actions (`open`, `open-split`, `open-tab`), differing only in the placement they pass. Opens the graph pane, or closes it when the graph is the focused pane, which is what makes the key a toggle |
-| `herdr/open.sh` | the pane command. Resolves the session and execs `zoe` |
+| `herdr/open.sh` | the pane command. Resolves the session and runs `zoe`: the one on `PATH`, else `/opt/homebrew/bin`, `/usr/local/bin` or `~/.cargo/bin`, since Herdr's server may have started with a minimal `PATH` and panes do not source shell startup files |
 | `herdr/resolve.sh` | asks `pane.get` about the focused pane, prints `<agent> <session-id>`, or exits with the reason |
 | `herdr/keys.sh` | the `setup-keys` / `remove-keys` actions |
 | `herdr/ensure-zoe.sh` | the `[[build]]` step: is a usable `zoe` on `PATH` |
@@ -156,6 +156,8 @@ herdr pane list | jq '.result.panes[] | {pane_id, agent, agent_session}'
 `jq`, so they can be exercised without Herdr by putting a stub `herdr` on
 `PATH` that prints a canned `pane.get` response and setting
 `HERDR_PLUGIN_CONTEXT_JSON` to `{"focused_pane_id":"w1:p1"}`.
+`bash scripts/test_herdr_open.sh` checks how `open.sh` picks its `zoe`, with
+stubs only.
 
 Anything asserted here about Herdr's shapes came from the schema or a live
 response, never from memory. Keep it that way: the field names are close enough
