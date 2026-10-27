@@ -1,0 +1,19 @@
+_vaults/zoetrope/wiki/fleet/acceptance.md
+  s_d0712caa3ff45f::t_9d25a3c1a33336 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ae049f7b899bf73f6adf4827effd1a9ba652ebf4",
+  "prompts": {},
+  "sessions": {
+    "s_d0712caa3ff45f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8000422b-eddf-435b-8fc3-541cba9889b2",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
