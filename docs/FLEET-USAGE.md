@@ -488,20 +488,23 @@ request ID, including later higher output counts. Codex cumulative snapshots emi
 only positive advances. Tokens follow the session replay cursor.
 
 `tok+` means only partial usage was recorded. `API est. —` means usage or a model
-rate is unavailable, not zero spend. Prices are an offline snapshot verified on
-2026-09-22 (Claude Opus 5.5 added 2026-09-23) against
+rate is unavailable, not zero spend. Prices are an offline snapshot rechecked
+2026-10-28 against
 [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
 and [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing).
-The table covers the GPT-6 Astra / GPT-5.6 family and listed recent Claude
-Opus/Sonnet/Haiku model IDs. It uses standard short-context rates, cache-read
-(0.05x base on Opus 5.5, 0.1x elsewhere), 5-minute cache-write and recorded
-1-hour cache-write rates. Fast-mode, long-context, regional and tool surcharges,
+The embedded [rate table](../src/usage.rs) covers GPT-5.6 sol/terra/luna,
+GPT-6 astra/sol/luna, GPT-6.1 sol/terra, and listed recent Claude
+Fable/Opus/Sonnet/Haiku model IDs.
+Cache-read multiples vary by model (Fable 5.1 0.025x; Opus 5.5, Sonnet 5.5 and
+GPT-6.1 sol/terra 0.05x; others 0.1x). The estimate uses standard short-context,
+5-minute cache-write and recorded 1-hour cache-write rates. Fast-mode,
+long-context, regional and tool surcharges,
 discounts and subscription billing are not included.
 **This is an API-equivalent estimate, not your actual subscription bill.**
 
 A model ID missing from the table never silently takes another model's rate.
-When its ID has the shape of a listed tier (`claude-opus-*`, `claude-sonnet-*`,
-`claude-haiku-*`, or `gpt-<version>-astra|sol|terra|luna`), it is priced at the
+When its ID has the shape of a listed tier (`claude-fable-*`, `claude-opus-*`,
+`claude-sonnet-*`, `claude-haiku-*`, or `gpt-<version>-astra|sol|terra|luna`), it is priced at the
 nearest listed model of that tier (the newest version not above it) and shown as
 `API est. ~$1.234 (unlisted model)` on both the card and the reading panel; the
 `~` leads so a narrow card that clips the suffix still reads as approximate. One such request makes the whole total
