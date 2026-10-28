@@ -488,12 +488,13 @@ request ID, including later higher output counts. Codex cumulative snapshots emi
 only positive advances. Tokens follow the session replay cursor.
 
 `tok+` means only partial usage was recorded. `API est. —` means usage or a model
-rate is unavailable, not zero spend. Prices are an offline snapshot verified on
-2026-09-22 (Claude Opus 5.5 added 2026-09-23) against
+rate is unavailable, not zero spend. Prices are an offline snapshot rechecked
+2026-10-28 against
 [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
 and [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing).
-The table covers the GPT-6 / GPT-6.1 (sol, terra, luna, astra) and GPT-5.6 families and
-listed recent Claude Fable/Opus/Sonnet/Haiku model IDs, rechecked 2026-10-28.
+The embedded [rate table](../src/usage.rs) covers GPT-5.6 sol/terra/luna,
+GPT-6 astra/sol/luna, GPT-6.1 sol/terra, and listed recent Claude
+Fable/Opus/Sonnet/Haiku model IDs.
 Cache-read multiples vary by model (Fable 5.1 0.025x; Opus 5.5, Sonnet 5.5 and
 GPT-6.1 sol/terra 0.05x; others 0.1x). The estimate uses standard short-context,
 5-minute cache-write and recorded 1-hour cache-write rates. Fast-mode,

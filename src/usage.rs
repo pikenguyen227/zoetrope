@@ -1,10 +1,9 @@
 //! Recorded usage and account quota snapshots. No network or credential access.
 //!
 //! Input includes cached reads/writes; reasoning is already part of output.
-//! Prices are standard short-context API equivalents (2026-09-22; Opus 5.5
-//! 2026-09-23), NOT a subscription bill. An unlisted model in a listed tier is
-//! priced approximately and labeled so. See docs/FLEET-USAGE.md for sources and
-//! estimate limitations.
+//! Prices are standard short-context API equivalents, NOT a subscription bill.
+//! An unlisted model in a listed tier is priced approximately and labeled so.
+//! See docs/FLEET-USAGE.md for sources and estimate limitations.
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -119,16 +118,9 @@ impl Book {
 type Rate = (f64, f64, f64);
 
 /// Exact supported model IDs. Date aliases are normalized by the provider if known.
-/// Claude rates checked 2026-09-23 against
-/// https://platform.claude.com/docs/en/about-claude/pricing: Opus 5.5 is
-/// $4 in / $20 out with cache hits at 0.05x base; Sonnet 5.5 is $2 / $10 at
-/// 0.05x, Haiku 5.5 $0.10 / $0.50 (prompts up to 100K) at 0.1x, and Fable 5.1
-/// $10 / $50 at 0.025x; every other listed Claude model uses the standard 0.1x.
-/// GPT-6 rates checked 2026-10-28 against
-/// https://developers.openai.com/api/docs/pricing (standard, <=272K input):
-/// gpt-6-sol $2 / $10 (cached $0.20), gpt-6.1-sol $2 / $10 ($0.10),
-/// gpt-6.1-terra $1 / $5 ($0.05), gpt-6-luna $0.10 / $0.50 ($0.01),
-/// gpt-6-astra $10 / $50 ($1). Claude rows above rechecked the same day.
+/// Haiku 5.5 uses the bracket for prompts up to 100K tokens; GPT-6 uses
+/// standard pricing for <=272K input. See docs/FLEET-USAGE.md for sources
+/// and the snapshot date.
 const RATES: &[(&str, Rate)] = &[
     ("gpt-6-astra", (10.0, 50.0, 0.1)),
     ("gpt-6.1-sol", (2.0, 10.0, 0.05)),
