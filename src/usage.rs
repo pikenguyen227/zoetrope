@@ -121,13 +121,24 @@ type Rate = (f64, f64, f64);
 /// Exact supported model IDs. Date aliases are normalized by the provider if known.
 /// Claude rates checked 2026-09-23 against
 /// https://platform.claude.com/docs/en/about-claude/pricing: Opus 5.5 is
-/// $4 in / $20 out with cache hits at 0.05x base; every other listed Claude
-/// model uses the standard 0.1x.
+/// $4 in / $20 out with cache hits at 0.05x base; Sonnet 5.5 is $2 / $10 at
+/// 0.05x, Haiku 5.5 $0.10 / $0.50 (prompts up to 100K) at 0.1x, and Fable 5.1
+/// $10 / $50 at 0.025x; every other listed Claude model uses the standard 0.1x.
+/// GPT-6 rates checked 2026-10-28 against
+/// https://developers.openai.com/api/docs/pricing (standard, <=272K input):
+/// gpt-6-sol $2 / $10 (cached $0.20), gpt-6.1-sol $2 / $10 ($0.10),
+/// gpt-6.1-terra $1 / $5 ($0.05), gpt-6-luna $0.10 / $0.50 ($0.01),
+/// gpt-6-astra $10 / $50 ($1). Claude rows above rechecked the same day.
 const RATES: &[(&str, Rate)] = &[
     ("gpt-6-astra", (10.0, 50.0, 0.1)),
+    ("gpt-6.1-sol", (2.0, 10.0, 0.05)),
+    ("gpt-6.1-terra", (1.0, 5.0, 0.05)),
+    ("gpt-6-sol", (2.0, 10.0, 0.1)),
+    ("gpt-6-luna", (0.1, 0.5, 0.1)),
     ("gpt-5.6-sol", (4.0, 20.0, 0.1)),
     ("gpt-5.6-terra", (2.0, 12.0, 0.1)),
     ("gpt-5.6-luna", (0.2, 1.2, 0.1)),
+    ("claude-fable-5-1", (10.0, 50.0, 0.025)),
     ("claude-opus-5-5", (4.0, 20.0, 0.05)),
     ("claude-opus-5", (5.0, 25.0, 0.1)),
     ("claude-opus-4-8", (5.0, 25.0, 0.1)),
@@ -135,10 +146,12 @@ const RATES: &[(&str, Rate)] = &[
     ("claude-opus-4-6", (5.0, 25.0, 0.1)),
     ("claude-opus-4-5", (5.0, 25.0, 0.1)),
     ("claude-opus-4-5-20251101", (5.0, 25.0, 0.1)),
+    ("claude-sonnet-5-5", (2.0, 10.0, 0.05)),
     ("claude-sonnet-5", (2.0, 10.0, 0.1)),
     ("claude-sonnet-4-6", (3.0, 15.0, 0.1)),
     ("claude-sonnet-4-5", (3.0, 15.0, 0.1)),
     ("claude-sonnet-4-5-20250929", (3.0, 15.0, 0.1)),
+    ("claude-haiku-5-5", (0.1, 0.5, 0.1)),
     ("claude-haiku-4-5", (1.0, 5.0, 0.1)),
     ("claude-haiku-4-5-20251001", (1.0, 5.0, 0.1)),
 ];
@@ -321,6 +334,14 @@ mod tests {
             ("claude-opus-4-5-20251101", 25.0025),
             ("claude-sonnet-4-6", 15.0015),
             ("gpt-5.6-luna", 1.2001),
+            ("claude-fable-5-1", 50.00455),
+            ("claude-sonnet-5-5", 10.00094),
+            ("claude-haiku-5-5", 0.50005),
+            ("gpt-6-sol", 10.001),
+            ("gpt-6.1-sol", 10.00094),
+            ("gpt-6.1-terra", 5.00047),
+            ("gpt-6-luna", 0.50005),
+            ("gpt-6-astra", 50.005),
         ] {
             let s = priced(model);
             assert!((s.usd.unwrap() - usd).abs() < 1e-9, "{model}: {s:?}");
@@ -342,7 +363,8 @@ mod tests {
             ("claude-opus-5-5-20260801", "claude-opus-5-5"),
             ("claude-opus-5-20260301", "claude-opus-5"),
             ("claude-haiku-5", "claude-haiku-4-5"),
-            ("gpt-6-luna", "gpt-5.6-luna"),
+            ("gpt-6.1-luna", "gpt-6-luna"),
+            ("claude-fable-6", "claude-fable-5-1"),
         ] {
             assert_eq!(sibling(model), Some(like), "{model}");
             let s = priced(model);
@@ -363,7 +385,9 @@ mod tests {
     fn unlisted_model_outside_or_older_than_every_listed_tier_has_no_estimate() {
         for model in [
             "new-model",
-            "claude-fable-5-1",
+            "claude-mythos-5-1",
+            "claude-fable-5",
+            "gpt-5.5-sol",
             "claude-3-5-sonnet-20241022",
             "gpt-5.6-cyber",
             "gpt-5.6-sol-codex",

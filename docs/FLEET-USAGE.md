@@ -492,8 +492,10 @@ rate is unavailable, not zero spend. Prices are an offline snapshot verified on
 2026-09-22 (Claude Opus 5.5 added 2026-09-23) against
 [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
 and [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing).
-The table covers the GPT-6 Astra / GPT-5.6 family and listed recent Claude
-Opus/Sonnet/Haiku model IDs. It uses standard short-context rates, cache-read
+The table covers the GPT-6 / GPT-6.1 (sol, terra, luna, astra) and GPT-5.6 families and
+listed recent Claude Fable/Opus/Sonnet/Haiku model IDs, rechecked 2026-10-28.
+Cache-read multiples vary by model (Fable 5.1 0.025x; Opus 5.5, Sonnet 5.5 and
+GPT-6.1 sol/terra 0.05x; others 0.1x). It uses standard short-context rates, cache-read
 (0.05x base on Opus 5.5, 0.1x elsewhere), 5-minute cache-write and recorded
 1-hour cache-write rates. Fast-mode, long-context, regional and tool surcharges,
 discounts and subscription billing are not included.
