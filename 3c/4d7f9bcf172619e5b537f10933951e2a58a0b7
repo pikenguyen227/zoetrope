@@ -1,0 +1,20 @@
+docs/FLEET-USAGE.md
+  s_af257a1e3c7835::t_874a5ec2905c3a 500
+  s_af257a1e3c7835::t_44de118fb1479f 498-499
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3c4d7f9bcf172619e5b537f10933951e2a58a0b7",
+  "prompts": {},
+  "sessions": {
+    "s_af257a1e3c7835": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a181cb-ce53-7f51-ab87-1c61553d786b",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
