@@ -1,0 +1,23 @@
+src/usage.rs
+  s_62dc7b1328de87::t_8aabd1df9b1ff6 4,121-123
+  s_62dc7b1328de87::t_0037c999be52f5 5-6
+docs/FLEET-USAGE.md
+  s_62dc7b1328de87::t_0f1a5f0cbbd8af 491-492
+  s_62dc7b1328de87::t_0037c999be52f5 495-497
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4328b07b9804e87f3a61130bf50f8e284e9fd026",
+  "prompts": {},
+  "sessions": {
+    "s_62dc7b1328de87": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a181da-d259-7593-80d1-9104225a88d8",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "Pike Nguyen <pikenguyen227@gmail.com>"
+    }
+  }
+}
