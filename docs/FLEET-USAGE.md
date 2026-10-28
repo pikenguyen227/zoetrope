@@ -502,8 +502,8 @@ discounts and subscription billing are not included.
 **This is an API-equivalent estimate, not your actual subscription bill.**
 
 A model ID missing from the table never silently takes another model's rate.
-When its ID has the shape of a listed tier (`claude-opus-*`, `claude-sonnet-*`,
-`claude-haiku-*`, or `gpt-<version>-astra|sol|terra|luna`), it is priced at the
+When its ID has the shape of a listed tier (`claude-fable-*`, `claude-opus-*`,
+`claude-sonnet-*`, `claude-haiku-*`, or `gpt-<version>-astra|sol|terra|luna`), it is priced at the
 nearest listed model of that tier (the newest version not above it) and shown as
 `API est. ~$1.234 (unlisted model)` on both the card and the reading panel; the
 `~` leads so a narrow card that clips the suffix still reads as approximate. One such request makes the whole total
